@@ -1,0 +1,59 @@
+# .gitignore for LinkStay
+
+# 构建输出 (Build Outputs)
+bin/
+build/
+*.o
+*.a
+*.so
+
+# 编译器生成 (Compiler Generated)
+*.d
+*.gch
+*.pch
+*.su
+
+# 编辑器和 IDE (Editors and IDEs)
+.vscode/
+.vscode-test/
+.idea/
+.vs/
+*.code-workspace
+*.swp
+*.swo
+*~
+*.bak
+.DS_Store
+
+# 调试文件 (Debugging)
+vgcore.*
+core
+core.*
+
+# 测试和日志 (Testing and Logs)
+test.sh
+*.log
+test_output/
+graylogs/
+*.tmp
+*.pid
+
+# 本地工具和 AI 辅助文件 (Local Tooling and AI Helpers)
+.cache/
+compile_commands.json
+.copilot/
+.cursor/
+.claude/
+.continue/
+.windsurf/
+.roo/
+.aider*
+.github/copilot-instructions.local.md
+
+# 格式和风格 (Formatting and Style)
+.clang-format
+.clang-tidy
+.editorconfig
+
+# 工具 (Tools)
+_codeql_detected_source_root

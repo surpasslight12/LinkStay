@@ -1,0 +1,58 @@
+[Unit]
+Description=LinkStay Network Monitor with Auto-Shutdown
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+# ── Runtime ──────────────────────────────────────────────────────────────────
+Type=notify
+NotifyAccess=main
+SyslogIdentifier=LinkStay
+StandardOutput=journal
+StandardError=journal
+
+ExecStart=/usr/local/bin/LinkStay
+
+TimeoutStartSec=30
+TimeoutStopSec=10
+WatchdogSec=30
+
+# ── Restart ───────────────────────────────────────────────────────────────────
+Restart=on-failure
+RestartSec=10
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+Environment="LINKSTAY_TARGET=1.1.1.1"
+Environment="LINKSTAY_INTERVAL=10"
+Environment="LINKSTAY_THRESHOLD=5"
+Environment="LINKSTAY_TIMEOUT=2000"
+Environment="LINKSTAY_MODE=log-only"
+Environment="LINKSTAY_DELAY=0"
+Environment="LINKSTAY_LOG_LEVEL=info"
+Environment="LINKSTAY_SYSTEMD=true"
+
+# ── Privilege Containment ─────────────────────────────────────────────────────
+User=root
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_RAW
+
+# ── Filesystem Isolation ─────────────────────────────────────────────────────
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+# ── Network / Syscall Restrictions ────────────────────────────────────────────
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service @network-io @process
+SystemCallFilter=~@debug @module @mount @swap @obsolete @cpu-emulation
+
+# ── Resource Limits ───────────────────────────────────────────────────────────
+MemoryMax=50M
+TasksMax=10
+OOMScoreAdjust=-100
+
+[Install]
+WantedBy=multi-user.target
