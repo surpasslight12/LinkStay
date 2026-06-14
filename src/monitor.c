@@ -34,9 +34,15 @@ typedef struct {
 } monitor_watchdog_state_t;
 
 typedef struct {
+  monitor_timer_t countdown_timer;
+  bool countdown_active;
+} monitor_shutdown_state_t;
+
+typedef struct {
   monitor_ping_state_t ping;
   monitor_scheduler_state_t scheduler;
   monitor_watchdog_state_t watchdog;
+  monitor_shutdown_state_t shutdown;
 } monitor_state_t;
 
 typedef enum {
@@ -47,6 +53,17 @@ typedef enum {
 
 #define LINKSTAY_PACKET_SIZE 64U
 #define LINKSTAY_MAX_REPLY_DRAIN_PER_TICK 32U
+
+static uint64_t config_duration_ms(int value, uint64_t scale_ms) {
+  if (value <= 0) {
+    return 0;
+  }
+  uint64_t duration_ms = 0;
+  if (LINKSTAY_UNLIKELY(ckd_mul(&duration_ms, (uint64_t)value, scale_ms))) {
+    return UINT64_MAX;
+  }
+  return duration_ms;
+}
 
 /* ---- Metrics — static ---- */
 
@@ -309,6 +326,10 @@ static int monitor_state_wait_timeout(const monitor_state_t *restrict state,
           : monitor_timer_timeout_ms(&state->scheduler.next_ping_timer, now_ms);
   timeout_ms = monitor_timeout_accumulate(
       timeout_ms, &state->watchdog.next_notify_timer, now_ms);
+  if (state->shutdown.countdown_active) {
+    timeout_ms = monitor_timeout_accumulate(
+        timeout_ms, &state->shutdown.countdown_timer, now_ms);
+  }
   return timeout_ms;
 }
 
@@ -488,6 +509,8 @@ static bool monitor_notify_statusf(linkstay_ctx_t *restrict ctx,
 
 /* ---- Shutdown FSM — static ---- */
 
+#define LINKSTAY_MS_PER_MIN (LINKSTAY_MS_PER_SEC * 60U)
+
 __attribute__((format(printf, 2, 3))) static monitor_step_result_t
 monitor_runtime_error(linkstay_ctx_t *restrict ctx, const char *restrict fmt,
                       ...);
@@ -511,8 +534,66 @@ static bool shutdown_fsm_execute(linkstay_ctx_t *restrict ctx) {
 }
 
 static monitor_step_result_t
-shutdown_fsm_handle_threshold(linkstay_ctx_t *restrict ctx) {
-  if (ctx == NULL ||
+shutdown_fsm_start_countdown(linkstay_ctx_t *restrict ctx,
+                             monitor_state_t *restrict state, uint64_t now_ms) {
+  if (ctx == NULL || state == NULL) {
+    return MONITOR_STEP_CONTINUE;
+  }
+  uint64_t delay_ms =
+      config_duration_ms(ctx->config.delay_min, LINKSTAY_MS_PER_MIN);
+  if (delay_ms == 0 || delay_ms == UINT64_MAX) {
+    /* No delay configured or overflow: execute immediately */
+    return shutdown_fsm_execute(ctx) ? MONITOR_STEP_STOP
+                                    : MONITOR_STEP_CONTINUE;
+  }
+  if (!monitor_timer_arm_after(&state->shutdown.countdown_timer, now_ms,
+                               delay_ms)) {
+    logger_error(&ctx->logger, "Failed to arm shutdown countdown timer");
+    return MONITOR_STEP_CONTINUE;
+  }
+  state->shutdown.countdown_active = true;
+  logger_warn(&ctx->logger,
+              "Failure threshold reached; shutdown in %d minute(s)",
+              ctx->config.delay_min);
+  (void)monitor_notify_statusf(ctx, "COUNTDOWN: shutdown in %d minute(s)",
+                               ctx->config.delay_min);
+  return MONITOR_STEP_CONTINUE;
+}
+
+static void shutdown_fsm_cancel_countdown(linkstay_ctx_t *restrict ctx,
+                                         monitor_state_t *restrict state) {
+  if (ctx == NULL || state == NULL || !state->shutdown.countdown_active) {
+    return;
+  }
+  monitor_timer_clear(&state->shutdown.countdown_timer);
+  state->shutdown.countdown_active = false;
+  logger_info(&ctx->logger,
+              "Connectivity recovered, shutdown countdown cancelled");
+  (void)monitor_notify_statusf(ctx, "Countdown cancelled, monitoring resumed");
+}
+
+static monitor_step_result_t
+shutdown_fsm_check_countdown(linkstay_ctx_t *restrict ctx,
+                             monitor_state_t *restrict state, uint64_t now_ms) {
+  if (ctx == NULL || state == NULL || !state->shutdown.countdown_active) {
+    return MONITOR_STEP_CONTINUE;
+  }
+  if (!monitor_timer_elapsed(&state->shutdown.countdown_timer, now_ms)) {
+    return MONITOR_STEP_CONTINUE;
+  }
+  /* Countdown expired: execute shutdown */
+  state->shutdown.countdown_active = false;
+  monitor_timer_clear(&state->shutdown.countdown_timer);
+  logger_warn(&ctx->logger, "Shutdown countdown expired, executing shutdown");
+  return shutdown_fsm_execute(ctx) ? MONITOR_STEP_STOP
+                                  : MONITOR_STEP_CONTINUE;
+}
+
+static monitor_step_result_t
+shutdown_fsm_handle_threshold(linkstay_ctx_t *restrict ctx,
+                              monitor_state_t *restrict state,
+                              uint64_t now_ms) {
+  if (ctx == NULL || state == NULL ||
       ctx->consecutive_fails < ctx->config.fail_threshold) {
     return MONITOR_STEP_CONTINUE;
   }
@@ -522,8 +603,11 @@ shutdown_fsm_handle_threshold(linkstay_ctx_t *restrict ctx) {
     ctx->consecutive_fails = 0;
     return MONITOR_STEP_CONTINUE;
   }
-  return shutdown_fsm_execute(ctx) ? MONITOR_STEP_STOP
-                                  : MONITOR_STEP_CONTINUE;
+  /* If countdown is already active, keep waiting */
+  if (state->shutdown.countdown_active) {
+    return MONITOR_STEP_CONTINUE;
+  }
+  return shutdown_fsm_start_countdown(ctx, state, now_ms);
 }
 
 /* ---- Runtime helpers — static ---- */
@@ -535,6 +619,7 @@ static void handle_ping_success(linkstay_ctx_t *restrict ctx,
     return;
   }
   ctx->consecutive_fails = 0;
+  shutdown_fsm_cancel_countdown(ctx, state);
   metrics_record_success(&ctx->metrics, result->latency_ms);
   logger_debug(&ctx->logger, "Ping successful to %s, latency: %.2fms",
                ctx->config.target, result->latency_ms);
@@ -630,7 +715,7 @@ monitor_handle_ping_timeout(linkstay_ctx_t *restrict ctx,
   ping_result_t timeout_result = {false, 0.0, "ICMP reply deadline exceeded"};
   handle_ping_failure(ctx, &timeout_result);
   monitor_ping_clear(state);
-  return shutdown_fsm_handle_threshold(ctx);
+  return shutdown_fsm_handle_threshold(ctx, state, now_ms);
 }
 
 static monitor_step_result_t monitor_send_ping(linkstay_ctx_t *restrict ctx,
@@ -700,17 +785,6 @@ typedef struct {
   size_t packet_len;
   uint64_t now_ms;
 } monitor_loop_t;
-
-static uint64_t config_duration_ms(int value, uint64_t scale_ms) {
-  if (value <= 0) {
-    return 0;
-  }
-  uint64_t duration_ms = 0;
-  if (LINKSTAY_UNLIKELY(ckd_mul(&duration_ms, (uint64_t)value, scale_ms))) {
-    return UINT64_MAX;
-  }
-  return duration_ms;
-}
 
 static bool pollfd_has_error(short revents) {
   return (revents & (POLLERR | POLLHUP | POLLNVAL)) != 0;
@@ -954,6 +1028,11 @@ monitor_run_due_work(linkstay_ctx_t *restrict ctx,
   }
   monitor_step_result_t step_result =
       monitor_handle_watchdog(ctx, &loop->state, loop->now_ms);
+  if (step_result != MONITOR_STEP_CONTINUE) {
+    return step_result;
+  }
+  step_result =
+      shutdown_fsm_check_countdown(ctx, &loop->state, loop->now_ms);
   if (step_result != MONITOR_STEP_CONTINUE) {
     return step_result;
   }

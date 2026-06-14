@@ -86,6 +86,7 @@ journalctl -fu LinkStay
 | 失败阈值 | `-n, --threshold, --fail-threshold` | `LINKSTAY_THRESHOLD` | `5` | 连续失败次数触发关机；兼容读取 `LINKSTAY_FAIL_THRESHOLD` |
 | 超时时间 | `-w, --timeout` | `LINKSTAY_TIMEOUT` | `2000`（ms） | 单次 ping 等待回包的超时，必须小于 interval |
 | 关机模式 | `-m, --mode` | `LINKSTAY_MODE` | `dry-run` | `dry-run` / `true-off` / `log-only` |
+| 关机延迟 | `-d, --delay` | `LINKSTAY_DELAY` | `0`（分钟） | 达到阈值后倒计时关机，0 表示立即执行；倒计时期间恢复连通则取消 |
 | 日志级别 | `-l, --log-level` | `LINKSTAY_LOG_LEVEL` | `info` | 规范值为 `silent` / `error` / `warn` / `info` / `debug`；兼容别名 `none=silent`、`warning=warn` |
 | systemd 集成 | `-s, --systemd` | `LINKSTAY_SYSTEMD` | `true` | 启用 `sd_notify`、watchdog 与状态通知；接受 `true/false/1/0/yes/no/on/off`；省略参数时等价于启用，禁用建议写 `--systemd=0`、`--systemd=false`、`-s0` 或 `-sfalse` |
 

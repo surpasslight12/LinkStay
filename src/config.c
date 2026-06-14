@@ -16,6 +16,7 @@
 #define LINKSTAY_DEFAULT_INTERVAL_SEC 10
 #define LINKSTAY_DEFAULT_FAIL_THRESHOLD 5
 #define LINKSTAY_DEFAULT_TIMEOUT_MS 2000
+#define LINKSTAY_DEFAULT_DELAY_MIN 0
 #define LINKSTAY_DEFAULT_SYSTEMD true
 #define LINKSTAY_FAIL_THRESHOLD_ENV_ALIAS "LINKSTAY_FAIL_THRESHOLD"
 
@@ -48,6 +49,7 @@ static const struct option CONFIG_LONG_OPTIONS[] = {
     {"fail-threshold", required_argument, 0, 'n'},
     {"timeout", required_argument, 0, 'w'},
     {"mode", required_argument, 0, 'm'},
+    {"delay", required_argument, 0, 'd'},
     {"log-level", required_argument, 0, 'l'},
     {"systemd", optional_argument, 0, 's'},
     {"version", no_argument, 0, 'v'},
@@ -55,7 +57,7 @@ static const struct option CONFIG_LONG_OPTIONS[] = {
     {0, 0, 0, 0},
 };
 
-static const char *const CONFIG_OPTSTRING = "t:i:n:w:m:l:s::vh";
+static const char *const CONFIG_OPTSTRING = "t:i:n:w:m:d:l:s::vh";
 
 static const config_named_value_t CONFIG_BOOL_OPTIONS[] = {
     {"true", 1},  {"1", 1},   {"yes", 1}, {"on", 1},
@@ -323,6 +325,7 @@ static void config_init_default(config_t *restrict config) {
   config->interval_sec = LINKSTAY_DEFAULT_INTERVAL_SEC;
   config->fail_threshold = LINKSTAY_DEFAULT_FAIL_THRESHOLD;
   config->timeout_ms = LINKSTAY_DEFAULT_TIMEOUT_MS;
+  config->delay_min = LINKSTAY_DEFAULT_DELAY_MIN;
   config->shutdown_mode = SHUTDOWN_MODE_DRY_RUN;
   config->log_level = LOG_LEVEL_INFO;
   config->enable_systemd = LINKSTAY_DEFAULT_SYSTEMD;
@@ -437,6 +440,7 @@ void config_print(const config_t *restrict config,
   logger_debug(logger, "  Timeout: %d ms", config->timeout_ms);
   logger_debug(logger, "  Shutdown Mode: %s",
                shutdown_mode_to_string(config->shutdown_mode));
+  logger_debug(logger, "  Shutdown Delay: %d minutes", config->delay_min);
   logger_debug(logger, "  Log Level: %s",
                log_level_to_string(config->log_level));
   logger_debug(logger, "  Timestamp: %s",
@@ -466,8 +470,11 @@ static void config_print_usage(void) {
          LINKSTAY_CONFIG_SHUTDOWN_MODE_VALUES);
   printf("                              (default: dry-run)\n");
   printf("                              true-off requires a systemd host with "
-         "%s\n\n",
+         "%s\n",
          LINKSTAY_SYSTEMCTL_PATH);
+  printf("  -d, --delay <min>           Shutdown countdown in minutes (default: "
+         "%d, 0 = immediate)\n\n",
+         LINKSTAY_DEFAULT_DELAY_MIN);
   printf("Logging Options:\n");
   printf("  -l, --log-level <level>     Log level: %s\n",
          LINKSTAY_CONFIG_LOG_LEVEL_VALUES);
@@ -494,7 +501,7 @@ static void config_print_usage(void) {
   printf("  Network:      LINKSTAY_TARGET, LINKSTAY_INTERVAL,\n");
   printf("                LINKSTAY_THRESHOLD (alias: %s), LINKSTAY_TIMEOUT\n",
          LINKSTAY_FAIL_THRESHOLD_ENV_ALIAS);
-  printf("  Shutdown:     LINKSTAY_MODE\n");
+  printf("  Shutdown:     LINKSTAY_MODE, LINKSTAY_DELAY\n");
   printf("  Logging:      LINKSTAY_LOG_LEVEL\n");
   printf("  Integration:  LINKSTAY_SYSTEMD\n");
   printf("\n");
@@ -553,6 +560,7 @@ static bool config_load_from_env(config_t *restrict config,
   const config_int_binding_t int_bindings[] = {
       {0, "LINKSTAY_INTERVAL", 1, INT_MAX, "seconds", &config->interval_sec},
       {0, "LINKSTAY_TIMEOUT", 1, INT_MAX, "milliseconds", &config->timeout_ms},
+      {0, "LINKSTAY_DELAY", 0, INT_MAX, "minutes", &config->delay_min},
   };
   for (size_t i = 0; i < LINKSTAY_ARRAY_LEN(int_bindings); i++) {
     const char *value = getenv(int_bindings[i].name);
@@ -604,6 +612,7 @@ static bool config_load_from_cmdline(config_t *restrict config, int argc,
       {'n', "--threshold/--fail-threshold", 1, INT_MAX, "failures",
        &config->fail_threshold},
       {'w', "--timeout", 1, INT_MAX, "milliseconds", &config->timeout_ms},
+      {'d', "--delay", 0, INT_MAX, "minutes", &config->delay_min},
   };
 
   *exit_requested = false;
@@ -626,7 +635,8 @@ static bool config_load_from_cmdline(config_t *restrict config, int argc,
       break;
     case 'i':
     case 'n':
-    case 'w': {
+    case 'w':
+    case 'd': {
       const config_int_binding_t *binding = config_find_int_binding(
           int_bindings, LINKSTAY_ARRAY_LEN(int_bindings), option);
       if (binding == NULL) {

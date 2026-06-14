@@ -69,6 +69,7 @@ typedef struct {
 
   /* Shutdown */
   shutdown_mode_t shutdown_mode;
+  int delay_min; /* shutdown countdown in minutes; 0 = immediate */
 
   /* Logging */
   log_level_t log_level;
