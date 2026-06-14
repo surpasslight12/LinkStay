@@ -24,10 +24,6 @@ typedef struct {
 } monitor_ping_state_t;
 
 typedef struct {
-  monitor_timer_t countdown_timer;
-} monitor_shutdown_state_t;
-
-typedef struct {
   monitor_timer_t next_ping_timer;
   uint64_t interval_ms;
 } monitor_scheduler_state_t;
@@ -39,7 +35,6 @@ typedef struct {
 
 typedef struct {
   monitor_ping_state_t ping;
-  monitor_shutdown_state_t shutdown;
   monitor_scheduler_state_t scheduler;
   monitor_watchdog_state_t watchdog;
 } monitor_state_t;
@@ -276,34 +271,6 @@ monitor_ping_expected_sequence(const monitor_state_t *restrict state) {
   return state != NULL ? state->ping.expected_sequence : 0;
 }
 
-static bool monitor_shutdown_arm(monitor_state_t *restrict state,
-                                 uint64_t now_ms, uint64_t delay_ms) {
-  if (state == NULL) {
-    return false;
-  }
-  return monitor_timer_arm_after(&state->shutdown.countdown_timer, now_ms,
-                                 delay_ms);
-}
-
-static void monitor_shutdown_clear(monitor_state_t *restrict state) {
-  if (state == NULL) {
-    return;
-  }
-  monitor_timer_clear(&state->shutdown.countdown_timer);
-}
-
-static bool monitor_shutdown_pending(const monitor_state_t *restrict state) {
-  return state != NULL &&
-         monitor_timer_is_armed(&state->shutdown.countdown_timer);
-}
-
-static bool
-monitor_shutdown_deadline_elapsed(const monitor_state_t *restrict state,
-                                  uint64_t now_ms) {
-  return state != NULL &&
-         monitor_timer_elapsed(&state->shutdown.countdown_timer, now_ms);
-}
-
 static bool monitor_scheduler_due(const monitor_state_t *restrict state,
                                   uint64_t now_ms) {
   return state != NULL &&
@@ -340,8 +307,6 @@ static int monitor_state_wait_timeout(const monitor_state_t *restrict state,
       monitor_ping_waiting(state)
           ? monitor_timer_timeout_ms(&state->ping.reply_timer, now_ms)
           : monitor_timer_timeout_ms(&state->scheduler.next_ping_timer, now_ms);
-  timeout_ms = monitor_timeout_accumulate(
-      timeout_ms, &state->shutdown.countdown_timer, now_ms);
   timeout_ms = monitor_timeout_accumulate(
       timeout_ms, &state->watchdog.next_notify_timer, now_ms);
   return timeout_ms;
@@ -527,18 +492,6 @@ __attribute__((format(printf, 2, 3))) static monitor_step_result_t
 monitor_runtime_error(linkstay_ctx_t *restrict ctx, const char *restrict fmt,
                       ...);
 
-static uint64_t shutdown_fsm_config_delay_ms(const config_t *restrict config) {
-  if (config == NULL || config->delay_minutes <= 0) {
-    return 0;
-  }
-  uint64_t delay_ms = 0;
-  if (LINKSTAY_UNLIKELY(ckd_mul(&delay_ms, (uint64_t)config->delay_minutes,
-                                LINKSTAY_MS_PER_MINUTE))) {
-    return UINT64_MAX;
-  }
-  return delay_ms;
-}
-
 static bool shutdown_fsm_execute(linkstay_ctx_t *restrict ctx) {
   if (ctx == NULL) {
     return false;
@@ -557,24 +510,9 @@ static bool shutdown_fsm_execute(linkstay_ctx_t *restrict ctx) {
   return true;
 }
 
-static bool shutdown_fsm_cancel(linkstay_ctx_t *restrict ctx,
-                                monitor_state_t *restrict state) {
-  if (ctx == NULL || state == NULL || !monitor_shutdown_pending(state)) {
-    return false;
-  }
-  monitor_shutdown_clear(state);
-  logger_info(&ctx->logger,
-              "Connectivity restored; cancelled pending shutdown countdown");
-  (void)monitor_notify_statusf(
-      ctx, "Recovery detected; shutdown countdown cancelled");
-  return true;
-}
-
 static monitor_step_result_t
-shutdown_fsm_handle_threshold(linkstay_ctx_t *restrict ctx,
-                              monitor_state_t *restrict state,
-                              uint64_t now_ms) {
-  if (ctx == NULL || state == NULL ||
+shutdown_fsm_handle_threshold(linkstay_ctx_t *restrict ctx) {
+  if (ctx == NULL ||
       ctx->consecutive_fails < ctx->config.fail_threshold) {
     return MONITOR_STEP_CONTINUE;
   }
@@ -584,45 +522,8 @@ shutdown_fsm_handle_threshold(linkstay_ctx_t *restrict ctx,
     ctx->consecutive_fails = 0;
     return MONITOR_STEP_CONTINUE;
   }
-  if (ctx->config.delay_minutes <= 0) {
-    return shutdown_fsm_execute(ctx) ? MONITOR_STEP_STOP
-                                     : MONITOR_STEP_CONTINUE;
-  }
-  if (monitor_shutdown_pending(state)) {
-    return MONITOR_STEP_CONTINUE;
-  }
-  uint64_t delay_ms = shutdown_fsm_config_delay_ms(&ctx->config);
-  if (delay_ms == 0 || delay_ms == UINT64_MAX) {
-    return monitor_runtime_error(
-        ctx, "Failed to compute delayed shutdown countdown duration");
-  }
-  if (!monitor_shutdown_arm(state, now_ms, delay_ms)) {
-    return monitor_runtime_error(ctx,
-                                 "Failed to compute shutdown countdown deadline");
-  }
-  log_shutdown_countdown(&ctx->logger, ctx->config.shutdown_mode,
-                         ctx->config.delay_minutes);
-  (void)monitor_notify_statusf(
-      ctx, "%s countdown started: %d minutes",
-      shutdown_mode_to_string(ctx->config.shutdown_mode),
-      ctx->config.delay_minutes);
-  return MONITOR_STEP_CONTINUE;
-}
-
-static monitor_step_result_t
-shutdown_fsm_handle_tick(linkstay_ctx_t *restrict ctx,
-                         monitor_state_t *restrict state, uint64_t now_ms) {
-  if (ctx == NULL || state == NULL || !monitor_shutdown_pending(state) ||
-      !monitor_shutdown_deadline_elapsed(state, now_ms)) {
-    return MONITOR_STEP_CONTINUE;
-  }
-  monitor_shutdown_clear(state);
-  logger_warn(&ctx->logger, "%s countdown elapsed; executing shutdown now",
-              shutdown_mode_to_string(ctx->config.shutdown_mode));
-  (void)monitor_notify_statusf(
-      ctx, "%s countdown elapsed; executing shutdown",
-      shutdown_mode_to_string(ctx->config.shutdown_mode));
-  return shutdown_fsm_execute(ctx) ? MONITOR_STEP_STOP : MONITOR_STEP_CONTINUE;
+  return shutdown_fsm_execute(ctx) ? MONITOR_STEP_STOP
+                                  : MONITOR_STEP_CONTINUE;
 }
 
 /* ---- Runtime helpers — static ---- */
@@ -634,7 +535,6 @@ static void handle_ping_success(linkstay_ctx_t *restrict ctx,
     return;
   }
   ctx->consecutive_fails = 0;
-  (void)shutdown_fsm_cancel(ctx, state);
   metrics_record_success(&ctx->metrics, result->latency_ms);
   logger_debug(&ctx->logger, "Ping successful to %s, latency: %.2fms",
                ctx->config.target, result->latency_ms);
@@ -730,7 +630,7 @@ monitor_handle_ping_timeout(linkstay_ctx_t *restrict ctx,
   ping_result_t timeout_result = {false, 0.0, "ICMP reply deadline exceeded"};
   handle_ping_failure(ctx, &timeout_result);
   monitor_ping_clear(state);
-  return shutdown_fsm_handle_threshold(ctx, state, now_ms);
+  return shutdown_fsm_handle_threshold(ctx);
 }
 
 static monitor_step_result_t monitor_send_ping(linkstay_ctx_t *restrict ctx,
@@ -1053,11 +953,7 @@ monitor_run_due_work(linkstay_ctx_t *restrict ctx,
     return MONITOR_STEP_ERROR;
   }
   monitor_step_result_t step_result =
-      shutdown_fsm_handle_tick(ctx, &loop->state, loop->now_ms);
-  if (step_result != MONITOR_STEP_CONTINUE) {
-    return step_result;
-  }
-  step_result = monitor_handle_watchdog(ctx, &loop->state, loop->now_ms);
+      monitor_handle_watchdog(ctx, &loop->state, loop->now_ms);
   if (step_result != MONITOR_STEP_CONTINUE) {
     return step_result;
   }

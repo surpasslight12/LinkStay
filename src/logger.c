@@ -127,18 +127,3 @@ void logger_log_va(const logger_t *restrict logger, log_level_t level,
   vsnprintf(buffer, sizeof(buffer), fmt, ap);
   log_message(logger, level, buffer);
 }
-
-void log_shutdown_countdown(const logger_t *restrict logger,
-                            shutdown_mode_t mode, int delay_minutes) {
-  if (logger == NULL) {
-    return;
-  }
-
-  if (mode == SHUTDOWN_MODE_DRY_RUN) {
-    logger_warn(logger, "Starting dry-run countdown for %d minutes",
-                delay_minutes);
-  } else if (mode == SHUTDOWN_MODE_TRUE_OFF) {
-    logger_warn(logger, "Starting true-off countdown for %d minutes",
-                delay_minutes);
-  }
-}

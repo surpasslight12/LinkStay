@@ -9,7 +9,7 @@
 ## 核心特性
 
 - **原生 ICMP 实现**：使用 raw socket + BPF 内核过滤，无需依赖系统 `ping` 命令
-- **灵活的关机策略**：支持 `dry-run`、`true-off`、`log-only` 三种模式，`--delay` 独立控制程序内倒计时
+- **灵活的关机策略**：支持 `dry-run`、`true-off`、`log-only` 三种模式，连续失败达到阈值立即触发关机
 - **systemd 深度集成**：支持 `sd_notify`、watchdog、状态通知；watchdog 随 systemd 自动启用
 - **高性能**：单一二进制文件 ≈ 48 KB，内存占用 < 5 MB，CPU 占用 < 1%
 - **安全加固**：编译期 Full RELRO、PIE、Stack Canary、NX、FORTIFY\_SOURCE；运行期 systemd 沙箱
@@ -35,7 +35,7 @@ sudo ./bin/LinkStay --target 1.1.1.1 --interval 10 --timeout 2000 \
 
 # 短选项示例：必选参数既可写成 "-i 5"，也可写成 "-i5"
 # 只有带可选参数的 -s 建议写成 -s0/-sfalse，或直接使用 --systemd=0/--systemd=false
-sudo ./bin/LinkStay -t 1.1.1.1 -i 5 -w 1000 -n 3 -m dry-run -d 0 -l debug -s0
+sudo ./bin/LinkStay -t 1.1.1.1 -i 5 -w 1000 -n 3 -m dry-run -l debug -s0
 ```
 
 ### 3. 可选：手动注册 systemd 服务
@@ -86,7 +86,6 @@ journalctl -fu LinkStay
 | 失败阈值 | `-n, --threshold, --fail-threshold` | `LINKSTAY_THRESHOLD` | `5` | 连续失败次数触发关机；兼容读取 `LINKSTAY_FAIL_THRESHOLD` |
 | 超时时间 | `-w, --timeout` | `LINKSTAY_TIMEOUT` | `2000`（ms） | 单次 ping 等待回包的超时，必须小于 interval |
 | 关机模式 | `-m, --mode` | `LINKSTAY_MODE` | `dry-run` | `dry-run` / `true-off` / `log-only` |
-| 倒计时分钟 | `-d, --delay` | `LINKSTAY_DELAY` | `0` | 程序内关机倒计时（分钟），范围 `0..525600`；`0` 表示立即执行；对 `log-only` 无效 |
 | 日志级别 | `-l, --log-level` | `LINKSTAY_LOG_LEVEL` | `info` | 规范值为 `silent` / `error` / `warn` / `info` / `debug`；兼容别名 `none=silent`、`warning=warn` |
 | systemd 集成 | `-s, --systemd` | `LINKSTAY_SYSTEMD` | `true` | 启用 `sd_notify`、watchdog 与状态通知；接受 `true/false/1/0/yes/no/on/off`；省略参数时等价于启用，禁用建议写 `--systemd=0`、`--systemd=false`、`-s0` 或 `-sfalse` |
 
@@ -94,26 +93,23 @@ journalctl -fu LinkStay
 
 短选项格式说明：
 
-- 必选参数既支持分开写法（如 `-i 5`、`-d 3`），也支持粘连写法（如 `-i5`、`-d3`）
+- 必选参数既支持分开写法（如 `-i 5`），也支持粘连写法（如 `-i5`）
 - `-s` 对应可选参数；若要显式关闭，推荐使用 `--systemd=0`、`--systemd=false`、`-s0` 或 `-sfalse`
 - `LINKSTAY_THRESHOLD` 兼容别名 `LINKSTAY_FAIL_THRESHOLD`；若两者同时设置且值不同，程序会拒绝启动以避免歧义
 
 ## 关机模式说明
 
 ### `dry-run`
-达到阈值后模拟关机流程，但不实际执行关机命令；**模拟动作完成后进程会退出**，以保持与真实关机路径一致。  
-`--delay > 0` 时先启动程序内倒计时；在倒计时结束前网络恢复可取消本次计划动作。
+达到阈值后模拟关机流程，但不实际执行关机命令；**模拟动作完成后进程会退出**，以保持与真实关机路径一致。
 
 ### `true-off`
-达到阈值后执行真正关机。  
+达到阈值后立即执行真正关机。  
 统一调用 `systemctl --no-block poweroff`，不再保留非 systemd 的关机后端。  
-该模式要求主机存在可用的 systemd 环境（`/usr/bin/systemctl` 与 `/run/systemd/system`）。  
-`--delay > 0` 时同样先进行程序内倒计时，届时立即执行关机。
+该模式要求主机存在可用的 systemd 环境（`/usr/bin/systemctl` 与 `/run/systemd/system`）。
 
 ### `log-only`
 阈值触发时只记录警告日志并**重置失败计数器**，进程持续监控，永不执行关机。  
-适用于将 LinkStay 作为纯网络探针或配合外部告警系统使用的场景；仓库内示例 `systemd/LinkStay.service` 默认就使用该模式。  
-由于达到阈值后会立即记录并重置计数器，`log-only` 模式下 `--delay` 没有语义，因此配置为非 `0` 时会被拒绝。
+适用于将 LinkStay 作为纯网络探针或配合外部告警系统使用的场景；仓库内示例 `systemd/LinkStay.service` 默认就使用该模式。
 
 ## 日志时间戳行为
 

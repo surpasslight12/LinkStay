@@ -17,7 +17,6 @@
 #define LINKSTAY_VERSION "1.0"
 #define LINKSTAY_PROGRAM_NAME "LinkStay"
 #define LINKSTAY_MS_PER_SEC UINT64_C(1000)
-#define LINKSTAY_MS_PER_MINUTE (UINT64_C(60) * LINKSTAY_MS_PER_SEC)
 #define LINKSTAY_SYSTEMD_MESSAGE_SIZE 256U
 #define LINKSTAY_SYSTEMD_STATUS_SIZE 240U
 #define LINKSTAY_STATUS_DEDUP_WINDOW_MS UINT64_C(2000)
@@ -70,7 +69,6 @@ typedef struct {
 
   /* Shutdown */
   shutdown_mode_t shutdown_mode;
-  int delay_minutes;
 
   /* Logging */
   log_level_t log_level;
@@ -219,8 +217,6 @@ DEFINE_LOGGER(logger_info, LOG_LEVEL_INFO, )
 DEFINE_LOGGER(logger_debug, LOG_LEVEL_DEBUG, )
 const char *log_level_to_string(log_level_t level);
 const char *shutdown_mode_to_string(shutdown_mode_t mode);
-void log_shutdown_countdown(const logger_t *restrict logger,
-                            shutdown_mode_t mode, int delay_minutes);
 uint64_t get_monotonic_ms(void);
 
 #endif // LINKSTAY_H
