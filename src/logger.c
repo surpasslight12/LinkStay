@@ -30,7 +30,7 @@ uint64_t get_monotonic_ms(void) {
   return timestamp;
 }
 
-static char *get_timestamp_str(char *restrict buffer, size_t size) {
+static char *logger_get_timestamp_str(char *restrict buffer, size_t size) {
   if (LINKSTAY_UNLIKELY(buffer == NULL || size == 0)) {
     return NULL;
   }
@@ -79,7 +79,7 @@ const char *log_level_to_string(log_level_t level) {
   }
 }
 
-static void log_message(const logger_t *restrict logger, log_level_t level,
+static void logger_log_message(const logger_t *restrict logger, log_level_t level,
                         const char *restrict msg) {
   if (LINKSTAY_UNLIKELY(logger == NULL || msg == NULL)) {
     return;
@@ -94,7 +94,7 @@ static void log_message(const logger_t *restrict logger, log_level_t level,
   }
   char timestamp[64];
   if (logger->enable_timestamp) {
-    if (get_timestamp_str(timestamp, sizeof(timestamp)) == NULL) {
+    if (logger_get_timestamp_str(timestamp, sizeof(timestamp)) == NULL) {
       timestamp[0] = '\0';
     }
   }
@@ -125,5 +125,5 @@ void logger_log_va(const logger_t *restrict logger, log_level_t level,
                    const char *restrict fmt, va_list ap) {
   char buffer[LINKSTAY_LOG_BUFFER_SIZE];
   vsnprintf(buffer, sizeof(buffer), fmt, ap);
-  log_message(logger, level, buffer);
+  logger_log_message(logger, level, buffer);
 }

@@ -12,7 +12,7 @@
 /* ICMP checksum — RFC 1071 one's-complement sum.  Internal to icmp.c.
  * Reads 16-bit words in native byte order (matches how the kernel verifies),
  * stores the result as a native uint16_t — no htons() needed. */
-static uint16_t calculate_checksum(const void *data, size_t len) {
+static uint16_t icmp_calculate_checksum(const void *data, size_t len) {
   const uint8_t *bytes = (const uint8_t *)data;
   uint32_t sum = 0;
 
@@ -76,7 +76,7 @@ icmp_receive_source_matches(const struct sockaddr_storage *restrict dest_addr,
                 sizeof(dest6->sin6_addr)) == 0;
 }
 
-static icmp_receive_status_t parse_ipv4_reply(const uint8_t *restrict recv_buf,
+static icmp_receive_status_t icmp_parse_ipv4_reply(const uint8_t *restrict recv_buf,
                                               size_t received,
                                               uint16_t identifier,
                                               uint16_t expected_sequence) {
@@ -110,7 +110,7 @@ static icmp_receive_status_t parse_ipv4_reply(const uint8_t *restrict recv_buf,
   return ICMP_RECEIVE_MATCHED;
 }
 
-static icmp_receive_status_t parse_ipv6_reply(const uint8_t *restrict recv_buf,
+static icmp_receive_status_t icmp_parse_ipv6_reply(const uint8_t *restrict recv_buf,
                                               size_t received,
                                               uint16_t identifier,
                                               uint16_t expected_sequence) {
@@ -207,7 +207,7 @@ void icmp_pinger_destroy(icmp_pinger_t *restrict pinger) {
 }
 
 /* Sequence 0 is reserved as the "not waiting" sentinel in monitor state. */
-static uint16_t next_sequence(icmp_pinger_t *restrict pinger) {
+static uint16_t icmp_next_sequence(icmp_pinger_t *restrict pinger) {
   if (pinger == NULL) {
     return 1;
   }
@@ -236,7 +236,7 @@ bool icmp_pinger_send_echo(icmp_pinger_t *restrict pinger,
     return false;
   }
 
-  next_sequence(pinger);
+  icmp_next_sequence(pinger);
 
   if (pinger->family == AF_INET6) {
     struct icmp6_hdr *icmp6_hdr = (struct icmp6_hdr *)pinger->send_buf;
@@ -252,7 +252,7 @@ bool icmp_pinger_send_echo(icmp_pinger_t *restrict pinger,
     icmp_hdr->code = 0;
     icmp_hdr->un.echo.id = htons(identifier);
     icmp_hdr->un.echo.sequence = htons(pinger->sequence);
-    icmp_hdr->checksum = calculate_checksum(pinger->send_buf, packet_len);
+    icmp_hdr->checksum = icmp_calculate_checksum(pinger->send_buf, packet_len);
   }
 
   ssize_t sent =
@@ -307,10 +307,10 @@ icmp_pinger_receive_reply(icmp_pinger_t *restrict pinger,
 
   icmp_receive_status_t status = ICMP_RECEIVE_IGNORED;
   if (dest_addr->ss_family == AF_INET) {
-    status = parse_ipv4_reply(recv_buf, (size_t)received, identifier,
+    status = icmp_parse_ipv4_reply(recv_buf, (size_t)received, identifier,
                               expected_sequence);
   } else if (dest_addr->ss_family == AF_INET6) {
-    status = parse_ipv6_reply(recv_buf, (size_t)received, identifier,
+    status = icmp_parse_ipv6_reply(recv_buf, (size_t)received, identifier,
                               expected_sequence);
   }
 
@@ -319,13 +319,14 @@ icmp_pinger_receive_reply(icmp_pinger_t *restrict pinger,
     /* Guard against impossible clock skew before recording latency. */
     out_result->latency_ms =
         (now_ms >= send_time_ms) ? (double)(now_ms - send_time_ms) : 0.0;
+    out_result->sequence = expected_sequence;
     out_result->error_msg[0] = '\0';
   }
 
   return status;
 }
 
-bool resolve_target(const char *restrict target,
+bool icmp_resolve_target(const char *restrict target,
                     struct sockaddr_storage *restrict addr,
                     socklen_t *restrict addr_len, char *restrict error_msg,
                     size_t error_size) {

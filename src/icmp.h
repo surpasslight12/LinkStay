@@ -19,6 +19,7 @@ typedef struct {
   bool success;
   double latency_ms;
   char error_msg[256];
+  uint16_t sequence; /* ICMP echo sequence number of the matched reply */
 } ping_result_t;
 
 typedef enum {
@@ -60,7 +61,7 @@ icmp_receive_status_t icmp_pinger_receive_reply(
     const struct sockaddr_storage *restrict dest_addr, uint16_t identifier,
     uint16_t expected_sequence, uint64_t send_time_ms, uint64_t now_ms,
     ping_result_t *restrict out_result);
-[[nodiscard]] bool resolve_target(const char *restrict target,
+[[nodiscard]] bool icmp_resolve_target(const char *restrict target,
                                   struct sockaddr_storage *restrict addr,
                                   socklen_t *restrict addr_len,
                                   char *restrict error_msg, size_t error_size);

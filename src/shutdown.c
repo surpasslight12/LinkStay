@@ -40,7 +40,8 @@ static bool shutdown_should_execute(const config_t *restrict config,
   }
 
   if (config->shutdown_mode == SHUTDOWN_MODE_DRY_RUN) {
-    logger_info(logger, "[DRY-RUN] Would trigger shutdown now");
+    logger_info(logger,
+                "[DRY-RUN] Would power off the system now (no action taken)");
     return false;
   }
 
@@ -80,7 +81,7 @@ shutdown_consume_child_status(pid_t child_pid, pid_t wait_result, int status,
   if (WIFEXITED(status)) {
     int exit_code = WEXITSTATUS(status);
     if (exit_code == 0) {
-      logger_info(logger, "Shutdown command executed successfully");
+      logger_info(logger, "Shutdown command accepted by systemd");
       return SHUTDOWN_RESULT_TRIGGERED;
     }
 
@@ -237,7 +238,7 @@ shutdown_result_t shutdown_trigger(const config_t *config,
     return SHUTDOWN_RESULT_NO_ACTION;
   }
 
-  logger_warn(logger, "Shutdown threshold reached, mode is %s",
+  logger_warn(logger, "Failure threshold reached, shutdown mode is %s",
               shutdown_mode_to_string(config->shutdown_mode));
 
   if (!shutdown_should_execute(config, logger)) {
@@ -250,6 +251,6 @@ shutdown_result_t shutdown_trigger(const config_t *config,
     return SHUTDOWN_RESULT_FAILED;
   }
 
-  logger_warn(logger, "Triggering shutdown now");
+  logger_warn(logger, "Triggering system shutdown now");
   return shutdown_execute_command(argv, logger);
 }

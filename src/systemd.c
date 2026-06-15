@@ -11,7 +11,7 @@
 #define LINKSTAY_NOTIFY_RETRY_COUNT 3
 #define LINKSTAY_NOTIFY_RETRY_NS 10000000L
 
-static bool parse_uint64_value(const char *restrict value,
+static bool systemd_parse_uint64_value(const char *restrict value,
                                uint64_t *restrict out_value) {
   if (value == NULL || out_value == NULL) {
     return false;
@@ -33,7 +33,7 @@ static bool parse_uint64_value(const char *restrict value,
   return true;
 }
 
-static bool watchdog_pid_matches_current_process(void) {
+static bool systemd_watchdog_pid_matches_self(void) {
   const char *watchdog_pid_str = getenv("WATCHDOG_PID");
   /* Unset means systemd did not request PID pinning, which is acceptable. */
   if (watchdog_pid_str == NULL || watchdog_pid_str[0] == '\0') {
@@ -51,7 +51,7 @@ static bool watchdog_pid_matches_current_process(void) {
   return (pid_t)parsed_pid == getpid();
 }
 
-static bool build_systemd_addr(const char *restrict socket_path,
+static bool systemd_build_addr(const char *restrict socket_path,
                                struct sockaddr_un *restrict addr,
                                socklen_t *restrict addr_len) {
   if (socket_path == NULL || addr == NULL || addr_len == NULL) {
@@ -85,7 +85,7 @@ static bool build_systemd_addr(const char *restrict socket_path,
   return true;
 }
 
-static bool send_notify(systemd_notifier_t *restrict notifier,
+static bool systemd_send_notify(systemd_notifier_t *restrict notifier,
                         const char *restrict message) {
   if (LINKSTAY_UNLIKELY(notifier == NULL || message == NULL ||
                         !notifier->enabled)) {
@@ -140,7 +140,7 @@ void systemd_notifier_init(systemd_notifier_t *restrict notifier) {
 
   struct sockaddr_un addr;
   socklen_t addr_len;
-  if (!build_systemd_addr(socket_path, &addr, &addr_len)) {
+  if (!systemd_build_addr(socket_path, &addr, &addr_len)) {
     close(notifier->sockfd);
     notifier->sockfd = -1;
     return;
@@ -159,9 +159,9 @@ void systemd_notifier_init(systemd_notifier_t *restrict notifier) {
   notifier->enabled = true;
 
   const char *watchdog_str = getenv("WATCHDOG_USEC");
-  if (watchdog_str != NULL && watchdog_pid_matches_current_process()) {
+  if (watchdog_str != NULL && systemd_watchdog_pid_matches_self()) {
     uint64_t parsed_watchdog_usec = 0;
-    if (parse_uint64_value(watchdog_str, &parsed_watchdog_usec)) {
+    if (systemd_parse_uint64_value(watchdog_str, &parsed_watchdog_usec)) {
       notifier->watchdog_usec = parsed_watchdog_usec;
     }
   }
@@ -185,7 +185,7 @@ bool systemd_notifier_is_enabled(const systemd_notifier_t *restrict notifier) {
 }
 
 bool systemd_notifier_ready(systemd_notifier_t *restrict notifier) {
-  return send_notify(notifier, "READY=1");
+  return systemd_send_notify(notifier, "READY=1");
 }
 
 bool systemd_notifier_status(systemd_notifier_t *restrict notifier,
@@ -207,7 +207,7 @@ bool systemd_notifier_status(systemd_notifier_t *restrict notifier,
   char message[LINKSTAY_SYSTEMD_MESSAGE_SIZE];
   snprintf(message, sizeof(message), "STATUS=%.*s",
            (int)LINKSTAY_SYSTEMD_STATUS_SIZE - 1, status);
-  bool ok = send_notify(notifier, message);
+  bool ok = systemd_send_notify(notifier, message);
   if (ok) {
     snprintf(notifier->last_status, sizeof(notifier->last_status), "%s",
              status);
@@ -217,7 +217,7 @@ bool systemd_notifier_status(systemd_notifier_t *restrict notifier,
 }
 
 bool systemd_notifier_stopping(systemd_notifier_t *restrict notifier) {
-  return send_notify(notifier, "STOPPING=1");
+  return systemd_send_notify(notifier, "STOPPING=1");
 }
 
 bool systemd_notifier_watchdog(systemd_notifier_t *restrict notifier) {
@@ -225,7 +225,7 @@ bool systemd_notifier_watchdog(systemd_notifier_t *restrict notifier) {
                         notifier->watchdog_usec == 0)) {
     return false;
   }
-  return send_notify(notifier, "WATCHDOG=1");
+  return systemd_send_notify(notifier, "WATCHDOG=1");
 }
 
 uint64_t systemd_notifier_watchdog_interval_ms(

@@ -51,7 +51,7 @@ typedef enum {
 #define LINKSTAY_MAX_REPLY_DRAIN_PER_TICK 32U
 #define LINKSTAY_POLL_FD_COUNT 2
 
-static uint64_t config_duration_ms(int value, uint64_t scale_ms) {
+static uint64_t monitor_duration_ms(int value, uint64_t scale_ms) {
   if (value <= 0) {
     return 0;
   }
@@ -276,12 +276,15 @@ static bool shutdown_fsm_execute(linkstay_ctx_t *restrict ctx) {
   }
   shutdown_result_t result = shutdown_trigger(&ctx->config, &ctx->logger);
   if (ctx->config.shutdown_mode == SHUTDOWN_MODE_DRY_RUN) {
-    logger_info(&ctx->logger, "Shutdown triggered, exiting monitor loop");
+    logger_info(&ctx->logger,
+                "Dry-run complete: simulated shutdown reached, exiting monitor "
+                "loop");
     return true;
   }
   if (result != SHUTDOWN_RESULT_TRIGGERED) {
-    logger_error(&ctx->logger, "Shutdown command failed; continuing monitoring "
-                               "with failure count preserved");
+    logger_error(&ctx->logger,
+                 "Shutdown command failed; continuing monitoring with failure "
+                 "count preserved");
     return false;
   }
   logger_info(&ctx->logger, "Shutdown triggered, exiting monitor loop");
@@ -295,8 +298,10 @@ shutdown_fsm_handle_threshold(linkstay_ctx_t *restrict ctx) {
     return MONITOR_STEP_CONTINUE;
   }
   if (ctx->config.shutdown_mode == SHUTDOWN_MODE_LOG_ONLY) {
-    logger_warn(&ctx->logger, "Log-only mode: failure threshold reached, "
-                              "continuing monitoring without shutdown");
+    logger_warn(&ctx->logger,
+                "Log-only mode: %s unreachable after %d consecutive failures; "
+                "continuing without shutdown (failure counter reset)",
+                ctx->config.target, ctx->config.fail_threshold);
     ctx->consecutive_fails = 0;
     return MONITOR_STEP_CONTINUE;
   }
@@ -306,22 +311,31 @@ shutdown_fsm_handle_threshold(linkstay_ctx_t *restrict ctx) {
 
 /* ---- Runtime helpers — static ---- */
 
-static void handle_ping_success(linkstay_ctx_t *restrict ctx,
+static void monitor_handle_ping_success(linkstay_ctx_t *restrict ctx,
                                 const ping_result_t *restrict result) {
   if (ctx == NULL || result == NULL) {
     return;
   }
   ctx->consecutive_fails = 0;
   metrics_record_success(&ctx->metrics, result->latency_ms);
-  logger_debug(&ctx->logger, "Ping successful to %s, latency: %.2fms",
-               ctx->config.target, result->latency_ms);
+  logger_debug(&ctx->logger,
+               "Reply from %s: seq=%u time=%.2fms (avg %.2fms, %" PRIu64
+               "/%" PRIu64 " OK, %.1f%% success)",
+               ctx->config.target, (unsigned)result->sequence,
+               result->latency_ms, metrics_avg_latency(&ctx->metrics),
+               ctx->metrics.successful_pings, ctx->metrics.total_pings,
+               metrics_success_rate(&ctx->metrics));
   (void)monitor_notify_statusf(
-      ctx, "OK: %" PRIu64 "/%" PRIu64 " pings (%.1f%%), latency %.2fms",
+      ctx,
+      "Online: %s up %" PRIu64 "s, last %.2fms, avg %.2fms, %" PRIu64 "/%" PRIu64
+      " OK (%.1f%%)",
+      ctx->config.target, metrics_uptime_seconds(&ctx->metrics),
+      result->latency_ms, metrics_avg_latency(&ctx->metrics),
       ctx->metrics.successful_pings, ctx->metrics.total_pings,
-      metrics_success_rate(&ctx->metrics), result->latency_ms);
+      metrics_success_rate(&ctx->metrics));
 }
 
-static void handle_ping_failure(linkstay_ctx_t *restrict ctx,
+static void monitor_handle_ping_failure(linkstay_ctx_t *restrict ctx,
                                 const ping_result_t *restrict result) {
   if (ctx == NULL || result == NULL) {
     return;
@@ -329,10 +343,11 @@ static void handle_ping_failure(linkstay_ctx_t *restrict ctx,
   ctx->consecutive_fails++;
   int consecutive_failures = ctx->consecutive_fails;
   metrics_record_failure(&ctx->metrics);
-  logger_warn(&ctx->logger, "Ping failed to %s: %s (consecutive failures: %d)",
-              ctx->config.target, result->error_msg, consecutive_failures);
+  logger_warn(&ctx->logger, "No reply from %s: %s (failure %d of %d)",
+              ctx->config.target, result->error_msg, consecutive_failures,
+              ctx->config.fail_threshold);
   (void)monitor_notify_statusf(
-      ctx, "WARNING: %d consecutive failures, threshold is %d",
+      ctx, "Unreachable: %s, %d/%d consecutive failures", ctx->config.target,
       consecutive_failures, ctx->config.fail_threshold);
 }
 
@@ -348,7 +363,7 @@ monitor_runtime_error(linkstay_ctx_t *restrict ctx, const char *restrict fmt,
   vsnprintf(error_msg, sizeof(error_msg), fmt, args);
   va_end(args);
   logger_error(&ctx->logger, "%s", error_msg);
-  (void)monitor_notify_statusf(ctx, "ERROR: %s", error_msg);
+  (void)monitor_notify_statusf(ctx, "Error: %s", error_msg);
   return MONITOR_STEP_ERROR;
 }
 
@@ -379,22 +394,22 @@ static void monitor_log_stats(linkstay_ctx_t *restrict ctx) {
   const metrics_t *metrics = &ctx->metrics;
   if (metrics->successful_pings > 0) {
     logger_info(&ctx->logger,
-                "Statistics: %" PRIu64 " total pings, %" PRIu64
-                " successful, %" PRIu64
-                " failed (%.2f%% success rate), latency min %.2fms / max "
-                "%.2fms / avg %.2fms, uptime %" PRIu64 " seconds",
-                metrics->total_pings, metrics->successful_pings,
-                metrics->failed_pings, metrics_success_rate(metrics),
-                metrics->min_latency, metrics->max_latency,
-                metrics_avg_latency(metrics), metrics_uptime_seconds(metrics));
+                "Statistics: uptime %" PRIu64 "s | %" PRIu64 " pings, %" PRIu64
+                " OK, %" PRIu64
+                " failed (%.2f%% success) | latency min %.2fms, avg %.2fms, "
+                "max %.2fms",
+                metrics_uptime_seconds(metrics), metrics->total_pings,
+                metrics->successful_pings, metrics->failed_pings,
+                metrics_success_rate(metrics), metrics->min_latency,
+                metrics_avg_latency(metrics), metrics->max_latency);
     return;
   }
   logger_info(&ctx->logger,
-              "Statistics: %" PRIu64 " total pings, 0 successful, %" PRIu64
-              " failed (0.00%% success rate), latency N/A, uptime %" PRIu64
-              " seconds",
-              metrics->total_pings, metrics->failed_pings,
-              metrics_uptime_seconds(metrics));
+              "Statistics: uptime %" PRIu64 "s | %" PRIu64
+              " pings, 0 OK, %" PRIu64
+              " failed (0.00%% success) | latency N/A",
+              metrics_uptime_seconds(metrics), metrics->total_pings,
+              metrics->failed_pings);
 }
 
 static monitor_step_result_t
@@ -404,8 +419,11 @@ monitor_handle_ping_timeout(linkstay_ctx_t *restrict ctx,
       !monitor_ping_deadline_elapsed(state, now_ms)) {
     return MONITOR_STEP_CONTINUE;
   }
-  ping_result_t timeout_result = {false, 0.0, "ICMP reply deadline exceeded"};
-  handle_ping_failure(ctx, &timeout_result);
+  ping_result_t timeout_result = {.success = false,
+                                  .latency_ms = 0.0,
+                                  .error_msg = "ICMP reply deadline exceeded",
+                                  .sequence = 0};
+  monitor_handle_ping_failure(ctx, &timeout_result);
   monitor_ping_clear(state);
   return shutdown_fsm_handle_threshold(ctx);
 }
@@ -417,7 +435,8 @@ static monitor_step_result_t monitor_send_ping(linkstay_ctx_t *restrict ctx,
   if (ctx == NULL || state == NULL) {
     return MONITOR_STEP_ERROR;
   }
-  ping_result_t error_result = {false, -1.0, {0}};
+  ping_result_t error_result = {
+      .success = false, .latency_ms = -1.0, .error_msg = {0}, .sequence = 0};
   if (!icmp_pinger_send_echo(
           &ctx->pinger, &ctx->dest_addr, ctx->dest_addr_len, ctx->cached_pid,
           packet_len, error_result.error_msg, sizeof(error_result.error_msg))) {
@@ -453,7 +472,7 @@ monitor_drain_icmp_replies(linkstay_ctx_t *restrict ctx, uint64_t now_ms,
                                    reply.error_msg);
     }
     if (status == ICMP_RECEIVE_MATCHED && monitor_ping_waiting(state)) {
-      handle_ping_success(ctx, &reply);
+      monitor_handle_ping_success(ctx, &reply);
       monitor_ping_clear(state);
       return MONITOR_STEP_CONTINUE;
     }
@@ -477,7 +496,7 @@ typedef struct {
   uint64_t now_ms;
 } monitor_loop_t;
 
-static bool pollfd_has_error(short revents) {
+static bool monitor_pollfd_has_error(short revents) {
   return (revents & (POLLERR | POLLHUP | POLLNVAL)) != 0;
 }
 
@@ -643,11 +662,11 @@ static monitor_step_result_t monitor_handle_poll_events(
   if (refresh_result != MONITOR_STEP_CONTINUE) {
     return refresh_result;
   }
-  if (pollfd_has_error(fds[0].revents)) {
+  if (monitor_pollfd_has_error(fds[0].revents)) {
     logger_error(&ctx->logger, "Signal fd entered error state");
     return MONITOR_STEP_ERROR;
   }
-  if (pollfd_has_error(fds[1].revents)) {
+  if (monitor_pollfd_has_error(fds[1].revents)) {
     logger_error(&ctx->logger, "ICMP socket entered error state");
     return MONITOR_STEP_ERROR;
   }
@@ -682,7 +701,7 @@ static bool monitor_loop_init(linkstay_ctx_t *restrict ctx,
     return false;
   }
   uint64_t interval_ms =
-      config_duration_ms(ctx->config.interval_sec, LINKSTAY_MS_PER_SEC);
+      monitor_duration_ms(ctx->config.interval_sec, LINKSTAY_MS_PER_SEC);
   if (!monitor_refresh_time(&loop->now_ms) || interval_ms == 0 ||
       interval_ms == UINT64_MAX) {
     logger_error(&ctx->logger, "Failed to initialize monotonic timing state");
@@ -735,10 +754,17 @@ static void monitor_log_startup(linkstay_ctx_t *restrict ctx) {
   if (ctx == NULL) {
     return;
   }
-  logger_info(&ctx->logger, "Starting LinkStay for target %s, every %ds",
-              ctx->config.target, ctx->config.interval_sec);
+  logger_info(&ctx->logger,
+              "LinkStay %s monitoring %s | interval %ds, timeout %dms, "
+              "threshold %d, mode %s",
+              LINKSTAY_VERSION, ctx->config.target, ctx->config.interval_sec,
+              ctx->config.timeout_ms, ctx->config.fail_threshold,
+              shutdown_mode_to_string(ctx->config.shutdown_mode));
   (void)monitor_notify_ready(ctx);
-  (void)monitor_notify_statusf(ctx, "Monitoring %s", ctx->config.target);
+  (void)monitor_notify_statusf(
+      ctx, "Monitoring %s every %ds (mode %s)", ctx->config.target,
+      ctx->config.interval_sec,
+      shutdown_mode_to_string(ctx->config.shutdown_mode));
 }
 
 static void monitor_log_shutdown(linkstay_ctx_t *restrict ctx, int exit_code) {
@@ -747,7 +773,7 @@ static void monitor_log_shutdown(linkstay_ctx_t *restrict ctx, int exit_code) {
   }
   if (ctx->stop_flag) {
     logger_info(&ctx->logger,
-                "Received shutdown signal, stopping gracefully...");
+                "Shutdown signal received, stopping gracefully");
     if (runtime_services_is_enabled(&ctx->services)) {
       (void)runtime_services_notify_stopping(&ctx->services);
     }
@@ -778,7 +804,7 @@ bool linkstay_ctx_init(linkstay_ctx_t *restrict ctx,
     config_print(&ctx->config, &ctx->logger);
   }
   ctx->dest_addr_len = sizeof(ctx->dest_addr);
-  if (!resolve_target(ctx->config.target, &ctx->dest_addr, &ctx->dest_addr_len,
+  if (!icmp_resolve_target(ctx->config.target, &ctx->dest_addr, &ctx->dest_addr_len,
                       error_msg, error_size)) {
     return false;
   }
@@ -790,15 +816,20 @@ bool linkstay_ctx_init(linkstay_ctx_t *restrict ctx,
   runtime_services_init(&ctx->services, &ctx->systemd,
                         ctx->config.enable_systemd);
   if (!runtime_services_is_enabled(&ctx->services)) {
-    logger_debug(&ctx->logger, "systemd not detected, integration disabled");
+    logger_debug(&ctx->logger,
+                 "systemd integration inactive (NOTIFY_SOCKET not set)");
     return true;
   }
   uint64_t watchdog_interval_ms =
       runtime_services_watchdog_interval_ms(&ctx->services);
-  logger_debug(&ctx->logger, "systemd integration enabled");
   if (watchdog_interval_ms > 0) {
-    logger_debug(&ctx->logger, "watchdog interval: %" PRIu64 "ms",
+    logger_debug(&ctx->logger,
+                 "systemd integration active, watchdog ping every %" PRIu64
+                 "ms",
                  watchdog_interval_ms);
+  } else {
+    logger_debug(&ctx->logger,
+                 "systemd integration active, watchdog disabled");
   }
   return true;
 }
