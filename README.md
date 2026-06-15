@@ -185,18 +185,21 @@ sudo ./bin/LinkStay --target 1.1.1.1 --mode dry-run
 
 ```
 src/
-├── linkstay.h          # 公共类型与 API 声明
-├── config.c           # 配置默认值、CLI/环境变量解析、usage/version、校验
-├── monitor.c          # 监控主循环（metrics、状态机、shutdown FSM、reactor）
-├── icmp.c             # ICMP raw socket、BPF 过滤、校验和
-├── logger.c           # 日志、单调时钟、时间戳
-├── shutdown.c         # 关机执行（posix_spawn）
-├── systemd.c          # systemd notify socket 集成
-├── monitor.h          # monitor 模块公开 API
+├── common.h           # 基础层：宏、常量、单调时钟声明、静态断言
+├── logger.{h,c}       # 分级日志、单调时钟、时间戳
+├── metrics.{h,c}      # ping 统计指标聚合
+├── config.{h,c}       # 配置默认值、CLI/环境变量解析、usage/version、校验
+├── icmp.{h,c}         # ICMP raw socket、BPF 过滤、校验和、回包匹配
+├── shutdown.{h,c}     # 关机执行（posix_spawn + 启动观测）
+├── systemd.{h,c}      # systemd notify socket 集成
+├── runtime.{h,c}      # 运行时服务抽象（systemd 后端可插拔）
+├── monitor.{h,c}      # reactor 主循环、定时器状态机、shutdown FSM、编排
 └── main.c             # 入口
 systemd/
 └── LinkStay.service  # systemd unit 文件
 ```
+
+模块按层次组织：`common.h` 位于底层，上层模块各自拥有独立头文件，`monitor.h` 聚合所有模块并定义共享运行时对象 `linkstay_ctx_t`。
 
 ## 许可证
 

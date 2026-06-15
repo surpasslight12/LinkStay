@@ -1,4 +1,4 @@
-#include "linkstay.h"
+#include "config.h"
 
 #include <arpa/inet.h>
 #include <errno.h>

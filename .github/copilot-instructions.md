@@ -10,11 +10,13 @@
 
 - `src/main.c` is a thin entry point: `config_resolve()` parses defaults, environment, and CLI; `linkstay_ctx_init()` wires runtime state; `linkstay_reactor_run()` owns the monitor lifecycle.
 - `src/config.c` is a single configuration module: defaults, environment parsing, getopt-based CLI parsing, `--help` / `--version`, validation, and config debug rendering live together.
-- `src/monitor.c` is the core of the program. It implements the reactor loop, metrics, signal handling, ping scheduling, reply deadlines, and systemd watchdog scheduling in one place. The loop uses `poll()` plus `signalfd`, not threaded workers.
+- `src/monitor.c` is the core orchestration: the reactor loop, signal handling, ping scheduling, reply deadlines, shutdown FSM, and systemd watchdog scheduling. The loop uses `poll()` plus `signalfd`, not threaded workers. Ping statistics and the runtime-services abstraction have been factored out into `src/metrics.c` and `src/runtime.c` respectively.
+- `src/metrics.c` aggregates ping statistics (counts, latency extremes, uptime) behind a small value type.
+- `src/runtime.c` is the runtime-services abstraction: it adapts integration backends (currently systemd) to a type-safe vtable so the monitor loop stays backend-agnostic.
 - `src/icmp.c` owns raw-socket ICMP send/receive logic, packet construction, reply matching, and optional BPF socket filters for IPv4/IPv6 traffic.
 - `src/shutdown.c` is the shutdown backend layer. It invokes `systemctl poweroff` for `true-off`, preserves dry-run and log-only behavior, and uses `posix_spawn()` plus startup observation instead of shelling out.
 - `src/systemd.c` implements `sd_notify`-style integration directly over the notify socket. `systemd/LinkStay.service` expects this with `Type=notify`, `NotifyAccess=main`, and `WatchdogSec=30`; the shipped sample unit defaults to `LINKSTAY_MODE=log-only` so monitoring remains persistent until operators explicitly switch to `true-off`.
-- `linkstay_ctx_t` in `src/linkstay.h` is the shared runtime object: config, resolved destination address, logger, metrics, ICMP state, and runtime services live there.
+- Headers are organized as a layered hierarchy: `src/common.h` is the dependency-free foundation; each module owns its own header (`logger.h`, `metrics.h`, `config.h`, `icmp.h`, `shutdown.h`, `systemd.h`, `runtime.h`); `src/monitor.h` aggregates them and defines `linkstay_ctx_t`, the shared runtime object holding config, resolved destination address, logger, metrics, ICMP state, and runtime services.
 
 ## CLI options and environment variables
 
@@ -42,7 +44,7 @@ Config precedence: defaults → environment variables → CLI arguments. `config
 - `dry-run` is a terminal simulation path: once the threshold is reached and the simulated shutdown path completes, the process exits. Use `log-only` for persistent safe monitoring.
 - Log timestamps are derived from systemd integration state, not a separate config knob: timestamps are disabled when systemd logging is enabled and enabled otherwise.
 - The codebase prefers stack buffers and caller-owned error buffers over heap allocation. Many public functions follow `(..., char *restrict error_msg, size_t error_size)` and return `bool`/enum status.
-- `src/linkstay.h` is the central contract header. Keep shared enums, constants, structs, and true public declarations there, but keep monitor/runtime orchestration helpers inside `monitor.c` unless another translation unit genuinely needs them.
+- Headers form a layered hierarchy rooted at `src/common.h` (no LinkStay dependencies). Each module owns a focused header; put shared enums, constants, structs, and public declarations in the header of the module that owns them, and keep monitor/runtime orchestration helpers `static` inside `monitor.c` unless another translation unit genuinely needs them.
 - The monitor logic is timer/state-machine driven. `monitor.c` tracks ping reply deadlines, next-ping scheduling, and watchdog notifications as explicit timer structs instead of sleeping loops or threads.
 - systemd support is intentionally abstracted through `runtime_services_t`. New runtime integrations should fit that abstraction instead of adding ad hoc branches throughout the monitor loop.
 - The runtime_services function pointers use type-safe `void *` wrapper functions (not casts) to avoid UB per C23 §6.5.2.2. Follow this pattern for new backends.

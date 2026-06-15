@@ -1,4 +1,5 @@
-#include "linkstay.h"
+#include "config.h"
+#include "logger.h"
 #include "monitor.h"
 
 int main(int argc, char **argv) {
