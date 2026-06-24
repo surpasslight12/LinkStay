@@ -41,6 +41,19 @@ CapabilityBoundingSet=CAP_NET_RAW
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
+UMask=0077
+
+# ── Kernel & Privilege Hardening ──────────────────────────────────────────────
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
 
 # ── Network / Syscall Restrictions ────────────────────────────────────────────
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK

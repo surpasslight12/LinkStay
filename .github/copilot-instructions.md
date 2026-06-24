@@ -5,6 +5,7 @@
 - Build the binary with `make`. The output is `bin/LinkStay`.
 - Build a stripped release binary with `make release`.
 - Run linters with `make lint` (`cppcheck` + `clang-tidy`). At the current baseline this command completes but reports existing findings, so do not assume the repository is lint-clean before your changes.
+- Source layout is split: all public headers live in `include/` and all translation units (`.c`) live in `src/`. The Makefile adds `-Iinclude` so quoted includes such as `#include "monitor.h"` resolve without relative paths.
 
 ## High-level architecture
 
@@ -16,7 +17,7 @@
 - `src/icmp.c` owns raw-socket ICMP send/receive logic, packet construction, reply matching, and optional BPF socket filters for IPv4/IPv6 traffic.
 - `src/shutdown.c` is the shutdown backend layer. It invokes `systemctl poweroff` for `true-off`, preserves dry-run and log-only behavior, and uses `posix_spawn()` plus startup observation instead of shelling out.
 - `src/systemd.c` implements `sd_notify`-style integration directly over the notify socket. `systemd/LinkStay.service` expects this with `Type=notify`, `NotifyAccess=main`, and `WatchdogSec=30`; the shipped sample unit defaults to `LINKSTAY_MODE=log-only` so monitoring remains persistent until operators explicitly switch to `true-off`.
-- Headers are organized as a layered hierarchy: `src/common.h` is the dependency-free foundation; each module owns its own header (`logger.h`, `metrics.h`, `config.h`, `icmp.h`, `shutdown.h`, `systemd.h`, `runtime.h`); `src/monitor.h` aggregates them and defines `linkstay_ctx_t`, the shared runtime object holding config, resolved destination address, logger, metrics, ICMP state, and runtime services.
+- Headers are organized as a layered hierarchy under `include/`: `include/common.h` is the dependency-free foundation; each module owns its own header (`logger.h`, `metrics.h`, `config.h`, `icmp.h`, `shutdown.h`, `systemd.h`, `runtime.h`); `include/monitor.h` aggregates them and defines `linkstay_ctx_t`, the shared runtime object holding config, resolved destination address, logger, metrics, ICMP state, and runtime services. The matching `.c` implementations live in `src/`.
 
 ## CLI options and environment variables
 
@@ -44,7 +45,7 @@ Config precedence: defaults → environment variables → CLI arguments. `config
 - `dry-run` is a terminal simulation path: once the threshold is reached and the simulated shutdown path completes, the process exits. Use `log-only` for persistent safe monitoring.
 - Log timestamps are derived from systemd integration state, not a separate config knob: timestamps are disabled when systemd logging is enabled and enabled otherwise.
 - The codebase prefers stack buffers and caller-owned error buffers over heap allocation. Many public functions follow `(..., char *restrict error_msg, size_t error_size)` and return `bool`/enum status.
-- Headers form a layered hierarchy rooted at `src/common.h` (no LinkStay dependencies). Each module owns a focused header; put shared enums, constants, structs, and public declarations in the header of the module that owns them, and keep monitor/runtime orchestration helpers `static` inside `monitor.c` unless another translation unit genuinely needs them.
+- Headers form a layered hierarchy rooted at `include/common.h` (no LinkStay dependencies) and live in `include/`, while implementations live in `src/`. Each module owns a focused header; put shared enums, constants, structs, and public declarations in the header of the module that owns them, and keep monitor/runtime orchestration helpers `static` inside `monitor.c` unless another translation unit genuinely needs them.
 - The monitor logic is timer/state-machine driven. `monitor.c` tracks ping reply deadlines, next-ping scheduling, and watchdog notifications as explicit timer structs instead of sleeping loops or threads.
 - systemd support is intentionally abstracted through `runtime_services_t`. New runtime integrations should fit that abstraction instead of adding ad hoc branches throughout the monitor loop.
 - The runtime_services function pointers use type-safe `void *` wrapper functions (not casts) to avoid UB per C23 §6.5.2.2. Follow this pattern for new backends.

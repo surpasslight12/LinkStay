@@ -1,6 +1,7 @@
 CC ?= gcc
 BIN_DIR ?= bin
 SRC_DIR ?= src
+INC_DIR ?= include
 TARGET := $(BIN_DIR)/LinkStay
 
 WARN_CFLAGS := -Wall -Wextra -Wpedantic \
@@ -18,7 +19,8 @@ CFLAGS ?= $(WARN_CFLAGS) $(OPT_CFLAGS) $(CODEGEN_CFLAGS)
 
 REQUIRED_CFLAGS := -std=c23 -fstack-protector-strong -fPIE \
                    -D_FORTIFY_SOURCE=3 \
-                   -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
+                   -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+                   -I$(INC_DIR)
 
 ifneq ($(PORTABLE),1)
   CFLAGS += -march=native -mtune=native
@@ -54,7 +56,7 @@ $(TARGET): $(OBJS)
 
 lint:
 	@echo "==> Linting code..."
-	@cppcheck --enable=all --suppress=missingIncludeSystem $(SRC_DIR)/*.c
+	@cppcheck --enable=all --suppress=missingIncludeSystem -I$(INC_DIR) $(SRC_DIR)/*.c
 	@clang-tidy $(SRC_DIR)/*.c -- $(CFLAGS) $(REQUIRED_CFLAGS)
 
 clean:

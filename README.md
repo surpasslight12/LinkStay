@@ -1,6 +1,5 @@
 # LinkStay - 高性能网络监控工具
 
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![C23](https://img.shields.io/badge/C-23-blue.svg)](https://en.wikipedia.org/wiki/C23_(C_standard_revision))
 [![systemd](https://img.shields.io/badge/systemd-integrated-green.svg)](https://systemd.io/)
 
@@ -174,6 +173,10 @@ sudo ./bin/LinkStay --target 1.1.1.1 --mode dry-run
 | `PrivateTmp=true` | 隔离 /tmp |
 | `ProtectSystem=strict` | 只读挂载 /usr、/boot、/etc |
 | `ProtectHome=true` | 隐藏 /home |
+| `UMask=0077` | 收紧新建文件权限 |
+| `ProtectKernelTunables` / `ProtectKernelModules` / `ProtectKernelLogs` | 禁止改写内核参数、加载模块、读取内核日志 |
+| `ProtectControlGroups` / `ProtectClock` / `ProtectHostname` | 保护 cgroup、系统时钟与主机名 |
+| `RestrictRealtime` / `RestrictSUIDSGID` / `RestrictNamespaces` / `LockPersonality` | 禁用实时调度、SUID/SGID、命名空间与 personality 切换 |
 | `RestrictAddressFamilies` | 仅允许 AF_UNIX、AF_INET、AF_INET6、AF_NETLINK |
 | `SystemCallFilter` | 白名单 @system-service @network-io @process |
 
@@ -184,23 +187,28 @@ sudo ./bin/LinkStay --target 1.1.1.1 --mode dry-run
 ## 项目结构
 
 ```
-src/
+include/                # 公共头文件
 ├── common.h           # 基础层：宏、常量、单调时钟声明、静态断言
-├── logger.{h,c}       # 分级日志、单调时钟、时间戳
-├── metrics.{h,c}      # ping 统计指标聚合
-├── config.{h,c}       # 配置默认值、CLI/环境变量解析、usage/version、校验
-├── icmp.{h,c}         # ICMP raw socket、BPF 过滤、校验和、回包匹配
-├── shutdown.{h,c}     # 关机执行（posix_spawn + 启动观测）
-├── systemd.{h,c}      # systemd notify socket 集成
-├── runtime.{h,c}      # 运行时服务抽象（systemd 后端可插拔）
-├── monitor.{h,c}      # reactor 主循环、定时器状态机、shutdown FSM、编排
+├── logger.h           # 分级日志、时间戳接口
+├── metrics.h          # ping 统计指标聚合
+├── config.h           # 配置类型、解析/校验接口
+├── icmp.h             # ICMP raw socket、BPF 过滤、回包匹配接口
+├── shutdown.h         # 关机执行接口
+├── systemd.h          # systemd notify socket 集成接口
+├── runtime.h          # 运行时服务抽象
+└── monitor.h          # 聚合各模块并定义共享运行时对象 linkstay_ctx_t
+src/                    # 实现
+├── logger.c           # 分级日志、单调时钟、时间戳
+├── metrics.c          # ping 统计指标聚合
+├── config.c           # 配置默认值、CLI/环境变量解析、usage/version、校验
+├── icmp.c             # ICMP raw socket、BPF 过滤、校验和、回包匹配
+├── shutdown.c         # 关机执行（posix_spawn + 启动观测）
+├── systemd.c          # systemd notify socket 集成
+├── runtime.c          # 运行时服务抽象（systemd 后端可插拔）
+├── monitor.c          # reactor 主循环、定时器状态机、shutdown FSM、编排
 └── main.c             # 入口
 systemd/
-└── LinkStay.service  # systemd unit 文件
+└── LinkStay.service  # systemd unit 示例文件
 ```
 
-模块按层次组织：`common.h` 位于底层，上层模块各自拥有独立头文件，`monitor.h` 聚合所有模块并定义共享运行时对象 `linkstay_ctx_t`。
-
-## 许可证
-
-本项目采用 MIT 许可证，详见 [LICENSE](LICENSE)。
+模块按层次组织：`include/common.h` 位于底层，上层模块各自拥有独立头文件，`include/monitor.h` 聚合所有模块并定义共享运行时对象 `linkstay_ctx_t`。头文件统一存放于 `include/`，实现统一存放于 `src/`，便于查阅与维护。
