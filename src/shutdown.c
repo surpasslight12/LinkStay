@@ -3,7 +3,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <spawn.h>
-
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>

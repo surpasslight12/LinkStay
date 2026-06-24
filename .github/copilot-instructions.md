@@ -6,6 +6,7 @@
 - Build a stripped release binary with `make release`.
 - Run linters with `make lint` (`cppcheck` + `clang-tidy`). At the current baseline this command completes but reports existing findings, so do not assume the repository is lint-clean before your changes.
 - Source layout is split: all public headers live in `include/` and all translation units (`.c`) live in `src/`. The Makefile adds `-Iinclude` so quoted includes such as `#include "monitor.h"` resolve without relative paths.
+- The repository intentionally has no `LICENSE` file or license badge. Do not re-add one unless the user explicitly asks.
 
 ## High-level architecture
 
@@ -18,6 +19,7 @@
 - `src/shutdown.c` is the shutdown backend layer. It invokes `systemctl poweroff` for `true-off`, preserves dry-run and log-only behavior, and uses `posix_spawn()` plus startup observation instead of shelling out.
 - `src/systemd.c` implements `sd_notify`-style integration directly over the notify socket. `systemd/LinkStay.service` expects this with `Type=notify`, `NotifyAccess=main`, and `WatchdogSec=30`; the shipped sample unit defaults to `LINKSTAY_MODE=log-only` so monitoring remains persistent until operators explicitly switch to `true-off`.
 - Headers are organized as a layered hierarchy under `include/`: `include/common.h` is the dependency-free foundation; each module owns its own header (`logger.h`, `metrics.h`, `config.h`, `icmp.h`, `shutdown.h`, `systemd.h`, `runtime.h`); `include/monitor.h` aggregates them and defines `linkstay_ctx_t`, the shared runtime object holding config, resolved destination address, logger, metrics, ICMP state, and runtime services. The matching `.c` implementations live in `src/`.
+- Top-level structure is intentionally small: `include/` for public module interfaces, `src/` for implementations, `systemd/` for deployable unit examples, `.github/copilot-instructions.md` for AI collaboration rules, and `Makefile` for local build entry points.
 
 ## CLI options and environment variables
 

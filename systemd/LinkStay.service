@@ -6,7 +6,7 @@ StartLimitIntervalSec=300
 StartLimitBurst=3
 
 [Service]
-# ── Runtime ──────────────────────────────────────────────────────────────────
+# Runtime
 Type=notify
 NotifyAccess=main
 SyslogIdentifier=LinkStay
@@ -19,11 +19,11 @@ TimeoutStartSec=30
 TimeoutStopSec=10
 WatchdogSec=30
 
-# ── Restart ───────────────────────────────────────────────────────────────────
+# Restart
 Restart=on-failure
 RestartSec=10
 
-# ── Configuration ─────────────────────────────────────────────────────────────
+# Configuration
 Environment="LINKSTAY_TARGET=1.1.1.1"
 Environment="LINKSTAY_INTERVAL=10"
 Environment="LINKSTAY_THRESHOLD=5"
@@ -32,18 +32,18 @@ Environment="LINKSTAY_MODE=log-only"
 Environment="LINKSTAY_LOG_LEVEL=info"
 Environment="LINKSTAY_SYSTEMD=true"
 
-# ── Privilege Containment ─────────────────────────────────────────────────────
+# Privilege containment
 User=root
 NoNewPrivileges=true
 CapabilityBoundingSet=CAP_NET_RAW
 
-# ── Filesystem Isolation ─────────────────────────────────────────────────────
+# Filesystem isolation
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 UMask=0077
 
-# ── Kernel & Privilege Hardening ──────────────────────────────────────────────
+# Kernel and privilege hardening
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true
@@ -55,13 +55,13 @@ RestrictSUIDSGID=true
 RestrictNamespaces=true
 LockPersonality=true
 
-# ── Network / Syscall Restrictions ────────────────────────────────────────────
+# Network and syscall restrictions
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 SystemCallArchitectures=native
 SystemCallFilter=@system-service @network-io @process
 SystemCallFilter=~@debug @module @mount @swap @obsolete @cpu-emulation
 
-# ── Resource Limits ───────────────────────────────────────────────────────────
+# Resource limits
 MemoryMax=50M
 TasksMax=10
 OOMScoreAdjust=-100

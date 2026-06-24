@@ -187,6 +187,8 @@ sudo ./bin/LinkStay --target 1.1.1.1 --mode dry-run
 ## 项目结构
 
 ```
+Makefile                # 构建、release、lint、clean 入口
+README.md               # 使用说明与维护约定
 include/                # 公共头文件
 ├── common.h           # 基础层：宏、常量、单调时钟声明、静态断言
 ├── logger.h           # 分级日志、时间戳接口
@@ -209,6 +211,8 @@ src/                    # 实现
 └── main.c             # 入口
 systemd/
 └── LinkStay.service  # systemd unit 示例文件
+.github/
+└── copilot-instructions.md  # AI 协作与代码维护约定
 ```
 
-模块按层次组织：`include/common.h` 位于底层，上层模块各自拥有独立头文件，`include/monitor.h` 聚合所有模块并定义共享运行时对象 `linkstay_ctx_t`。头文件统一存放于 `include/`，实现统一存放于 `src/`，便于查阅与维护。
+模块按层次组织：`include/common.h` 位于底层，上层模块各自拥有独立头文件，`include/monitor.h` 聚合所有模块并定义共享运行时对象 `linkstay_ctx_t`。头文件统一存放于 `include/`，实现统一存放于 `src/`，服务示例统一放在 `systemd/`，便于查阅与维护。
