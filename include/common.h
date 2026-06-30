@@ -17,8 +17,6 @@
  * include hierarchy.
  */
 
-#include <assert.h>
-#include <stdbool.h>
 #include <stdckdint.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -35,8 +33,7 @@
 
 #define LINKSTAY_UNLIKELY(x) __builtin_expect(!!(x), 0)
 #define LINKSTAY_LIKELY(x) __builtin_expect(!!(x), 1)
-#define LINKSTAY_COLD __attribute__((cold))
-#define LINKSTAY_ALIGNED(bytes) __attribute__((aligned(bytes)))
+#define LINKSTAY_COLD [[gnu::cold]]
 
 static_assert(sizeof(uint64_t) == 8, "uint64_t must be 8 bytes");
 static_assert(sizeof(time_t) >= 4, "time_t must be at least 4 bytes");

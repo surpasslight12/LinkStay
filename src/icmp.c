@@ -35,7 +35,7 @@ static uint16_t icmp_calculate_checksum(const void *data, size_t len) {
 
 static void icmp_fill_echo_payload(uint8_t *restrict packet,
                                    size_t packet_len, size_t header_len) {
-  if (packet == NULL || header_len > packet_len) {
+  if (packet == nullptr || header_len > packet_len) {
     return;
   }
 
@@ -50,7 +50,7 @@ static bool
 icmp_validate_send_args(const icmp_pinger_t *restrict pinger,
                         const struct sockaddr_storage *restrict dest_addr,
                         char *restrict error_msg, size_t error_size) {
-  if (pinger == NULL || dest_addr == NULL || error_msg == NULL ||
+  if (pinger == nullptr || dest_addr == nullptr || error_msg == nullptr ||
       error_size == 0) {
     return false;
   }
@@ -72,7 +72,7 @@ icmp_validate_send_args(const icmp_pinger_t *restrict pinger,
 static bool
 icmp_receive_source_matches(const struct sockaddr_storage *restrict dest_addr,
                             const struct sockaddr_storage *restrict recv_addr) {
-  if (dest_addr == NULL || recv_addr == NULL ||
+  if (dest_addr == nullptr || recv_addr == nullptr ||
       recv_addr->ss_family != dest_addr->ss_family) {
     return false;
   }
@@ -92,7 +92,7 @@ icmp_receive_source_matches(const struct sockaddr_storage *restrict dest_addr,
 static icmp_receive_status_t
 icmp_parse_ipv4_reply(const uint8_t *restrict recv_buf, size_t received,
                       uint16_t identifier, uint16_t expected_sequence) {
-  if (recv_buf == NULL || received < sizeof(struct ip)) {
+  if (recv_buf == nullptr || received < sizeof(struct ip)) {
     return ICMP_RECEIVE_IGNORED;
   }
 
@@ -125,7 +125,7 @@ icmp_parse_ipv4_reply(const uint8_t *restrict recv_buf, size_t received,
 static icmp_receive_status_t
 icmp_parse_ipv6_reply(const uint8_t *restrict recv_buf, size_t received,
                       uint16_t identifier, uint16_t expected_sequence) {
-  if (recv_buf == NULL || received < sizeof(struct icmp6_hdr)) {
+  if (recv_buf == nullptr || received < sizeof(struct icmp6_hdr)) {
     return ICMP_RECEIVE_IGNORED;
   }
 
@@ -154,7 +154,7 @@ static void icmp_attach_bpf_filter(int sockfd, struct sock_filter *filter,
 
 bool icmp_pinger_init(icmp_pinger_t *restrict pinger, int family,
                       char *restrict error_msg, size_t error_size) {
-  if (pinger == NULL || error_msg == NULL || error_size == 0) {
+  if (pinger == nullptr || error_msg == nullptr || error_size == 0) {
     return false;
   }
 
@@ -207,7 +207,7 @@ bool icmp_pinger_init(icmp_pinger_t *restrict pinger, int family,
 }
 
 void icmp_pinger_destroy(icmp_pinger_t *restrict pinger) {
-  if (pinger == NULL) {
+  if (pinger == nullptr) {
     return;
   }
 
@@ -219,7 +219,7 @@ void icmp_pinger_destroy(icmp_pinger_t *restrict pinger) {
 
 /* Sequence 0 is reserved as the "not waiting" sentinel in monitor state. */
 static uint16_t icmp_next_sequence(icmp_pinger_t *restrict pinger) {
-  if (pinger == NULL) {
+  if (pinger == nullptr) {
     return 1;
   }
 
@@ -291,7 +291,7 @@ icmp_pinger_receive_reply(icmp_pinger_t *restrict pinger,
                           uint16_t identifier, uint16_t expected_sequence,
                           uint64_t send_time_ms, uint64_t now_ms,
                           ping_result_t *restrict out_result) {
-  if (pinger == NULL || dest_addr == NULL || out_result == NULL) {
+  if (pinger == nullptr || dest_addr == nullptr || out_result == nullptr) {
     return ICMP_RECEIVE_ERROR;
   }
 
@@ -344,7 +344,7 @@ bool icmp_resolve_target(const char *restrict target,
                          struct sockaddr_storage *restrict addr,
                          socklen_t *restrict addr_len,
                          char *restrict error_msg, size_t error_size) {
-  if (target == NULL || addr == NULL || addr_len == NULL || error_msg == NULL ||
+  if (target == nullptr || addr == nullptr || addr_len == nullptr || error_msg == nullptr ||
       error_size == 0) {
     return false;
   }
@@ -366,9 +366,9 @@ bool icmp_resolve_target(const char *restrict target,
   }
 
   const char *hint = "";
-  if (strchr(target, ':') != NULL) {
+  if (strchr(target, ':') != nullptr) {
     hint = " (looks like an IPv6 literal but parsing failed)";
-  } else if (strchr(target, '.') != NULL) {
+  } else if (strchr(target, '.') != nullptr) {
     hint = " (looks like an IPv4 literal but parsing failed)";
   }
 

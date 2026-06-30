@@ -25,13 +25,14 @@ typedef struct {
 
 void systemd_notifier_init(systemd_notifier_t *restrict notifier);
 void systemd_notifier_destroy(systemd_notifier_t *restrict notifier);
-bool systemd_notifier_is_enabled(const systemd_notifier_t *restrict notifier);
+[[nodiscard]] bool systemd_notifier_is_enabled(
+    const systemd_notifier_t *restrict notifier);
 bool systemd_notifier_ready(systemd_notifier_t *restrict notifier);
 bool systemd_notifier_status(systemd_notifier_t *restrict notifier,
                              const char *restrict status);
 bool systemd_notifier_stopping(systemd_notifier_t *restrict notifier);
 bool systemd_notifier_watchdog(systemd_notifier_t *restrict notifier);
-uint64_t systemd_notifier_watchdog_interval_ms(
+[[nodiscard]] uint64_t systemd_notifier_watchdog_interval_ms(
     const systemd_notifier_t *restrict notifier);
 
 #endif /* LINKSTAY_SYSTEMD_H */

@@ -56,7 +56,7 @@ static const named_value_t SHUTDOWN_MODE_OPTIONS[] = {
 
 static bool parse_named(const named_value_t *options, size_t count,
                         const char *arg, int *out_value) {
-  if (arg == NULL) {
+  if (arg == nullptr) {
     return false;
   }
   for (size_t i = 0; i < count; i++) {
@@ -88,7 +88,7 @@ static const char OPTSTRING[] = "t:i:n:w:m:l:s::vh";
 
 /* ---- Small utilities ---- */
 
-__attribute__((format(printf, 3, 4))) static bool
+[[gnu::format(printf, 3, 4)]] static bool
 config_errorf(char *error_msg, size_t error_size, const char *fmt, ...) {
   va_list args;
   va_start(args, fmt);
@@ -102,7 +102,7 @@ static bool config_invalid_value(const char *name, const char *value,
                                  size_t error_size) {
   return config_errorf(error_msg, error_size,
                        "Invalid value for %s: %s (use %s)", name,
-                       value != NULL ? value : "<empty>", allowed);
+                       value != nullptr ? value : "<empty>", allowed);
 }
 
 static bool copy_string(char *dest, size_t dest_size, const char *src,
@@ -120,7 +120,7 @@ static bool parse_positive_int(const char *name, const char *value,
                                const char *unit, int *dest, char *error_msg,
                                size_t error_size) {
   errno = 0;
-  char *endptr = NULL;
+  char *endptr = nullptr;
   long long parsed = strtoll(value, &endptr, 10);
   if (errno != 0 || endptr == value || *endptr != '\0' || parsed < 1 ||
       parsed > INT_MAX) {
@@ -134,7 +134,7 @@ static bool parse_positive_int(const char *name, const char *value,
 
 static bool parse_bool(const char *arg, bool implicit_true_when_null,
                        bool *out_value) {
-  if (arg == NULL) {
+  if (arg == nullptr) {
     if (!implicit_true_when_null) {
       return false;
     }
@@ -244,12 +244,12 @@ static bool config_validate(const config_t *config, char *error_msg,
 }
 
 bool config_log_timestamps_enabled(const config_t *restrict config) {
-  return config != NULL && !config->enable_systemd;
+  return config != nullptr && !config->enable_systemd;
 }
 
 void config_print(const config_t *restrict config,
                   const logger_t *restrict logger) {
-  if (config == NULL || logger == NULL) {
+  if (config == nullptr || logger == nullptr) {
     return;
   }
   logger_debug(logger, "Configuration:");
@@ -348,7 +348,7 @@ static int scan_exit_option(int argc, char **argv) {
 
   int requested = 0;
   int option;
-  while ((option = getopt_long(argc, argv, OPTSTRING, LONG_OPTIONS, NULL)) !=
+  while ((option = getopt_long(argc, argv, OPTSTRING, LONG_OPTIONS, nullptr)) !=
          -1) {
     if (option == 'v' || option == 'h') {
       requested = option;
@@ -384,14 +384,14 @@ static bool resolve_threshold_env(const char **out_name,
                                   size_t error_size) {
   const char *primary = getenv(LINKSTAY_THRESHOLD_ENV);
   const char *alias = getenv(LINKSTAY_THRESHOLD_ENV_ALIAS);
-  if (primary != NULL && alias != NULL && strcmp(primary, alias) != 0) {
+  if (primary != nullptr && alias != nullptr && strcmp(primary, alias) != 0) {
     return config_errorf(error_msg, error_size,
                          "Conflicting values for %s and %s (use only one)",
                          LINKSTAY_THRESHOLD_ENV, LINKSTAY_THRESHOLD_ENV_ALIAS);
   }
-  *out_name = primary != NULL ? LINKSTAY_THRESHOLD_ENV
+  *out_name = primary != nullptr ? LINKSTAY_THRESHOLD_ENV
                               : LINKSTAY_THRESHOLD_ENV_ALIAS;
-  *out_value = primary != NULL ? primary : alias;
+  *out_value = primary != nullptr ? primary : alias;
   return true;
 }
 
@@ -400,40 +400,40 @@ static bool load_from_env(config_t *config, char *error_msg,
   error_msg[0] = '\0';
 
   const char *target = getenv("LINKSTAY_TARGET");
-  if (target != NULL &&
+  if (target != nullptr &&
       !copy_string(config->target, sizeof(config->target), target,
                    "LINKSTAY_TARGET", error_msg, error_size)) {
     return false;
   }
 
-  const char *threshold_name = NULL;
-  const char *threshold_value = NULL;
+  const char *threshold_name = nullptr;
+  const char *threshold_value = nullptr;
   if (!resolve_threshold_env(&threshold_name, &threshold_value, error_msg,
                              error_size)) {
     return false;
   }
-  if (threshold_value != NULL &&
+  if (threshold_value != nullptr &&
       !parse_positive_int(threshold_name, threshold_value, "failures",
                           &config->fail_threshold, error_msg, error_size)) {
     return false;
   }
 
   const char *interval = getenv("LINKSTAY_INTERVAL");
-  if (interval != NULL &&
+  if (interval != nullptr &&
       !parse_positive_int("LINKSTAY_INTERVAL", interval, "seconds",
                           &config->interval_sec, error_msg, error_size)) {
     return false;
   }
 
   const char *timeout = getenv("LINKSTAY_TIMEOUT");
-  if (timeout != NULL &&
+  if (timeout != nullptr &&
       !parse_positive_int("LINKSTAY_TIMEOUT", timeout, "milliseconds",
                           &config->timeout_ms, error_msg, error_size)) {
     return false;
   }
 
   const char *systemd_value = getenv("LINKSTAY_SYSTEMD");
-  if (systemd_value != NULL &&
+  if (systemd_value != nullptr &&
       !parse_bool(systemd_value, false, &config->enable_systemd)) {
     return config_invalid_value("LINKSTAY_SYSTEMD", systemd_value,
                                 LINKSTAY_CONFIG_BOOL_VALUES, error_msg,
@@ -441,14 +441,14 @@ static bool load_from_env(config_t *config, char *error_msg,
   }
 
   const char *mode = getenv("LINKSTAY_MODE");
-  if (mode != NULL && !parse_shutdown_mode(mode, &config->shutdown_mode)) {
+  if (mode != nullptr && !parse_shutdown_mode(mode, &config->shutdown_mode)) {
     return config_invalid_value("LINKSTAY_MODE", mode,
                                 LINKSTAY_CONFIG_SHUTDOWN_MODE_VALUES,
                                 error_msg, error_size);
   }
 
   const char *log_level = getenv("LINKSTAY_LOG_LEVEL");
-  if (log_level != NULL &&
+  if (log_level != nullptr &&
       !parse_log_level(log_level, &config->log_level)) {
     return config_invalid_value("LINKSTAY_LOG_LEVEL", log_level,
                                 LINKSTAY_CONFIG_LOG_LEVEL_ALLOWED_VALUES,
@@ -468,7 +468,7 @@ static bool load_from_cmdline(config_t *config, int argc, char **argv,
 
   int requested_exit = 0;
   int option;
-  while ((option = getopt_long(argc, argv, OPTSTRING, LONG_OPTIONS, NULL)) !=
+  while ((option = getopt_long(argc, argv, OPTSTRING, LONG_OPTIONS, nullptr)) !=
          -1) {
     switch (option) {
     case 't':
@@ -528,7 +528,7 @@ static bool load_from_cmdline(config_t *config, int argc, char **argv,
             "Option requires an argument or has invalid value: -%c", optopt);
       }
       return config_errorf(error_msg, error_size, "Unknown option: %s",
-                           argv[optind - 1] != NULL ? argv[optind - 1]
+                           argv[optind - 1] != nullptr ? argv[optind - 1]
                                                     : "<unknown>");
     default:
       return config_errorf(error_msg, error_size,
@@ -548,8 +548,8 @@ static bool load_from_cmdline(config_t *config, int argc, char **argv,
 bool config_resolve(config_t *restrict config, int argc, char **restrict argv,
                     bool *restrict exit_requested, char *restrict error_msg,
                     size_t error_size) {
-  if (config == NULL || argv == NULL || exit_requested == NULL ||
-      error_msg == NULL || error_size == 0) {
+  if (config == nullptr || argv == nullptr || exit_requested == nullptr ||
+      error_msg == nullptr || error_size == 0) {
     return false;
   }
 

@@ -36,14 +36,15 @@ const char *log_level_to_string(log_level_t level);
 
 /* logger_error / logger_warn are marked cold since they fire rarely.
    The level check avoids any formatting cost when the level is filtered.
-   NULL logger is silently ignored so callers need not guard every call. */
+   A null logger is silently ignored so callers need not guard every call. */
 #define DEFINE_LOGGER(name, lvl, attrs)                                        \
-  static inline void attrs name(const logger_t *restrict logger,               \
-                                const char *restrict fmt, ...)                 \
-      __attribute__((format(printf, 2, 3)));                                   \
-  static inline void attrs name(const logger_t *restrict logger,               \
-                                const char *restrict fmt, ...) {               \
-    if (LINKSTAY_LIKELY(logger != NULL) && logger->level >= (lvl)) {           \
+  [[gnu::format(printf, 2, 3)]] attrs                                          \
+  static inline void name(const logger_t *restrict logger,                     \
+                          const char *restrict fmt, ...);                      \
+  [[gnu::format(printf, 2, 3)]] attrs                                          \
+  static inline void name(const logger_t *restrict logger,                     \
+                          const char *restrict fmt, ...) {                     \
+    if (LINKSTAY_LIKELY(logger != nullptr) && logger->level >= (lvl)) {        \
       va_list args;                                                            \
       va_start(args, fmt);                                                     \
       logger_log_va(logger, (lvl), fmt, args);                                 \

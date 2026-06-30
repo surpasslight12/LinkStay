@@ -35,9 +35,10 @@ typedef struct linkstay_context {
 static_assert(sizeof(sig_atomic_t) >= sizeof(int),
               "sig_atomic_t must hold an int");
 
-bool linkstay_ctx_init(linkstay_ctx_t *restrict ctx,
-                       const config_t *restrict config,
-                       char *restrict error_msg, size_t error_size);
+[[nodiscard]] bool linkstay_ctx_init(linkstay_ctx_t *restrict ctx,
+                                     const config_t *restrict config,
+                                     char *restrict error_msg,
+                                     size_t error_size);
 void linkstay_ctx_destroy(linkstay_ctx_t *restrict ctx);
 int linkstay_reactor_run(linkstay_ctx_t *restrict ctx);
 

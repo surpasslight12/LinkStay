@@ -53,3 +53,4 @@ compile_commands.json
 
 # 工具 (Tools)
 _codeql_detected_source_root
+tests/

@@ -13,10 +13,10 @@
 
 /* Minimal environment for defense-in-depth and deterministic command output. */
 static char *const SHUTDOWN_ENVP[] = {
-    "PATH=/usr/bin:/usr/sbin:/bin:/sbin", "LANG=C", "LC_ALL=C", NULL};
+    "PATH=/usr/bin:/usr/sbin:/bin:/sbin", "LANG=C", "LC_ALL=C", nullptr};
 
 static char *const SHUTDOWN_ARGV[] = {(char *)SYSTEMCTL_PATH, "--no-block",
-                                      "poweroff", NULL};
+                                      "poweroff", nullptr};
 
 static bool sleep_retry_window(void) {
   struct timespec remaining = {.tv_sec = 0, .tv_nsec = POLL_INTERVAL_NS};
@@ -127,7 +127,7 @@ static shutdown_result_t spawn_shutdown_command(const logger_t *logger) {
   }
 
   pid_t child_pid = -1;
-  int spawn_err = posix_spawn(&child_pid, SHUTDOWN_ARGV[0], &actions, NULL,
+  int spawn_err = posix_spawn(&child_pid, SHUTDOWN_ARGV[0], &actions, nullptr,
                               SHUTDOWN_ARGV, SHUTDOWN_ENVP);
   posix_spawn_file_actions_destroy(&actions);
   if (spawn_err != 0) {
@@ -139,14 +139,8 @@ static shutdown_result_t spawn_shutdown_command(const logger_t *logger) {
 
 shutdown_result_t shutdown_trigger(const config_t *config,
                                    const logger_t *logger) {
-  if (config == NULL || logger == NULL) {
+  if (config == nullptr || logger == nullptr) {
     return SHUTDOWN_RESULT_FAILED;
-  }
-
-  if (config->shutdown_mode == SHUTDOWN_MODE_LOG_ONLY) {
-    logger_warn(logger, "Failure threshold reached in LOG-ONLY mode; "
-                        "continuing monitoring without shutdown");
-    return SHUTDOWN_RESULT_NO_ACTION;
   }
 
   logger_warn(logger, "Failure threshold reached, shutdown mode is %s",

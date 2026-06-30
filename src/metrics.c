@@ -1,7 +1,7 @@
 #include "metrics.h"
 
 void metrics_init(metrics_t *metrics) {
-  if (metrics == NULL) {
+  if (metrics == nullptr) {
     return;
   }
   metrics->total_pings = 0;
@@ -14,7 +14,7 @@ void metrics_init(metrics_t *metrics) {
 }
 
 void metrics_record_success(metrics_t *metrics, double latency_ms) {
-  if (LINKSTAY_UNLIKELY(metrics == NULL)) {
+  if (LINKSTAY_UNLIKELY(metrics == nullptr)) {
     return;
   }
   if (LINKSTAY_UNLIKELY(latency_ms < 0.0)) {
@@ -34,7 +34,7 @@ void metrics_record_success(metrics_t *metrics, double latency_ms) {
 }
 
 void metrics_record_failure(metrics_t *metrics) {
-  if (LINKSTAY_UNLIKELY(metrics == NULL)) {
+  if (LINKSTAY_UNLIKELY(metrics == nullptr)) {
     return;
   }
   metrics->total_pings++;
@@ -42,7 +42,7 @@ void metrics_record_failure(metrics_t *metrics) {
 }
 
 double metrics_success_rate(const metrics_t *metrics) {
-  if (metrics == NULL || metrics->total_pings == 0) {
+  if (metrics == nullptr || metrics->total_pings == 0) {
     return 0.0;
   }
   return (double)metrics->successful_pings / (double)metrics->total_pings *
@@ -50,14 +50,14 @@ double metrics_success_rate(const metrics_t *metrics) {
 }
 
 double metrics_avg_latency(const metrics_t *metrics) {
-  if (metrics == NULL || metrics->successful_pings == 0) {
+  if (metrics == nullptr || metrics->successful_pings == 0) {
     return 0.0;
   }
   return metrics->total_latency / (double)metrics->successful_pings;
 }
 
 uint64_t metrics_uptime_seconds(const metrics_t *metrics) {
-  if (metrics == NULL) {
+  if (metrics == nullptr) {
     return 0;
   }
   uint64_t now_ms = get_monotonic_ms();

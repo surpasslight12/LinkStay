@@ -100,7 +100,7 @@ typedef struct {
 
 /* ---- Status formatting & error reporting ---- */
 
-__attribute__((format(printf, 2, 3))) static void
+[[gnu::format(printf, 2, 3)]] static void
 notify_statusf(linkstay_ctx_t *ctx, const char *fmt, ...) {
   if (!systemd_notifier_is_enabled(&ctx->systemd)) {
     return;
@@ -113,7 +113,7 @@ notify_statusf(linkstay_ctx_t *ctx, const char *fmt, ...) {
   (void)systemd_notifier_status(&ctx->systemd, status_msg);
 }
 
-__attribute__((format(printf, 2, 3))) static step_result_t
+[[gnu::format(printf, 2, 3)]] static step_result_t
 runtime_error(linkstay_ctx_t *ctx, const char *fmt, ...) {
   char message[LINKSTAY_LOG_BUFFER_SIZE];
   va_list args;
@@ -325,7 +325,7 @@ static bool signal_channel_init(signal_channel_t *ch, const logger_t *logger) {
   ch->fd = signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC);
   if (ch->fd < 0) {
     logger_error(logger, "signalfd failed: %s", strerror(errno));
-    (void)sigprocmask(SIG_SETMASK, &ch->previous_mask, NULL);
+    (void)sigprocmask(SIG_SETMASK, &ch->previous_mask, nullptr);
     ch->previous_mask_valid = false;
     return false;
   }
@@ -339,8 +339,8 @@ static void signal_channel_destroy(signal_channel_t *ch,
     ch->fd = -1;
   }
   if (ch->previous_mask_valid &&
-      sigprocmask(SIG_SETMASK, &ch->previous_mask, NULL) < 0 &&
-      logger != NULL) {
+      sigprocmask(SIG_SETMASK, &ch->previous_mask, nullptr) < 0 &&
+      logger != nullptr) {
     logger_error(logger, "sigprocmask restore failed: %s", strerror(errno));
   }
   ch->previous_mask_valid = false;
@@ -411,7 +411,7 @@ static int compute_poll_timeout(const loop_state_t *state, uint64_t now_ms) {
 bool linkstay_ctx_init(linkstay_ctx_t *restrict ctx,
                        const config_t *restrict config,
                        char *restrict error_msg, size_t error_size) {
-  if (ctx == NULL || config == NULL || error_msg == NULL || error_size == 0) {
+  if (ctx == nullptr || config == nullptr || error_msg == nullptr || error_size == 0) {
     return false;
   }
 
@@ -466,16 +466,16 @@ bool linkstay_ctx_init(linkstay_ctx_t *restrict ctx,
 }
 
 void linkstay_ctx_destroy(linkstay_ctx_t *restrict ctx) {
-  if (ctx == NULL) {
+  if (ctx == nullptr) {
     return;
   }
   systemd_notifier_destroy(&ctx->systemd);
   icmp_pinger_destroy(&ctx->pinger);
-  *ctx = (linkstay_ctx_t){0};
+  *ctx = (linkstay_ctx_t){};
 }
 
 int linkstay_reactor_run(linkstay_ctx_t *restrict ctx) {
-  if (ctx == NULL) {
+  if (ctx == nullptr) {
     return LINKSTAY_EXIT_FAILURE;
   }
 
@@ -485,12 +485,13 @@ int linkstay_reactor_run(linkstay_ctx_t *restrict ctx) {
   }
 
   uint64_t now_ms;
-  uint64_t interval_ms = (uint64_t)ctx->config.interval_sec * LINKSTAY_MS_PER_SEC;
-  if (!refresh_now(&now_ms) || interval_ms == 0) {
+  if (!refresh_now(&now_ms)) {
     logger_error(&ctx->logger, "Failed to initialize monotonic timing state");
     signal_channel_destroy(&signals, &ctx->logger);
     return LINKSTAY_EXIT_FAILURE;
   }
+  uint64_t interval_ms =
+      (uint64_t)ctx->config.interval_sec * LINKSTAY_MS_PER_SEC;
 
   loop_state_t state = {
       .next_ping = {.deadline_ms = now_ms}, /* fire first ping immediately */
@@ -561,15 +562,10 @@ int linkstay_reactor_run(linkstay_ctx_t *restrict ctx) {
     if (fds[POLL_FD_SIGNAL].revents & POLLIN) {
       handle_signal_fd(ctx, signals.fd);
     }
-    if (fds[POLL_FD_ICMP].revents & POLLIN) {
-      r = drain_icmp_replies(ctx, &state, now_ms);
-      if (r == STEP_ERROR) {
-        exit_code = LINKSTAY_EXIT_FAILURE;
-        break;
-      }
-      if (r == STEP_STOP) {
-        break;
-      }
+    if (fds[POLL_FD_ICMP].revents & POLLIN &&
+        drain_icmp_replies(ctx, &state, now_ms) == STEP_ERROR) {
+      exit_code = LINKSTAY_EXIT_FAILURE;
+      break;
     }
 
     fds[POLL_FD_SIGNAL].revents = 0;

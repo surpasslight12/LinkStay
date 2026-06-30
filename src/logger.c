@@ -3,13 +3,13 @@
 #include <stdio.h>
 
 static void logger_format_timestamp(char *restrict buffer, size_t size) {
-  if (LINKSTAY_UNLIKELY(buffer == NULL || size == 0)) {
+  if (LINKSTAY_UNLIKELY(buffer == nullptr || size == 0)) {
     return;
   }
   struct timespec ts;
   struct tm tm_info;
   if (LINKSTAY_UNLIKELY(clock_gettime(CLOCK_REALTIME, &ts) != 0 ||
-                        localtime_r(&ts.tv_sec, &tm_info) == NULL)) {
+                        localtime_r(&ts.tv_sec, &tm_info) == nullptr)) {
     buffer[0] = '\0';
     return;
   }
@@ -21,7 +21,7 @@ static void logger_format_timestamp(char *restrict buffer, size_t size) {
 
 void logger_init(logger_t *restrict logger, log_level_t level,
                  bool enable_timestamp) {
-  if (logger == NULL) {
+  if (logger == nullptr) {
     return;
   }
   logger->level = level;
@@ -46,7 +46,7 @@ const char *log_level_to_string(log_level_t level) {
 
 void logger_log_va(const logger_t *restrict logger, log_level_t level,
                    const char *restrict fmt, va_list ap) {
-  if (LINKSTAY_UNLIKELY(logger == NULL || fmt == NULL ||
+  if (LINKSTAY_UNLIKELY(logger == nullptr || fmt == nullptr ||
                         logger->level == LOG_LEVEL_SILENT ||
                         level > logger->level)) {
     return;

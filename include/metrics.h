@@ -5,7 +5,7 @@
  * metrics.h — ping statistics aggregation.
  *
  * A small value type tracking counts, latency extremes, and uptime. All
- * accessors tolerate a NULL pointer and an empty sample set so callers on
+ * accessors tolerate a null pointer and an empty sample set so callers on
  * the hot path need not special-case the "no data yet" state.
  */
 
