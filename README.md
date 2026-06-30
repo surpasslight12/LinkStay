@@ -191,22 +191,21 @@ Makefile                # 构建、release、lint、clean 入口
 README.md               # 使用说明与维护约定
 include/                # 公共头文件
 ├── common.h           # 基础层：宏、常量、单调时钟声明、静态断言
-├── logger.h           # 分级日志、时间戳接口
+├── logger.h           # 分级日志接口
 ├── metrics.h          # ping 统计指标聚合
 ├── config.h           # 配置类型、解析/校验接口
 ├── icmp.h             # ICMP raw socket、BPF 过滤、回包匹配接口
 ├── shutdown.h         # 关机执行接口
 ├── systemd.h          # systemd notify socket 集成接口
-├── runtime.h          # 运行时服务抽象
 └── monitor.h          # 聚合各模块并定义共享运行时对象 linkstay_ctx_t
 src/                    # 实现
-├── logger.c           # 分级日志、单调时钟、时间戳
+├── common.c           # 单调时钟实现
+├── logger.c           # 分级日志、时间戳格式化
 ├── metrics.c          # ping 统计指标聚合
 ├── config.c           # 配置默认值、CLI/环境变量解析、usage/version、校验
 ├── icmp.c             # ICMP raw socket、BPF 过滤、校验和、回包匹配
 ├── shutdown.c         # 关机执行（posix_spawn + 启动观测）
 ├── systemd.c          # systemd notify socket 集成
-├── runtime.c          # 运行时服务抽象（systemd 后端可插拔）
 ├── monitor.c          # reactor 主循环、定时器状态机、shutdown FSM、编排
 └── main.c             # 入口
 systemd/

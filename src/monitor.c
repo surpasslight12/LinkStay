@@ -12,310 +12,160 @@
 #include <sys/signalfd.h>
 #include <unistd.h>
 
-/* ---- Types ---- */
+#define LINKSTAY_PACKET_SIZE 64U
+#define LINKSTAY_MAX_REPLY_DRAIN_PER_TICK 32U
+#define POLL_FD_SIGNAL 0
+#define POLL_FD_ICMP 1
+#define POLL_FD_COUNT 2
+
+/* ---- Timer primitive ----
+ * Absolute deadline in monotonic ms; UINT64_MAX is the "disarmed" sentinel. */
 
 typedef struct {
   uint64_t deadline_ms;
-  bool armed;
-} monitor_timer_t;
+} timer_t_;
 
-typedef struct {
-  monitor_timer_t reply_timer;
-  uint64_t send_time_ms;
-  uint16_t expected_sequence;
-} monitor_ping_state_t;
-
-typedef struct {
-  monitor_timer_t next_ping_timer;
-  uint64_t interval_ms;
-} monitor_scheduler_state_t;
-
-typedef struct {
-  monitor_timer_t next_notify_timer;
-  uint64_t interval_ms;
-} monitor_watchdog_state_t;
-
-typedef struct {
-  monitor_ping_state_t ping;
-  monitor_scheduler_state_t scheduler;
-  monitor_watchdog_state_t watchdog;
-} monitor_state_t;
-
-typedef enum {
-  MONITOR_STEP_CONTINUE = 0,
-  MONITOR_STEP_STOP = 1,
-  MONITOR_STEP_ERROR = 2,
-} monitor_step_result_t;
-
-#define LINKSTAY_PACKET_SIZE 64U
-#define LINKSTAY_MAX_REPLY_DRAIN_PER_TICK 32U
-#define LINKSTAY_POLL_FD_COUNT 2
-
-static uint64_t monitor_duration_ms(int value, uint64_t scale_ms) {
-  if (value <= 0) {
-    return 0;
-  }
-  uint64_t duration_ms = 0;
-  if (LINKSTAY_UNLIKELY(ckd_mul(&duration_ms, (uint64_t)value, scale_ms))) {
-    return UINT64_MAX;
-  }
-  return duration_ms;
+static inline void timer_clear(timer_t_ *t) { t->deadline_ms = UINT64_MAX; }
+static inline bool timer_is_armed(const timer_t_ *t) {
+  return t->deadline_ms != UINT64_MAX;
+}
+static inline bool timer_elapsed(const timer_t_ *t, uint64_t now_ms) {
+  return timer_is_armed(t) && now_ms >= t->deadline_ms;
 }
 
-/* ---- Monitor state — static ---- */
-
-static uint64_t monitor_deadline_add_ms(uint64_t base_ms, uint64_t delta_ms) {
+static inline uint64_t add_saturating(uint64_t a, uint64_t b) {
   uint64_t result = 0;
-  if (LINKSTAY_UNLIKELY(ckd_add(&result, base_ms, delta_ms))) {
-    return UINT64_MAX;
+  return ckd_add(&result, a, b) ? UINT64_MAX : result;
+}
+
+static inline void timer_arm_after(timer_t_ *t, uint64_t base_ms,
+                                   uint64_t delta_ms) {
+  t->deadline_ms = add_saturating(base_ms, delta_ms);
+}
+
+/* Step a periodic timer: prefer the original phase, but never schedule in the
+ * past. */
+static inline void timer_step(timer_t_ *t, uint64_t interval_ms,
+                              uint64_t now_ms) {
+  uint64_t base = timer_is_armed(t) ? t->deadline_ms : now_ms;
+  uint64_t next = add_saturating(base, interval_ms);
+  if (next < now_ms) {
+    next = add_saturating(now_ms, interval_ms);
   }
-  return result;
+  t->deadline_ms = next;
 }
 
-static void monitor_timer_clear(monitor_timer_t *restrict timer) {
-  if (timer == NULL) {
-    return;
-  }
-
-  timer->deadline_ms = 0;
-  timer->armed = false;
-}
-
-static bool monitor_timer_arm_absolute(monitor_timer_t *restrict timer,
-                                       uint64_t deadline_ms) {
-  if (timer == NULL || deadline_ms == UINT64_MAX) {
-    return false;
-  }
-
-  timer->deadline_ms = deadline_ms;
-  timer->armed = true;
-  return true;
-}
-
-static bool monitor_timer_arm_after(monitor_timer_t *restrict timer,
-                                    uint64_t base_ms, uint64_t delta_ms) {
-  return monitor_timer_arm_absolute(timer,
-                                    monitor_deadline_add_ms(base_ms, delta_ms));
-}
-
-static bool monitor_timer_is_armed(const monitor_timer_t *restrict timer) {
-  return timer != NULL && timer->armed;
-}
-
-static bool monitor_timer_elapsed(const monitor_timer_t *restrict timer,
-                                  uint64_t now_ms) {
-  return monitor_timer_is_armed(timer) && now_ms >= timer->deadline_ms;
-}
-
-static int monitor_deadline_timeout_ms(uint64_t now_ms, uint64_t deadline_ms) {
-  if (deadline_ms <= now_ms) {
-    return 0;
-  }
-  uint64_t remaining_ms = deadline_ms - now_ms;
-  if (remaining_ms > (uint64_t)INT_MAX) {
-    return INT_MAX;
-  }
-  return (int)remaining_ms;
-}
-
-static int monitor_timer_timeout_ms(const monitor_timer_t *restrict timer,
-                                    uint64_t now_ms) {
-  return monitor_timer_is_armed(timer)
-             ? monitor_deadline_timeout_ms(now_ms, timer->deadline_ms)
-             : -1;
-}
-
-static int monitor_timeout_accumulate(int timeout_ms,
-                                      const monitor_timer_t *restrict timer,
-                                      uint64_t now_ms) {
-  int candidate_ms = monitor_timer_timeout_ms(timer, now_ms);
-  if (candidate_ms < 0) {
-    return timeout_ms;
-  }
-
-  return timeout_ms < 0 ? candidate_ms
-                        : (candidate_ms < timeout_ms ? candidate_ms
-                                                     : timeout_ms);
-}
-
-static bool monitor_timer_step_interval(monitor_timer_t *restrict timer,
-                                        uint64_t interval_ms, uint64_t now_ms) {
-  if (timer == NULL || interval_ms == 0) {
-    return false;
-  }
-
-  uint64_t base_ms =
-      monitor_timer_is_armed(timer) ? timer->deadline_ms : now_ms;
-  uint64_t next_deadline_ms = monitor_deadline_add_ms(base_ms, interval_ms);
-  if (next_deadline_ms == UINT64_MAX || next_deadline_ms < now_ms) {
-    next_deadline_ms = monitor_deadline_add_ms(now_ms, interval_ms);
-  }
-
-  return monitor_timer_arm_absolute(timer, next_deadline_ms);
-}
-
-static void monitor_state_init(monitor_state_t *restrict state, uint64_t now_ms,
-                               uint64_t interval_ms,
-                               uint64_t watchdog_interval_ms) {
-  if (state == NULL) {
-    return;
-  }
-  memset(state, 0, sizeof(*state));
-  (void)monitor_timer_arm_absolute(&state->scheduler.next_ping_timer, now_ms);
-  state->scheduler.interval_ms = interval_ms;
-  state->watchdog.interval_ms = watchdog_interval_ms;
-  if (watchdog_interval_ms > 0) {
-    (void)monitor_timer_arm_after(&state->watchdog.next_notify_timer, now_ms,
-                                  watchdog_interval_ms);
-  }
-}
-
-static bool monitor_ping_arm(monitor_state_t *restrict state, uint64_t now_ms,
-                             uint64_t timeout_ms, uint16_t expected_sequence) {
-  if (state == NULL) {
-    return false;
-  }
-  if (!monitor_timer_arm_after(&state->ping.reply_timer, now_ms, timeout_ms)) {
-    return false;
-  }
-  state->ping.send_time_ms = now_ms;
-  state->ping.expected_sequence = expected_sequence;
-  return true;
-}
-
-static void monitor_ping_clear(monitor_state_t *restrict state) {
-  if (state == NULL) {
-    return;
-  }
-  monitor_timer_clear(&state->ping.reply_timer);
-  state->ping.send_time_ms = 0;
-  state->ping.expected_sequence = 0;
-}
-
-static bool monitor_ping_waiting(const monitor_state_t *restrict state) {
-  return state != NULL && monitor_timer_is_armed(&state->ping.reply_timer);
-}
-
-static bool monitor_ping_deadline_elapsed(const monitor_state_t *restrict state,
-                                          uint64_t now_ms) {
-  return state != NULL &&
-         monitor_timer_elapsed(&state->ping.reply_timer, now_ms);
-}
-
-static bool monitor_scheduler_due(const monitor_state_t *restrict state,
-                                  uint64_t now_ms) {
-  return state != NULL &&
-         monitor_timer_elapsed(&state->scheduler.next_ping_timer, now_ms);
-}
-
-static bool monitor_scheduler_advance(monitor_state_t *restrict state,
-                                      uint64_t now_ms) {
-  return state != NULL &&
-         monitor_timer_step_interval(&state->scheduler.next_ping_timer,
-                                     state->scheduler.interval_ms, now_ms);
-}
-
-static bool monitor_watchdog_due(const monitor_state_t *restrict state,
-                                 uint64_t now_ms) {
-  return state != NULL &&
-         monitor_timer_elapsed(&state->watchdog.next_notify_timer, now_ms);
-}
-
-static bool monitor_watchdog_mark_sent(monitor_state_t *restrict state,
-                                       uint64_t now_ms) {
-  return state != NULL &&
-         monitor_timer_step_interval(&state->watchdog.next_notify_timer,
-                                     state->watchdog.interval_ms, now_ms);
-}
-
-static int monitor_state_wait_timeout(const monitor_state_t *restrict state,
-                                      uint64_t now_ms) {
-  if (state == NULL) {
+static int timer_timeout_ms(const timer_t_ *t, uint64_t now_ms) {
+  if (!timer_is_armed(t)) {
     return -1;
   }
-
-  int timeout_ms =
-      monitor_ping_waiting(state)
-          ? monitor_timer_timeout_ms(&state->ping.reply_timer, now_ms)
-          : monitor_timer_timeout_ms(&state->scheduler.next_ping_timer, now_ms);
-  timeout_ms = monitor_timeout_accumulate(
-      timeout_ms, &state->watchdog.next_notify_timer, now_ms);
-  return timeout_ms;
+  if (t->deadline_ms <= now_ms) {
+    return 0;
+  }
+  uint64_t remaining = t->deadline_ms - now_ms;
+  return remaining > (uint64_t)INT_MAX ? INT_MAX : (int)remaining;
 }
 
-/* ---- Status notification helper ---- */
-
-static bool monitor_notify_statusf(linkstay_ctx_t *restrict ctx,
-                                   const char *restrict fmt, ...)
-    __attribute__((format(printf, 2, 3)));
-
-static bool monitor_notify_statusf(linkstay_ctx_t *restrict ctx,
-                                   const char *restrict fmt, ...) {
-  if (ctx == NULL || fmt == NULL) {
-    return false;
+static int timer_min_timeout(int current, int candidate) {
+  if (candidate < 0) {
+    return current;
   }
+  return current < 0 ? candidate
+                     : (candidate < current ? candidate : current);
+}
 
+/* ---- Loop state ---- */
+
+typedef struct {
+  timer_t_ next_ping;
+  timer_t_ reply_deadline;
+  timer_t_ next_watchdog;
+  uint64_t ping_send_time_ms;
+  uint16_t expected_sequence;
+  uint64_t interval_ms;
+  uint64_t watchdog_interval_ms;
+} loop_state_t;
+
+typedef enum {
+  STEP_CONTINUE = 0,
+  STEP_STOP = 1,
+  STEP_ERROR = 2,
+} step_result_t;
+
+typedef struct {
+  int fd;
+  sigset_t previous_mask;
+  bool previous_mask_valid;
+} signal_channel_t;
+
+/* ---- Status formatting & error reporting ---- */
+
+__attribute__((format(printf, 2, 3))) static void
+notify_statusf(linkstay_ctx_t *ctx, const char *fmt, ...) {
+  if (!systemd_notifier_is_enabled(&ctx->systemd)) {
+    return;
+  }
   char status_msg[LINKSTAY_SYSTEMD_STATUS_SIZE];
   va_list args;
   va_start(args, fmt);
-  vsnprintf(status_msg, sizeof(status_msg), fmt, args);
+  (void)vsnprintf(status_msg, sizeof(status_msg), fmt, args);
   va_end(args);
-
-  return runtime_services_notify_status(&ctx->services, status_msg);
+  (void)systemd_notifier_status(&ctx->systemd, status_msg);
 }
 
-/* ---- Shutdown FSM — static ---- */
+__attribute__((format(printf, 2, 3))) static step_result_t
+runtime_error(linkstay_ctx_t *ctx, const char *fmt, ...) {
+  char message[LINKSTAY_LOG_BUFFER_SIZE];
+  va_list args;
+  va_start(args, fmt);
+  (void)vsnprintf(message, sizeof(message), fmt, args);
+  va_end(args);
+  logger_error(&ctx->logger, "%s", message);
+  notify_statusf(ctx, "Error: %s", message);
+  return STEP_ERROR;
+}
 
-__attribute__((format(printf, 2, 3))) static monitor_step_result_t
-monitor_runtime_error(linkstay_ctx_t *restrict ctx, const char *restrict fmt,
-                      ...);
+/* ---- Ping bookkeeping ---- */
 
-static bool shutdown_fsm_execute(linkstay_ctx_t *restrict ctx) {
-  if (ctx == NULL) {
-    return false;
-  }
-  shutdown_result_t result = shutdown_trigger(&ctx->config, &ctx->logger);
-  if (ctx->config.shutdown_mode == SHUTDOWN_MODE_DRY_RUN) {
+static bool ping_in_flight(const loop_state_t *state) {
+  return timer_is_armed(&state->reply_deadline);
+}
+
+static void ping_arm(loop_state_t *state, uint64_t now_ms, uint64_t timeout_ms,
+                     uint16_t expected_sequence) {
+  timer_arm_after(&state->reply_deadline, now_ms, timeout_ms);
+  state->ping_send_time_ms = now_ms;
+  state->expected_sequence = expected_sequence;
+}
+
+static void ping_clear(loop_state_t *state) {
+  timer_clear(&state->reply_deadline);
+  state->ping_send_time_ms = 0;
+  state->expected_sequence = 0;
+}
+
+static void log_statistics(linkstay_ctx_t *ctx) {
+  const metrics_t *m = &ctx->metrics;
+  if (m->successful_pings > 0) {
     logger_info(&ctx->logger,
-                "Dry-run complete: simulated shutdown reached, exiting monitor "
-                "loop");
-    return true;
+                "Statistics: uptime %" PRIu64 "s | %" PRIu64 " pings, %" PRIu64
+                " OK, %" PRIu64
+                " failed (%.2f%% success) | latency min %.2fms, avg %.2fms, "
+                "max %.2fms",
+                metrics_uptime_seconds(m), m->total_pings, m->successful_pings,
+                m->failed_pings, metrics_success_rate(m), m->min_latency,
+                metrics_avg_latency(m), m->max_latency);
+  } else {
+    logger_info(&ctx->logger,
+                "Statistics: uptime %" PRIu64 "s | %" PRIu64
+                " pings, 0 OK, %" PRIu64
+                " failed (0.00%% success) | latency N/A",
+                metrics_uptime_seconds(m), m->total_pings, m->failed_pings);
   }
-  if (result != SHUTDOWN_RESULT_TRIGGERED) {
-    logger_error(&ctx->logger,
-                 "Shutdown command failed; continuing monitoring with failure "
-                 "count preserved");
-    return false;
-  }
-  logger_info(&ctx->logger, "Shutdown triggered, exiting monitor loop");
-  return true;
 }
 
-static monitor_step_result_t
-shutdown_fsm_handle_threshold(linkstay_ctx_t *restrict ctx) {
-  if (ctx == NULL ||
-      ctx->consecutive_fails < ctx->config.fail_threshold) {
-    return MONITOR_STEP_CONTINUE;
-  }
-  if (ctx->config.shutdown_mode == SHUTDOWN_MODE_LOG_ONLY) {
-    logger_warn(&ctx->logger,
-                "Log-only mode: %s unreachable after %d consecutive failures; "
-                "continuing without shutdown (failure counter reset)",
-                ctx->config.target, ctx->config.fail_threshold);
-    ctx->consecutive_fails = 0;
-    return MONITOR_STEP_CONTINUE;
-  }
-  return shutdown_fsm_execute(ctx) ? MONITOR_STEP_STOP
-                                   : MONITOR_STEP_CONTINUE;
-}
-
-/* ---- Runtime helpers — static ---- */
-
-static void monitor_handle_ping_success(linkstay_ctx_t *restrict ctx,
-                                const ping_result_t *restrict result) {
-  if (ctx == NULL || result == NULL) {
-    return;
-  }
+static void on_ping_success(linkstay_ctx_t *ctx,
+                            const ping_result_t *result) {
   ctx->consecutive_fails = 0;
   metrics_record_success(&ctx->metrics, result->latency_ms);
   logger_debug(&ctx->logger,
@@ -325,463 +175,235 @@ static void monitor_handle_ping_success(linkstay_ctx_t *restrict ctx,
                result->latency_ms, metrics_avg_latency(&ctx->metrics),
                ctx->metrics.successful_pings, ctx->metrics.total_pings,
                metrics_success_rate(&ctx->metrics));
-  (void)monitor_notify_statusf(
-      ctx,
-      "Online: %s up %" PRIu64 "s, last %.2fms, avg %.2fms, %" PRIu64 "/%" PRIu64
-      " OK (%.1f%%)",
-      ctx->config.target, metrics_uptime_seconds(&ctx->metrics),
-      result->latency_ms, metrics_avg_latency(&ctx->metrics),
-      ctx->metrics.successful_pings, ctx->metrics.total_pings,
-      metrics_success_rate(&ctx->metrics));
+  notify_statusf(ctx,
+                 "Online: %s up %" PRIu64 "s, last %.2fms, avg %.2fms, %" PRIu64
+                 "/%" PRIu64 " OK (%.1f%%)",
+                 ctx->config.target, metrics_uptime_seconds(&ctx->metrics),
+                 result->latency_ms, metrics_avg_latency(&ctx->metrics),
+                 ctx->metrics.successful_pings, ctx->metrics.total_pings,
+                 metrics_success_rate(&ctx->metrics));
 }
 
-static void monitor_handle_ping_failure(linkstay_ctx_t *restrict ctx,
-                                const ping_result_t *restrict result) {
-  if (ctx == NULL || result == NULL) {
-    return;
-  }
+static void on_ping_failure(linkstay_ctx_t *ctx,
+                            const ping_result_t *result) {
   ctx->consecutive_fails++;
-  int consecutive_failures = ctx->consecutive_fails;
   metrics_record_failure(&ctx->metrics);
   logger_warn(&ctx->logger, "No reply from %s: %s (failure %d of %d)",
-              ctx->config.target, result->error_msg, consecutive_failures,
+              ctx->config.target, result->error_msg, ctx->consecutive_fails,
               ctx->config.fail_threshold);
-  (void)monitor_notify_statusf(
-      ctx, "Unreachable: %s, %d/%d consecutive failures", ctx->config.target,
-      consecutive_failures, ctx->config.fail_threshold);
+  notify_statusf(ctx, "Unreachable: %s, %d/%d consecutive failures",
+                 ctx->config.target, ctx->consecutive_fails,
+                 ctx->config.fail_threshold);
 }
 
-__attribute__((format(printf, 2, 3))) static monitor_step_result_t
-monitor_runtime_error(linkstay_ctx_t *restrict ctx, const char *restrict fmt,
-                      ...) {
-  if (ctx == NULL || fmt == NULL) {
-    return MONITOR_STEP_ERROR;
-  }
-  char error_msg[LINKSTAY_LOG_BUFFER_SIZE];
-  va_list args;
-  va_start(args, fmt);
-  vsnprintf(error_msg, sizeof(error_msg), fmt, args);
-  va_end(args);
-  logger_error(&ctx->logger, "%s", error_msg);
-  (void)monitor_notify_statusf(ctx, "Error: %s", error_msg);
-  return MONITOR_STEP_ERROR;
-}
+/* ---- Shutdown FSM ---- */
 
-static bool monitor_prepare_packet(linkstay_ctx_t *restrict ctx,
-                                   size_t *restrict packet_len) {
-  if (ctx == NULL || packet_len == NULL) {
-    return false;
+static step_result_t handle_threshold_reached(linkstay_ctx_t *ctx) {
+  if (ctx->consecutive_fails < ctx->config.fail_threshold) {
+    return STEP_CONTINUE;
   }
-  size_t header_len = (ctx->pinger.family == AF_INET6)
-                          ? sizeof(struct icmp6_hdr)
-                          : sizeof(struct icmphdr);
-  *packet_len = LINKSTAY_PACKET_SIZE;
-  if (*packet_len > sizeof(ctx->pinger.send_buf) || header_len > *packet_len) {
-    return false;
+  if (ctx->config.shutdown_mode == SHUTDOWN_MODE_LOG_ONLY) {
+    logger_warn(&ctx->logger,
+                "Log-only mode: %s unreachable after %d consecutive failures; "
+                "continuing without shutdown (failure counter reset)",
+                ctx->config.target, ctx->config.fail_threshold);
+    ctx->consecutive_fails = 0;
+    return STEP_CONTINUE;
   }
-  uint8_t *payload = ctx->pinger.send_buf + header_len;
-  size_t payload_len = *packet_len - header_len;
-  for (size_t i = 0; i != payload_len; i++) {
-    payload[i] = (uint8_t)(i & 0xFFU);
-  }
-  return true;
-}
 
-static void monitor_log_stats(linkstay_ctx_t *restrict ctx) {
-  if (ctx == NULL) {
-    return;
-  }
-  const metrics_t *metrics = &ctx->metrics;
-  if (metrics->successful_pings > 0) {
+  shutdown_result_t result = shutdown_trigger(&ctx->config, &ctx->logger);
+  if (ctx->config.shutdown_mode == SHUTDOWN_MODE_DRY_RUN) {
     logger_info(&ctx->logger,
-                "Statistics: uptime %" PRIu64 "s | %" PRIu64 " pings, %" PRIu64
-                " OK, %" PRIu64
-                " failed (%.2f%% success) | latency min %.2fms, avg %.2fms, "
-                "max %.2fms",
-                metrics_uptime_seconds(metrics), metrics->total_pings,
-                metrics->successful_pings, metrics->failed_pings,
-                metrics_success_rate(metrics), metrics->min_latency,
-                metrics_avg_latency(metrics), metrics->max_latency);
-    return;
+                "Dry-run complete: simulated shutdown reached, exiting "
+                "monitor loop");
+    return STEP_STOP;
   }
-  logger_info(&ctx->logger,
-              "Statistics: uptime %" PRIu64 "s | %" PRIu64
-              " pings, 0 OK, %" PRIu64
-              " failed (0.00%% success) | latency N/A",
-              metrics_uptime_seconds(metrics), metrics->total_pings,
-              metrics->failed_pings);
+  if (result != SHUTDOWN_RESULT_TRIGGERED) {
+    logger_error(&ctx->logger,
+                 "Shutdown command failed; continuing monitoring with failure "
+                 "count preserved");
+    return STEP_CONTINUE;
+  }
+  logger_info(&ctx->logger, "Shutdown triggered, exiting monitor loop");
+  return STEP_STOP;
 }
 
-static monitor_step_result_t
-monitor_handle_ping_timeout(linkstay_ctx_t *restrict ctx,
-                            monitor_state_t *restrict state, uint64_t now_ms) {
-  if (ctx == NULL || state == NULL ||
-      !monitor_ping_deadline_elapsed(state, now_ms)) {
-    return MONITOR_STEP_CONTINUE;
+/* ---- Ping send/receive ---- */
+
+static step_result_t send_ping(linkstay_ctx_t *ctx, loop_state_t *state,
+                               uint64_t now_ms) {
+  char error_buf[256];
+  if (!icmp_pinger_send_echo(&ctx->pinger, &ctx->dest_addr, ctx->dest_addr_len,
+                             ctx->cached_pid, LINKSTAY_PACKET_SIZE, error_buf,
+                             sizeof(error_buf))) {
+    return runtime_error(ctx, "Failed to send ICMP echo: %s", error_buf);
+  }
+  ping_arm(state, now_ms, (uint64_t)ctx->config.timeout_ms,
+           ctx->pinger.sequence);
+  return STEP_CONTINUE;
+}
+
+static step_result_t drain_icmp_replies(linkstay_ctx_t *ctx,
+                                        loop_state_t *state, uint64_t now_ms) {
+  ping_result_t reply;
+  for (size_t i = 0; i < LINKSTAY_MAX_REPLY_DRAIN_PER_TICK; i++) {
+    icmp_receive_status_t status = icmp_pinger_receive_reply(
+        &ctx->pinger, &ctx->dest_addr, ctx->cached_pid,
+        state->expected_sequence, state->ping_send_time_ms, now_ms, &reply);
+    if (status == ICMP_RECEIVE_NO_MORE) {
+      return STEP_CONTINUE;
+    }
+    if (status == ICMP_RECEIVE_ERROR) {
+      ping_clear(state);
+      return runtime_error(ctx, "ICMP receive failed: %s", reply.error_msg);
+    }
+    if (status == ICMP_RECEIVE_MATCHED && ping_in_flight(state)) {
+      on_ping_success(ctx, &reply);
+      ping_clear(state);
+      return STEP_CONTINUE;
+    }
+  }
+  return STEP_CONTINUE;
+}
+
+/* ---- Loop tick handlers ---- */
+
+static void handle_watchdog(linkstay_ctx_t *ctx, loop_state_t *state,
+                            uint64_t now_ms) {
+  if (!timer_elapsed(&state->next_watchdog, now_ms)) {
+    return;
+  }
+  bool sent = systemd_notifier_watchdog(&ctx->systemd);
+  timer_step(&state->next_watchdog, state->watchdog_interval_ms, now_ms);
+  if (!sent) {
+    logger_warn(&ctx->logger, "Failed to send systemd WATCHDOG notification");
+  }
+}
+
+static step_result_t handle_ping_timeout(linkstay_ctx_t *ctx,
+                                         loop_state_t *state,
+                                         uint64_t now_ms) {
+  if (!timer_elapsed(&state->reply_deadline, now_ms)) {
+    return STEP_CONTINUE;
   }
   ping_result_t timeout_result = {.success = false,
                                   .latency_ms = 0.0,
                                   .error_msg = "ICMP reply deadline exceeded",
                                   .sequence = 0};
-  monitor_handle_ping_failure(ctx, &timeout_result);
-  monitor_ping_clear(state);
-  return shutdown_fsm_handle_threshold(ctx);
+  on_ping_failure(ctx, &timeout_result);
+  ping_clear(state);
+  return handle_threshold_reached(ctx);
 }
 
-static monitor_step_result_t monitor_send_ping(linkstay_ctx_t *restrict ctx,
-                                               monitor_state_t *restrict state,
-                                               uint64_t now_ms,
-                                               size_t packet_len) {
-  if (ctx == NULL || state == NULL) {
-    return MONITOR_STEP_ERROR;
+static step_result_t handle_scheduler(linkstay_ctx_t *ctx, loop_state_t *state,
+                                      uint64_t now_ms) {
+  if (ping_in_flight(state) || !timer_elapsed(&state->next_ping, now_ms)) {
+    return STEP_CONTINUE;
   }
-  ping_result_t error_result = {
-      .success = false, .latency_ms = -1.0, .error_msg = {0}, .sequence = 0};
-  if (!icmp_pinger_send_echo(
-          &ctx->pinger, &ctx->dest_addr, ctx->dest_addr_len, ctx->cached_pid,
-          packet_len, error_result.error_msg, sizeof(error_result.error_msg))) {
-    return monitor_runtime_error(ctx, "Failed to send ICMP echo: %s",
-                                 error_result.error_msg);
+  step_result_t r = send_ping(ctx, state, now_ms);
+  if (r != STEP_CONTINUE) {
+    return r;
   }
-  if (!monitor_ping_arm(state, now_ms, (uint64_t)ctx->config.timeout_ms,
-                        ctx->pinger.sequence)) {
-    return monitor_runtime_error(ctx, "Failed to compute reply deadline");
-  }
-  return MONITOR_STEP_CONTINUE;
+  timer_step(&state->next_ping, state->interval_ms, now_ms);
+  return STEP_CONTINUE;
 }
 
-static monitor_step_result_t
-monitor_drain_icmp_replies(linkstay_ctx_t *restrict ctx, uint64_t now_ms,
-                           monitor_state_t *restrict state) {
-  if (ctx == NULL || state == NULL) {
-    return MONITOR_STEP_ERROR;
-  }
-  ping_result_t reply = {0};
-  for (size_t processed = 0; processed < LINKSTAY_MAX_REPLY_DRAIN_PER_TICK;
-       processed++) {
-    icmp_receive_status_t status = icmp_pinger_receive_reply(
-        &ctx->pinger, &ctx->dest_addr, ctx->cached_pid,
-        state->ping.expected_sequence, state->ping.send_time_ms, now_ms,
-        &reply);
-    if (status == ICMP_RECEIVE_NO_MORE) {
-      return MONITOR_STEP_CONTINUE;
-    }
-    if (status == ICMP_RECEIVE_ERROR) {
-      monitor_ping_clear(state);
-      return monitor_runtime_error(ctx, "ICMP receive failed: %s",
-                                   reply.error_msg);
-    }
-    if (status == ICMP_RECEIVE_MATCHED && monitor_ping_waiting(state)) {
-      monitor_handle_ping_success(ctx, &reply);
-      monitor_ping_clear(state);
-      return MONITOR_STEP_CONTINUE;
-    }
-  }
-  return MONITOR_STEP_CONTINUE;
-}
+/* ---- Signal channel ---- */
 
-/* ---- Reactor ---- */
-
-typedef struct {
-  int fd;
-  sigset_t previous_mask;
-  bool previous_mask_valid;
-} signal_channel_t;
-
-typedef struct {
-  signal_channel_t signals;
-  monitor_state_t state;
-  struct pollfd fds[LINKSTAY_POLL_FD_COUNT];
-  size_t packet_len;
-  uint64_t now_ms;
-} monitor_loop_t;
-
-static bool monitor_pollfd_has_error(short revents) {
-  return (revents & (POLLERR | POLLHUP | POLLNVAL)) != 0;
-}
-
-static bool monitor_refresh_time(uint64_t *restrict now_ms) {
-  if (now_ms == NULL) {
-    return false;
-  }
-  uint64_t refreshed_now_ms = get_monotonic_ms();
-  if (refreshed_now_ms == UINT64_MAX) {
-    return false;
-  }
-  *now_ms = refreshed_now_ms;
-  return true;
-}
-
-static monitor_step_result_t
-monitor_refresh_time_or_error(linkstay_ctx_t *restrict ctx,
-                              uint64_t *restrict now_ms,
-                              const char *restrict phase_name) {
-  if (monitor_refresh_time(now_ms)) {
-    return MONITOR_STEP_CONTINUE;
-  }
-
-  if (ctx == NULL || phase_name == NULL) {
-    return MONITOR_STEP_ERROR;
-  }
-
-  return monitor_runtime_error(ctx,
-                               "Failed to refresh monotonic clock during %s",
-                               phase_name);
-}
-
-static bool signal_channel_init(signal_channel_t *restrict channel,
-                                const logger_t *restrict logger) {
-  if (channel == NULL || logger == NULL) {
-    return false;
-  }
-  memset(channel, 0, sizeof(*channel));
-  channel->fd = -1;
+static bool signal_channel_init(signal_channel_t *ch, const logger_t *logger) {
+  *ch = (signal_channel_t){.fd = -1};
   sigset_t mask;
   sigemptyset(&mask);
   sigaddset(&mask, SIGINT);
   sigaddset(&mask, SIGTERM);
   sigaddset(&mask, SIGUSR1);
-  if (sigprocmask(SIG_BLOCK, &mask, &channel->previous_mask) < 0) {
+  if (sigprocmask(SIG_BLOCK, &mask, &ch->previous_mask) < 0) {
     logger_error(logger, "sigprocmask failed: %s", strerror(errno));
     return false;
   }
-  channel->previous_mask_valid = true;
-  channel->fd = signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC);
-  if (channel->fd < 0) {
+  ch->previous_mask_valid = true;
+  ch->fd = signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC);
+  if (ch->fd < 0) {
     logger_error(logger, "signalfd failed: %s", strerror(errno));
-    (void)sigprocmask(SIG_SETMASK, &channel->previous_mask, NULL);
-    channel->previous_mask_valid = false;
+    (void)sigprocmask(SIG_SETMASK, &ch->previous_mask, NULL);
+    ch->previous_mask_valid = false;
     return false;
   }
   return true;
 }
 
-static void signal_channel_destroy(signal_channel_t *restrict channel,
-                                   const logger_t *restrict logger) {
-  if (channel == NULL) {
-    return;
+static void signal_channel_destroy(signal_channel_t *ch,
+                                   const logger_t *logger) {
+  if (ch->fd >= 0) {
+    close(ch->fd);
+    ch->fd = -1;
   }
-  if (channel->fd >= 0) {
-    close(channel->fd);
-    channel->fd = -1;
-  }
-  if (channel->previous_mask_valid &&
-      sigprocmask(SIG_SETMASK, &channel->previous_mask, NULL) < 0 &&
+  if (ch->previous_mask_valid &&
+      sigprocmask(SIG_SETMASK, &ch->previous_mask, NULL) < 0 &&
       logger != NULL) {
     logger_error(logger, "sigprocmask restore failed: %s", strerror(errno));
   }
-  channel->previous_mask_valid = false;
+  ch->previous_mask_valid = false;
 }
 
-static void monitor_handle_signal(linkstay_ctx_t *restrict ctx,
-                                  const signal_channel_t *restrict signals) {
-  if (ctx == NULL || signals == NULL || signals->fd < 0) {
+static void handle_signal_fd(linkstay_ctx_t *ctx, int fd) {
+  struct signalfd_siginfo info;
+  if (read(fd, &info, sizeof(info)) != (ssize_t)sizeof(info)) {
     return;
   }
-  struct signalfd_siginfo signal_info;
-  ssize_t bytes = read(signals->fd, &signal_info, sizeof(signal_info));
-  if (bytes != (ssize_t)sizeof(signal_info)) {
-    return;
-  }
-  if (signal_info.ssi_signo == SIGINT || signal_info.ssi_signo == SIGTERM) {
+  if (info.ssi_signo == SIGINT || info.ssi_signo == SIGTERM) {
     ctx->stop_flag = 1;
-    return;
-  }
-  if (signal_info.ssi_signo == SIGUSR1) {
-    monitor_log_stats(ctx);
+  } else if (info.ssi_signo == SIGUSR1) {
+    log_statistics(ctx);
   }
 }
 
-static bool monitor_notify_ready(linkstay_ctx_t *restrict ctx) {
-  if (ctx == NULL || !runtime_services_is_enabled(&ctx->services)) {
-    return true;
-  }
-  if (runtime_services_notify_ready(&ctx->services)) {
-    return true;
-  }
-  logger_warn(&ctx->logger, "Failed to send systemd READY notification");
-  return false;
-}
+/* ---- Reactor scaffolding ---- */
 
-static monitor_step_result_t
-monitor_handle_watchdog(linkstay_ctx_t *restrict ctx,
-                        monitor_state_t *restrict state, uint64_t now_ms) {
-  if (ctx == NULL || state == NULL || !monitor_watchdog_due(state, now_ms)) {
-    return MONITOR_STEP_CONTINUE;
-  }
-  bool watchdog_sent = runtime_services_notify_watchdog(&ctx->services);
-  if (!monitor_watchdog_mark_sent(state, now_ms)) {
-    return monitor_runtime_error(
-        ctx, "Failed to schedule next systemd watchdog deadline");
-  }
-
-  if (!watchdog_sent) {
-    logger_warn(&ctx->logger, "Failed to send systemd WATCHDOG notification");
-  }
-  return MONITOR_STEP_CONTINUE;
-}
-
-static monitor_step_result_t
-monitor_handle_scheduler(linkstay_ctx_t *restrict ctx,
-                         monitor_state_t *restrict state, uint64_t now_ms,
-                         size_t packet_len) {
-  if (ctx == NULL || state == NULL) {
-    return MONITOR_STEP_ERROR;
-  }
-  if (monitor_ping_waiting(state) || !monitor_scheduler_due(state, now_ms)) {
-    return MONITOR_STEP_CONTINUE;
-  }
-  monitor_step_result_t send_result =
-      monitor_send_ping(ctx, state, now_ms, packet_len);
-  if (send_result != MONITOR_STEP_CONTINUE) {
-    return send_result;
-  }
-  if (!monitor_scheduler_advance(state, now_ms)) {
-    logger_error(&ctx->logger, "Failed to compute next ping deadline");
-    return MONITOR_STEP_ERROR;
-  }
-  return MONITOR_STEP_CONTINUE;
-}
-
-static monitor_step_result_t monitor_handle_poll_events(
-    linkstay_ctx_t *restrict ctx, const signal_channel_t *restrict signals,
-    monitor_state_t *restrict state,
-    struct pollfd fds[static LINKSTAY_POLL_FD_COUNT],
-    uint64_t *restrict now_ms) {
-  if (ctx == NULL || signals == NULL || state == NULL || now_ms == NULL) {
-    return MONITOR_STEP_ERROR;
-  }
-  int wait_timeout_ms = monitor_state_wait_timeout(state, *now_ms);
-  int poll_result = poll(fds, LINKSTAY_POLL_FD_COUNT, wait_timeout_ms);
-  if (poll_result < 0 && errno != EINTR) {
-    logger_error(&ctx->logger, "poll error: %s", strerror(errno));
-    return MONITOR_STEP_ERROR;
-  }
-  monitor_step_result_t refresh_result =
-      monitor_refresh_time_or_error(ctx, now_ms, "poll handling");
-  if (refresh_result != MONITOR_STEP_CONTINUE) {
-    return refresh_result;
-  }
-  if (monitor_pollfd_has_error(fds[0].revents)) {
-    logger_error(&ctx->logger, "Signal fd entered error state");
-    return MONITOR_STEP_ERROR;
-  }
-  if (monitor_pollfd_has_error(fds[1].revents)) {
-    logger_error(&ctx->logger, "ICMP socket entered error state");
-    return MONITOR_STEP_ERROR;
-  }
-  if ((fds[0].revents & POLLIN) != 0) {
-    monitor_handle_signal(ctx, signals);
-  }
-  if ((fds[1].revents & POLLIN) != 0) {
-    monitor_step_result_t receive_result =
-        monitor_drain_icmp_replies(ctx, *now_ms, state);
-    if (receive_result != MONITOR_STEP_CONTINUE) {
-      return receive_result;
-    }
-  }
-  fds[0].revents = 0;
-  fds[1].revents = 0;
-  return MONITOR_STEP_CONTINUE;
-}
-
-static bool monitor_loop_init(linkstay_ctx_t *restrict ctx,
-                              monitor_loop_t *restrict loop) {
-  if (ctx == NULL || loop == NULL) {
+static bool refresh_now(uint64_t *now_ms) {
+  uint64_t t = get_monotonic_ms();
+  if (t == UINT64_MAX) {
     return false;
   }
-  memset(loop, 0, sizeof(*loop));
-  loop->signals.fd = -1;
-  if (!signal_channel_init(&loop->signals, &ctx->logger)) {
-    return false;
-  }
-  if (!monitor_prepare_packet(ctx, &loop->packet_len)) {
-    logger_error(&ctx->logger, "Failed to prepare ICMP packet buffer");
-    signal_channel_destroy(&loop->signals, &ctx->logger);
-    return false;
-  }
-  uint64_t interval_ms =
-      monitor_duration_ms(ctx->config.interval_sec, LINKSTAY_MS_PER_SEC);
-  if (!monitor_refresh_time(&loop->now_ms) || interval_ms == 0 ||
-      interval_ms == UINT64_MAX) {
-    logger_error(&ctx->logger, "Failed to initialize monotonic timing state");
-    signal_channel_destroy(&loop->signals, &ctx->logger);
-    return false;
-  }
-  monitor_state_init(&loop->state, loop->now_ms, interval_ms,
-                     runtime_services_watchdog_interval_ms(&ctx->services));
-  loop->fds[0] = (struct pollfd){
-      .fd = loop->signals.fd,
-      .events = POLLIN,
-      .revents = 0,
-  };
-  loop->fds[1] = (struct pollfd){
-      .fd = ctx->pinger.sockfd,
-      .events = POLLIN,
-      .revents = 0,
-  };
+  *now_ms = t;
   return true;
 }
 
-static void monitor_loop_destroy(linkstay_ctx_t *restrict ctx,
-                                 monitor_loop_t *restrict loop) {
-  if (loop == NULL) {
-    return;
-  }
-  signal_channel_destroy(&loop->signals, ctx != NULL ? &ctx->logger : NULL);
-}
-
-static monitor_step_result_t
-monitor_run_due_work(linkstay_ctx_t *restrict ctx,
-                     monitor_loop_t *restrict loop) {
-  if (ctx == NULL || loop == NULL) {
-    return MONITOR_STEP_ERROR;
-  }
-  monitor_step_result_t step_result =
-      monitor_handle_watchdog(ctx, &loop->state, loop->now_ms);
-  if (step_result != MONITOR_STEP_CONTINUE) {
-    return step_result;
-  }
-  step_result = monitor_handle_ping_timeout(ctx, &loop->state, loop->now_ms);
-  if (step_result != MONITOR_STEP_CONTINUE) {
-    return step_result;
-  }
-  return monitor_handle_scheduler(ctx, &loop->state, loop->now_ms,
-                                  loop->packet_len);
-}
-
-static void monitor_log_startup(linkstay_ctx_t *restrict ctx) {
-  if (ctx == NULL) {
-    return;
-  }
+static void log_startup(linkstay_ctx_t *ctx) {
   logger_info(&ctx->logger,
               "LinkStay %s monitoring %s | interval %ds, timeout %dms, "
               "threshold %d, mode %s",
               LINKSTAY_VERSION, ctx->config.target, ctx->config.interval_sec,
               ctx->config.timeout_ms, ctx->config.fail_threshold,
               shutdown_mode_to_string(ctx->config.shutdown_mode));
-  (void)monitor_notify_ready(ctx);
-  (void)monitor_notify_statusf(
-      ctx, "Monitoring %s every %ds (mode %s)", ctx->config.target,
-      ctx->config.interval_sec,
-      shutdown_mode_to_string(ctx->config.shutdown_mode));
+  if (systemd_notifier_is_enabled(&ctx->systemd) &&
+      !systemd_notifier_ready(&ctx->systemd)) {
+    logger_warn(&ctx->logger, "Failed to send systemd READY notification");
+  }
+  notify_statusf(ctx, "Monitoring %s every %ds (mode %s)", ctx->config.target,
+                 ctx->config.interval_sec,
+                 shutdown_mode_to_string(ctx->config.shutdown_mode));
 }
 
-static void monitor_log_shutdown(linkstay_ctx_t *restrict ctx, int exit_code) {
-  if (ctx == NULL) {
-    return;
-  }
+static void log_shutdown(linkstay_ctx_t *ctx, int exit_code) {
   if (ctx->stop_flag) {
-    logger_info(&ctx->logger,
-                "Shutdown signal received, stopping gracefully");
-    if (runtime_services_is_enabled(&ctx->services)) {
-      (void)runtime_services_notify_stopping(&ctx->services);
+    logger_info(&ctx->logger, "Shutdown signal received, stopping gracefully");
+    if (systemd_notifier_is_enabled(&ctx->systemd)) {
+      (void)systemd_notifier_stopping(&ctx->systemd);
     }
   }
-  monitor_log_stats(ctx);
+  log_statistics(ctx);
   if (exit_code == LINKSTAY_EXIT_SUCCESS) {
     logger_info(&ctx->logger, "LinkStay monitor stopped");
   }
+}
+
+static int compute_poll_timeout(const loop_state_t *state, uint64_t now_ms) {
+  int timeout = ping_in_flight(state)
+                    ? timer_timeout_ms(&state->reply_deadline, now_ms)
+                    : timer_timeout_ms(&state->next_ping, now_ms);
+  return timer_min_timeout(
+      timeout, timer_timeout_ms(&state->next_watchdog, now_ms));
 }
 
 /* ---- Public API ---- */
@@ -792,41 +414,50 @@ bool linkstay_ctx_init(linkstay_ctx_t *restrict ctx,
   if (ctx == NULL || config == NULL || error_msg == NULL || error_size == 0) {
     return false;
   }
-  memset(ctx, 0, sizeof(*ctx));
-  ctx->config = *config;
-  ctx->cached_pid = (uint16_t)(getpid() & 0xFFFF);
+
+  *ctx = (linkstay_ctx_t){
+      .config = *config,
+      .cached_pid = (uint16_t)(getpid() & 0xFFFF),
+  };
   if (ctx->cached_pid == 0) {
     ctx->cached_pid = 1;
   }
+
   logger_init(&ctx->logger, ctx->config.log_level,
               config_log_timestamps_enabled(&ctx->config));
   if (ctx->config.log_level == LOG_LEVEL_DEBUG) {
     config_print(&ctx->config, &ctx->logger);
   }
+
   ctx->dest_addr_len = sizeof(ctx->dest_addr);
-  if (!icmp_resolve_target(ctx->config.target, &ctx->dest_addr, &ctx->dest_addr_len,
-                      error_msg, error_size)) {
+  if (!icmp_resolve_target(ctx->config.target, &ctx->dest_addr,
+                           &ctx->dest_addr_len, error_msg, error_size)) {
     return false;
   }
+
   int family = ((const struct sockaddr *)&ctx->dest_addr)->sa_family;
   if (!icmp_pinger_init(&ctx->pinger, family, error_msg, error_size)) {
     return false;
   }
+
   metrics_init(&ctx->metrics);
-  runtime_services_init(&ctx->services, &ctx->systemd,
-                        ctx->config.enable_systemd);
-  if (!runtime_services_is_enabled(&ctx->services)) {
+
+  ctx->systemd.sockfd = -1;
+  if (ctx->config.enable_systemd) {
+    systemd_notifier_init(&ctx->systemd);
+  }
+
+  if (!systemd_notifier_is_enabled(&ctx->systemd)) {
     logger_debug(&ctx->logger,
                  "systemd integration inactive (NOTIFY_SOCKET not set)");
     return true;
   }
-  uint64_t watchdog_interval_ms =
-      runtime_services_watchdog_interval_ms(&ctx->services);
-  if (watchdog_interval_ms > 0) {
+  uint64_t watchdog_ms = systemd_notifier_watchdog_interval_ms(&ctx->systemd);
+  if (watchdog_ms > 0) {
     logger_debug(&ctx->logger,
                  "systemd integration active, watchdog ping every %" PRIu64
                  "ms",
-                 watchdog_interval_ms);
+                 watchdog_ms);
   } else {
     logger_debug(&ctx->logger,
                  "systemd integration active, watchdog disabled");
@@ -838,52 +469,114 @@ void linkstay_ctx_destroy(linkstay_ctx_t *restrict ctx) {
   if (ctx == NULL) {
     return;
   }
-  runtime_services_destroy(&ctx->services);
+  systemd_notifier_destroy(&ctx->systemd);
   icmp_pinger_destroy(&ctx->pinger);
-  memset(ctx, 0, sizeof(*ctx));
-}
-
-/* Classify a step result: returns true when the reactor loop must break,
- * promoting MONITOR_STEP_ERROR to a failure exit code along the way. */
-static bool monitor_step_should_break(monitor_step_result_t result,
-                                      int *restrict exit_code) {
-  if (result == MONITOR_STEP_ERROR) {
-    if (exit_code != NULL) {
-      *exit_code = LINKSTAY_EXIT_FAILURE;
-    }
-    return true;
-  }
-  return result == MONITOR_STEP_STOP;
+  *ctx = (linkstay_ctx_t){0};
 }
 
 int linkstay_reactor_run(linkstay_ctx_t *restrict ctx) {
   if (ctx == NULL) {
     return LINKSTAY_EXIT_FAILURE;
   }
-  monitor_loop_t loop;
-  if (!monitor_loop_init(ctx, &loop)) {
+
+  signal_channel_t signals;
+  if (!signal_channel_init(&signals, &ctx->logger)) {
     return LINKSTAY_EXIT_FAILURE;
   }
-  int exit_code = LINKSTAY_EXIT_SUCCESS;
-  monitor_log_startup(ctx);
-  while (!ctx->stop_flag) {
-    if (monitor_step_should_break(
-            monitor_refresh_time_or_error(ctx, &loop.now_ms, "reactor loop"),
-            &exit_code)) {
-      break;
-    }
-    if (monitor_step_should_break(monitor_run_due_work(ctx, &loop),
-                                  &exit_code)) {
-      break;
-    }
-    if (monitor_step_should_break(
-            monitor_handle_poll_events(ctx, &loop.signals, &loop.state,
-                                       loop.fds, &loop.now_ms),
-            &exit_code)) {
-      break;
-    }
+
+  uint64_t now_ms;
+  uint64_t interval_ms = (uint64_t)ctx->config.interval_sec * LINKSTAY_MS_PER_SEC;
+  if (!refresh_now(&now_ms) || interval_ms == 0) {
+    logger_error(&ctx->logger, "Failed to initialize monotonic timing state");
+    signal_channel_destroy(&signals, &ctx->logger);
+    return LINKSTAY_EXIT_FAILURE;
   }
-  monitor_log_shutdown(ctx, exit_code);
-  monitor_loop_destroy(ctx, &loop);
+
+  loop_state_t state = {
+      .next_ping = {.deadline_ms = now_ms}, /* fire first ping immediately */
+      .reply_deadline = {.deadline_ms = UINT64_MAX},
+      .next_watchdog = {.deadline_ms = UINT64_MAX},
+      .interval_ms = interval_ms,
+      .watchdog_interval_ms =
+          systemd_notifier_watchdog_interval_ms(&ctx->systemd),
+  };
+  if (state.watchdog_interval_ms > 0) {
+    timer_arm_after(&state.next_watchdog, now_ms, state.watchdog_interval_ms);
+  }
+
+  struct pollfd fds[POLL_FD_COUNT] = {
+      [POLL_FD_SIGNAL] = {.fd = signals.fd, .events = POLLIN},
+      [POLL_FD_ICMP] = {.fd = ctx->pinger.sockfd, .events = POLLIN},
+  };
+
+  log_startup(ctx);
+
+  int exit_code = LINKSTAY_EXIT_SUCCESS;
+  while (!ctx->stop_flag) {
+    if (!refresh_now(&now_ms)) {
+      runtime_error(ctx, "Failed to refresh monotonic clock");
+      exit_code = LINKSTAY_EXIT_FAILURE;
+      break;
+    }
+
+    handle_watchdog(ctx, &state, now_ms);
+    step_result_t r = handle_ping_timeout(ctx, &state, now_ms);
+    if (r == STEP_CONTINUE) {
+      r = handle_scheduler(ctx, &state, now_ms);
+    }
+    if (r == STEP_STOP) {
+      break;
+    }
+    if (r == STEP_ERROR) {
+      exit_code = LINKSTAY_EXIT_FAILURE;
+      break;
+    }
+
+    int poll_result = poll(fds, POLL_FD_COUNT, compute_poll_timeout(&state,
+                                                                    now_ms));
+    if (poll_result < 0 && errno != EINTR) {
+      logger_error(&ctx->logger, "poll error: %s", strerror(errno));
+      exit_code = LINKSTAY_EXIT_FAILURE;
+      break;
+    }
+
+    if (!refresh_now(&now_ms)) {
+      runtime_error(ctx, "Failed to refresh monotonic clock");
+      exit_code = LINKSTAY_EXIT_FAILURE;
+      break;
+    }
+
+    const short error_events = POLLERR | POLLHUP | POLLNVAL;
+    if (fds[POLL_FD_SIGNAL].revents & error_events) {
+      logger_error(&ctx->logger, "Signal fd entered error state");
+      exit_code = LINKSTAY_EXIT_FAILURE;
+      break;
+    }
+    if (fds[POLL_FD_ICMP].revents & error_events) {
+      logger_error(&ctx->logger, "ICMP socket entered error state");
+      exit_code = LINKSTAY_EXIT_FAILURE;
+      break;
+    }
+
+    if (fds[POLL_FD_SIGNAL].revents & POLLIN) {
+      handle_signal_fd(ctx, signals.fd);
+    }
+    if (fds[POLL_FD_ICMP].revents & POLLIN) {
+      r = drain_icmp_replies(ctx, &state, now_ms);
+      if (r == STEP_ERROR) {
+        exit_code = LINKSTAY_EXIT_FAILURE;
+        break;
+      }
+      if (r == STEP_STOP) {
+        break;
+      }
+    }
+
+    fds[POLL_FD_SIGNAL].revents = 0;
+    fds[POLL_FD_ICMP].revents = 0;
+  }
+
+  log_shutdown(ctx, exit_code);
+  signal_channel_destroy(&signals, &ctx->logger);
   return exit_code;
 }

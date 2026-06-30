@@ -30,9 +30,6 @@ typedef struct {
 
 void logger_init(logger_t *restrict logger, log_level_t level,
                  bool enable_timestamp);
-void logger_write(log_level_t level, bool enable_timestamp,
-                  const char *restrict fmt, ...)
-    __attribute__((format(printf, 3, 4)));
 void logger_log_va(const logger_t *restrict logger, log_level_t level,
                    const char *restrict fmt, va_list ap);
 const char *log_level_to_string(log_level_t level);

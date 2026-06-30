@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -12,7 +13,7 @@
 #define LINKSTAY_NOTIFY_RETRY_NS 10000000L
 
 static bool systemd_parse_uint64_value(const char *restrict value,
-                               uint64_t *restrict out_value) {
+                                       uint64_t *restrict out_value) {
   if (value == NULL || out_value == NULL) {
     return false;
   }
@@ -86,7 +87,7 @@ static bool systemd_build_addr(const char *restrict socket_path,
 }
 
 static bool systemd_send_notify(systemd_notifier_t *restrict notifier,
-                        const char *restrict message) {
+                                const char *restrict message) {
   if (LINKSTAY_UNLIKELY(notifier == NULL || message == NULL ||
                         !notifier->enabled)) {
     return false;
@@ -205,12 +206,12 @@ bool systemd_notifier_status(systemd_notifier_t *restrict notifier,
   }
 
   char message[LINKSTAY_SYSTEMD_MESSAGE_SIZE];
-  snprintf(message, sizeof(message), "STATUS=%.*s",
-           (int)LINKSTAY_SYSTEMD_STATUS_SIZE - 1, status);
+  (void)snprintf(message, sizeof(message), "STATUS=%.*s",
+                 (int)LINKSTAY_SYSTEMD_STATUS_SIZE - 1, status);
   bool ok = systemd_send_notify(notifier, message);
   if (ok) {
-    snprintf(notifier->last_status, sizeof(notifier->last_status), "%s",
-             status);
+    (void)snprintf(notifier->last_status, sizeof(notifier->last_status), "%s",
+                   status);
     notifier->last_status_ms = (now_ms == UINT64_MAX) ? 0 : now_ms;
   }
   return ok;

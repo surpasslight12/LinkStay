@@ -1,16 +1,23 @@
 #ifndef LINKSTAY_COMMON_H
 #define LINKSTAY_COMMON_H
 
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE
+#endif
+
 /*
  * common.h — foundation layer.
  *
- * Holds the primitives every other module depends on: project identity,
- * generic macros, the millisecond clock, exit codes, and a few static
- * assertions about the fundamental types the code relies on. It must not
- * depend on any other LinkStay header so it can sit at the bottom of the
+ * Project identity, generic macros, exit codes, and the monotonic clock.
+ * Depends only on the C/POSIX headers so it can sit at the bottom of the
  * include hierarchy.
  */
 
+#include <assert.h>
 #include <stdbool.h>
 #include <stdckdint.h>
 #include <stddef.h>
@@ -26,10 +33,10 @@
 
 #define LINKSTAY_ARRAY_LEN(arr) (sizeof(arr) / sizeof((arr)[0]))
 
-/* Branch-prediction hints and cold-path attribute. */
 #define LINKSTAY_UNLIKELY(x) __builtin_expect(!!(x), 0)
 #define LINKSTAY_LIKELY(x) __builtin_expect(!!(x), 1)
 #define LINKSTAY_COLD __attribute__((cold))
+#define LINKSTAY_ALIGNED(bytes) __attribute__((aligned(bytes)))
 
 static_assert(sizeof(uint64_t) == 8, "uint64_t must be 8 bytes");
 static_assert(sizeof(time_t) >= 4, "time_t must be at least 4 bytes");

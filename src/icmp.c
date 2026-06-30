@@ -6,6 +6,7 @@
 #include <netinet/ip.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 /* ICMP checksum — RFC 1071 one's-complement sum.  Internal to icmp.c.
@@ -30,6 +31,19 @@ static uint16_t icmp_calculate_checksum(const void *data, size_t len) {
   }
 
   return (uint16_t)(~sum);
+}
+
+static void icmp_fill_echo_payload(uint8_t *restrict packet,
+                                   size_t packet_len, size_t header_len) {
+  if (packet == NULL || header_len > packet_len) {
+    return;
+  }
+
+  uint8_t *payload = packet + header_len;
+  size_t payload_len = packet_len - header_len;
+  for (size_t i = 0; i != payload_len; i++) {
+    payload[i] = (uint8_t)(i & 0xFFU);
+  }
 }
 
 static bool
@@ -75,10 +89,9 @@ icmp_receive_source_matches(const struct sockaddr_storage *restrict dest_addr,
                 sizeof(dest6->sin6_addr)) == 0;
 }
 
-static icmp_receive_status_t icmp_parse_ipv4_reply(const uint8_t *restrict recv_buf,
-                                              size_t received,
-                                              uint16_t identifier,
-                                              uint16_t expected_sequence) {
+static icmp_receive_status_t
+icmp_parse_ipv4_reply(const uint8_t *restrict recv_buf, size_t received,
+                      uint16_t identifier, uint16_t expected_sequence) {
   if (recv_buf == NULL || received < sizeof(struct ip)) {
     return ICMP_RECEIVE_IGNORED;
   }
@@ -109,10 +122,9 @@ static icmp_receive_status_t icmp_parse_ipv4_reply(const uint8_t *restrict recv_
   return ICMP_RECEIVE_MATCHED;
 }
 
-static icmp_receive_status_t icmp_parse_ipv6_reply(const uint8_t *restrict recv_buf,
-                                              size_t received,
-                                              uint16_t identifier,
-                                              uint16_t expected_sequence) {
+static icmp_receive_status_t
+icmp_parse_ipv6_reply(const uint8_t *restrict recv_buf, size_t received,
+                      uint16_t identifier, uint16_t expected_sequence) {
   if (recv_buf == NULL || received < sizeof(struct icmp6_hdr)) {
     return ICMP_RECEIVE_IGNORED;
   }
@@ -244,6 +256,8 @@ bool icmp_pinger_send_echo(icmp_pinger_t *restrict pinger,
     icmp6_hdr->icmp6_code = 0;
     icmp6_hdr->icmp6_id = htons(identifier);
     icmp6_hdr->icmp6_seq = htons(pinger->sequence);
+    icmp_fill_echo_payload(pinger->send_buf, packet_len,
+                           sizeof(*icmp6_hdr));
   } else {
     struct icmphdr *icmp_hdr = (struct icmphdr *)pinger->send_buf;
     memset(icmp_hdr, 0, sizeof(*icmp_hdr));
@@ -251,6 +265,7 @@ bool icmp_pinger_send_echo(icmp_pinger_t *restrict pinger,
     icmp_hdr->code = 0;
     icmp_hdr->un.echo.id = htons(identifier);
     icmp_hdr->un.echo.sequence = htons(pinger->sequence);
+    icmp_fill_echo_payload(pinger->send_buf, packet_len, sizeof(*icmp_hdr));
     icmp_hdr->checksum = icmp_calculate_checksum(pinger->send_buf, packet_len);
   }
 
@@ -307,10 +322,10 @@ icmp_pinger_receive_reply(icmp_pinger_t *restrict pinger,
   icmp_receive_status_t status = ICMP_RECEIVE_IGNORED;
   if (dest_addr->ss_family == AF_INET) {
     status = icmp_parse_ipv4_reply(recv_buf, (size_t)received, identifier,
-                              expected_sequence);
+                                   expected_sequence);
   } else if (dest_addr->ss_family == AF_INET6) {
     status = icmp_parse_ipv6_reply(recv_buf, (size_t)received, identifier,
-                              expected_sequence);
+                                   expected_sequence);
   }
 
   if (status == ICMP_RECEIVE_MATCHED) {
@@ -326,9 +341,9 @@ icmp_pinger_receive_reply(icmp_pinger_t *restrict pinger,
 }
 
 bool icmp_resolve_target(const char *restrict target,
-                    struct sockaddr_storage *restrict addr,
-                    socklen_t *restrict addr_len, char *restrict error_msg,
-                    size_t error_size) {
+                         struct sockaddr_storage *restrict addr,
+                         socklen_t *restrict addr_len,
+                         char *restrict error_msg, size_t error_size) {
   if (target == NULL || addr == NULL || addr_len == NULL || error_msg == NULL ||
       error_size == 0) {
     return false;
