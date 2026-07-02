@@ -14,6 +14,8 @@
 
 #define LINKSTAY_PACKET_SIZE 64U
 #define LINKSTAY_MAX_REPLY_DRAIN_PER_TICK 32U
+#define LINKSTAY_SCHEDULER_DRIFT_INTERVAL_DIVISOR 10U
+#define LINKSTAY_SCHEDULER_DRIFT_MIN_WARN_MS 100U
 #define POLL_FD_SIGNAL 0
 #define POLL_FD_ICMP 1
 #define POLL_FD_COUNT 2
@@ -84,6 +86,7 @@ typedef struct {
   uint16_t expected_sequence;
   uint64_t interval_ms;
   uint64_t watchdog_interval_ms;
+  bool watchdog_last_failed; /* throttles repeated "send failed" warnings */
 } loop_state_t;
 
 typedef enum {
@@ -202,17 +205,9 @@ static step_result_t handle_threshold_reached(linkstay_ctx_t *ctx) {
   if (ctx->consecutive_fails < ctx->config.fail_threshold) {
     return STEP_CONTINUE;
   }
-  if (ctx->config.shutdown_mode == SHUTDOWN_MODE_LOG_ONLY) {
-    logger_warn(&ctx->logger,
-                "Log-only mode: %s unreachable after %d consecutive failures; "
-                "continuing without shutdown (failure counter reset)",
-                ctx->config.target, ctx->config.fail_threshold);
-    ctx->consecutive_fails = 0;
-    return STEP_CONTINUE;
-  }
 
   shutdown_result_t result = shutdown_trigger(&ctx->config, &ctx->logger);
-  if (ctx->config.shutdown_mode == SHUTDOWN_MODE_DRY_RUN) {
+  if (!ctx->config.poweroff) {
     logger_info(&ctx->logger,
                 "Dry-run complete: simulated shutdown reached, exiting "
                 "monitor loop");
@@ -275,9 +270,14 @@ static void handle_watchdog(linkstay_ctx_t *ctx, loop_state_t *state,
   }
   bool sent = systemd_notifier_watchdog(&ctx->systemd);
   timer_step(&state->next_watchdog, state->watchdog_interval_ms, now_ms);
-  if (!sent) {
+  /* Log only on the failure/recovery edge, not on every watchdog interval,
+   * so a persistently broken notify socket does not spam the log. */
+  if (!sent && !state->watchdog_last_failed) {
     logger_warn(&ctx->logger, "Failed to send systemd WATCHDOG notification");
+  } else if (sent && state->watchdog_last_failed) {
+    logger_info(&ctx->logger, "systemd WATCHDOG notification recovered");
   }
+  state->watchdog_last_failed = !sent;
 }
 
 static step_result_t handle_ping_timeout(linkstay_ctx_t *ctx,
@@ -299,6 +299,18 @@ static step_result_t handle_scheduler(linkstay_ctx_t *ctx, loop_state_t *state,
                                       uint64_t now_ms) {
   if (ping_in_flight(state) || !timer_elapsed(&state->next_ping, now_ms)) {
     return STEP_CONTINUE;
+  }
+  uint64_t drift_ms = now_ms - state->next_ping.deadline_ms;
+  uint64_t drift_warn_ms = state->interval_ms /
+                           LINKSTAY_SCHEDULER_DRIFT_INTERVAL_DIVISOR;
+  if (drift_warn_ms < LINKSTAY_SCHEDULER_DRIFT_MIN_WARN_MS) {
+    drift_warn_ms = LINKSTAY_SCHEDULER_DRIFT_MIN_WARN_MS;
+  }
+  if (drift_ms > drift_warn_ms) {
+    logger_debug(&ctx->logger,
+                 "Ping scheduler delayed by %" PRIu64
+                 "ms (threshold %" PRIu64 "ms)",
+                 drift_ms, drift_warn_ms);
   }
   step_result_t r = send_ping(ctx, state, now_ms);
   if (r != STEP_CONTINUE) {
@@ -371,18 +383,18 @@ static bool refresh_now(uint64_t *now_ms) {
 
 static void log_startup(linkstay_ctx_t *ctx) {
   logger_info(&ctx->logger,
-              "LinkStay %s monitoring %s | interval %ds, timeout %dms, "
-              "threshold %d, mode %s",
+              "linkstay %s monitoring %s | interval %ds, timeout %dms, "
+              "threshold %d, poweroff %s",
               LINKSTAY_VERSION, ctx->config.target, ctx->config.interval_sec,
               ctx->config.timeout_ms, ctx->config.fail_threshold,
-              shutdown_mode_to_string(ctx->config.shutdown_mode));
+              ctx->config.poweroff ? "true" : "false");
   if (systemd_notifier_is_enabled(&ctx->systemd) &&
       !systemd_notifier_ready(&ctx->systemd)) {
     logger_warn(&ctx->logger, "Failed to send systemd READY notification");
   }
-  notify_statusf(ctx, "Monitoring %s every %ds (mode %s)", ctx->config.target,
-                 ctx->config.interval_sec,
-                 shutdown_mode_to_string(ctx->config.shutdown_mode));
+  notify_statusf(ctx, "Monitoring %s every %ds (poweroff %s)",
+                 ctx->config.target, ctx->config.interval_sec,
+                 ctx->config.poweroff ? "true" : "false");
 }
 
 static void log_shutdown(linkstay_ctx_t *ctx, int exit_code) {
@@ -394,7 +406,7 @@ static void log_shutdown(linkstay_ctx_t *ctx, int exit_code) {
   }
   log_statistics(ctx);
   if (exit_code == LINKSTAY_EXIT_SUCCESS) {
-    logger_info(&ctx->logger, "LinkStay monitor stopped");
+    logger_info(&ctx->logger, "linkstay monitor stopped");
   }
 }
 
@@ -438,6 +450,16 @@ bool linkstay_ctx_init(linkstay_ctx_t *restrict ctx,
   int family = ((const struct sockaddr *)&ctx->dest_addr)->sa_family;
   if (!icmp_pinger_init(&ctx->pinger, family, error_msg, error_size)) {
     return false;
+  }
+  if (ctx->pinger.bpf_filter_errno != 0) {
+    logger_warn(&ctx->logger,
+                "ICMP BPF filter unavailable for %s traffic: %s; continuing "
+                "without kernel-side packet filtering",
+                family == AF_INET6 ? "IPv6" : "IPv4",
+                strerror(ctx->pinger.bpf_filter_errno));
+  } else if (ctx->pinger.bpf_filter_attached) {
+    logger_debug(&ctx->logger, "ICMP BPF filter active for %s traffic",
+                 family == AF_INET6 ? "IPv6" : "IPv4");
   }
 
   metrics_init(&ctx->metrics);

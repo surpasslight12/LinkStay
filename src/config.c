@@ -18,6 +18,7 @@
 #define LINKSTAY_DEFAULT_FAIL_THRESHOLD 5
 #define LINKSTAY_DEFAULT_TIMEOUT_MS 2000
 #define LINKSTAY_DEFAULT_SYSTEMD true
+#define LINKSTAY_DEFAULT_POWEROFF false
 #define LINKSTAY_THRESHOLD_ENV "LINKSTAY_THRESHOLD"
 #define LINKSTAY_THRESHOLD_ENV_ALIAS "LINKSTAY_FAIL_THRESHOLD"
 
@@ -25,7 +26,6 @@
 #define LINKSTAY_CONFIG_LOG_LEVEL_VALUES "silent|error|warn|info|debug"
 #define LINKSTAY_CONFIG_LOG_LEVEL_ALLOWED_VALUES                               \
   "silent|error|warn|info|debug (aliases: none=silent, warning=warn)"
-#define LINKSTAY_CONFIG_SHUTDOWN_MODE_VALUES "dry-run|true-off|log-only"
 #define LINKSTAY_SYSTEMCTL_PATH "/usr/bin/systemctl"
 #define LINKSTAY_SYSTEMD_RUNTIME_DIR "/run/systemd/system"
 
@@ -46,12 +46,6 @@ static const named_value_t LOG_LEVEL_OPTIONS[] = {
     {"error", LOG_LEVEL_ERROR},   {"warn", LOG_LEVEL_WARN},
     {"warning", LOG_LEVEL_WARN},  {"info", LOG_LEVEL_INFO},
     {"debug", LOG_LEVEL_DEBUG},
-};
-
-static const named_value_t SHUTDOWN_MODE_OPTIONS[] = {
-    {"dry-run", SHUTDOWN_MODE_DRY_RUN},
-    {"true-off", SHUTDOWN_MODE_TRUE_OFF},
-    {"log-only", SHUTDOWN_MODE_LOG_ONLY},
 };
 
 static bool parse_named(const named_value_t *options, size_t count,
@@ -76,7 +70,7 @@ static const struct option LONG_OPTIONS[] = {
     {"threshold", required_argument, 0, 'n'},
     {"fail-threshold", required_argument, 0, 'n'},
     {"timeout", required_argument, 0, 'w'},
-    {"mode", required_argument, 0, 'm'},
+    {"poweroff", optional_argument, 0, 'p'},
     {"log-level", required_argument, 0, 'l'},
     {"systemd", optional_argument, 0, 's'},
     {"version", no_argument, 0, 'v'},
@@ -84,7 +78,7 @@ static const struct option LONG_OPTIONS[] = {
     {0, 0, 0, 0},
 };
 
-static const char OPTSTRING[] = "t:i:n:w:m:l:s::vh";
+static const char OPTSTRING[] = "t:i:n:w:p::l:s::vh";
 
 /* ---- Small utilities ---- */
 
@@ -160,13 +154,36 @@ static bool parse_log_level(const char *arg, log_level_t *out_value) {
   return true;
 }
 
-static bool parse_shutdown_mode(const char *arg, shutdown_mode_t *out_value) {
-  int parsed = 0;
-  if (!parse_named(SHUTDOWN_MODE_OPTIONS,
-                   LINKSTAY_ARRAY_LEN(SHUTDOWN_MODE_OPTIONS), arg, &parsed)) {
-    return false;
+/* ---- Shared value-application helpers ----
+ * Both load_from_env() and load_from_cmdline() need to parse an optional
+ * named-value option and turn a parse failure into the same
+ * config_invalid_value() error. Centralizing that here keeps the two
+ * loading paths from drifting apart on error message wording. */
+
+static bool apply_log_level(const char *name, const char *value,
+                            log_level_t *out_value, char *error_msg,
+                            size_t error_size) {
+  if (value == nullptr) {
+    return true;
   }
-  *out_value = (shutdown_mode_t)parsed;
+  if (!parse_log_level(value, out_value)) {
+    return config_invalid_value(name, value,
+                                LINKSTAY_CONFIG_LOG_LEVEL_ALLOWED_VALUES,
+                                error_msg, error_size);
+  }
+  return true;
+}
+
+static bool apply_bool_flag(const char *name, const char *value,
+                            bool implicit_true_when_null, bool *out_value,
+                            char *error_msg, size_t error_size) {
+  if (value == nullptr && !implicit_true_when_null) {
+    return true;
+  }
+  if (!parse_bool(value, implicit_true_when_null, out_value)) {
+    return config_invalid_value(name, value, LINKSTAY_CONFIG_BOOL_VALUES,
+                                error_msg, error_size);
+  }
   return true;
 }
 
@@ -177,7 +194,7 @@ static void config_init_default(config_t *config) {
       .interval_sec = LINKSTAY_DEFAULT_INTERVAL_SEC,
       .fail_threshold = LINKSTAY_DEFAULT_FAIL_THRESHOLD,
       .timeout_ms = LINKSTAY_DEFAULT_TIMEOUT_MS,
-      .shutdown_mode = SHUTDOWN_MODE_DRY_RUN,
+      .poweroff = LINKSTAY_DEFAULT_POWEROFF,
       .log_level = LOG_LEVEL_INFO,
       .enable_systemd = LINKSTAY_DEFAULT_SYSTEMD,
   };
@@ -192,19 +209,17 @@ static bool is_ip_literal(const char *target) {
 }
 
 static bool systemd_runtime_available(void) {
+  struct stat systemctl_stat;
   struct stat runtime_dir_stat;
+  /* Defense-in-depth beyond the executability check: require systemctl to be
+   * owned by root and not world-writable, so a compromised/replaced binary
+   * at this well-known path cannot be silently trusted when poweroff is on. */
   return access(LINKSTAY_SYSTEMCTL_PATH, X_OK) == 0 &&
+         stat(LINKSTAY_SYSTEMCTL_PATH, &systemctl_stat) == 0 &&
+         systemctl_stat.st_uid == 0 &&
+         !(systemctl_stat.st_mode & S_IWOTH) &&
          stat(LINKSTAY_SYSTEMD_RUNTIME_DIR, &runtime_dir_stat) == 0 &&
          S_ISDIR(runtime_dir_stat.st_mode);
-}
-
-const char *shutdown_mode_to_string(shutdown_mode_t mode) {
-  for (size_t i = 0; i < LINKSTAY_ARRAY_LEN(SHUTDOWN_MODE_OPTIONS); i++) {
-    if (SHUTDOWN_MODE_OPTIONS[i].value == (int)mode) {
-      return SHUTDOWN_MODE_OPTIONS[i].name;
-    }
-  }
-  return "unknown";
 }
 
 static bool config_validate(const config_t *config, char *error_msg,
@@ -233,11 +248,10 @@ static bool config_validate(const config_t *config, char *error_msg,
         config->timeout_ms, config->interval_sec, interval_ms);
   }
 
-  if (config->shutdown_mode == SHUTDOWN_MODE_TRUE_OFF &&
-      !systemd_runtime_available()) {
+  if (config->poweroff && !systemd_runtime_available()) {
     return config_errorf(
         error_msg, error_size,
-        "true-off requires a systemd host with %s and %s available",
+        "poweroff requires a systemd host with %s and %s available",
         LINKSTAY_SYSTEMCTL_PATH, LINKSTAY_SYSTEMD_RUNTIME_DIR);
   }
   return true;
@@ -257,8 +271,8 @@ void config_print(const config_t *restrict config,
   logger_debug(logger, "  Interval: %d seconds", config->interval_sec);
   logger_debug(logger, "  Threshold: %d", config->fail_threshold);
   logger_debug(logger, "  Timeout: %d ms", config->timeout_ms);
-  logger_debug(logger, "  Shutdown Mode: %s",
-               shutdown_mode_to_string(config->shutdown_mode));
+  logger_debug(logger, "  Poweroff: %s",
+               config->poweroff ? "true" : "false");
   logger_debug(logger, "  Log Level: %s",
                log_level_to_string(config->log_level));
   logger_debug(logger, "  Timestamp: %s",
@@ -286,10 +300,13 @@ static void print_usage(void) {
          "%d)\n\n",
          LINKSTAY_DEFAULT_TIMEOUT_MS);
   printf("Shutdown Options:\n");
-  printf("  -m, --mode <mode>           Shutdown mode: %s\n",
-         LINKSTAY_CONFIG_SHUTDOWN_MODE_VALUES);
-  printf("                              (default: dry-run)\n");
-  printf("                              true-off requires a systemd host with "
+  printf("  -p[ARG], --poweroff[=ARG]   Actually power the system off when the "
+         "threshold is reached\n");
+  printf("                              (default: %s; false only simulates)\n",
+         LINKSTAY_DEFAULT_POWEROFF ? "true" : "false");
+  printf("                              Flag alone enables it; use "
+         "--poweroff=false or -p0 to disable\n");
+  printf("                              true requires a systemd host with "
          "%s\n\n",
          LINKSTAY_SYSTEMCTL_PATH);
   printf("Logging Options:\n");
@@ -318,21 +335,21 @@ static void print_usage(void) {
   printf("  Network:      LINKSTAY_TARGET, LINKSTAY_INTERVAL,\n");
   printf("                LINKSTAY_THRESHOLD (alias: %s), LINKSTAY_TIMEOUT\n",
          LINKSTAY_THRESHOLD_ENV_ALIAS);
-  printf("  Shutdown:     LINKSTAY_MODE\n");
+  printf("  Shutdown:     LINKSTAY_POWEROFF\n");
   printf("  Logging:      LINKSTAY_LOG_LEVEL\n");
   printf("  Integration:  LINKSTAY_SYSTEMD\n");
   printf("\nExamples:\n");
   printf("  %s -t 1.1.1.1 -i 10 -n 5\n", LINKSTAY_PROGRAM_NAME);
-  printf("  %s -t 192.168.1.1 -i 5 -n 3 --mode true-off\n",
+  printf("  %s -t 192.168.1.1 -i 5 -n 3 --poweroff\n",
          LINKSTAY_PROGRAM_NAME);
   printf("  %s -t 8.8.8.8 -l debug --systemd=0\n", LINKSTAY_PROGRAM_NAME);
-  printf("  %s -t 8.8.8.8 -i 5 -n 3 -m true-off -s0 -l debug\n",
+  printf("  %s -t 8.8.8.8 -i 5 -n 3 -p -s0 -l debug\n",
          LINKSTAY_PROGRAM_NAME);
 }
 
 static void print_version(void) {
   printf("%s version %s\n", LINKSTAY_PROGRAM_NAME, LINKSTAY_VERSION);
-  printf("LinkStay network monitor\n");
+  printf("linkstay network monitor\n");
 }
 
 /* Pre-scan argv for --help/--version so we honor them even when env or other
@@ -433,26 +450,21 @@ static bool load_from_env(config_t *config, char *error_msg,
   }
 
   const char *systemd_value = getenv("LINKSTAY_SYSTEMD");
-  if (systemd_value != nullptr &&
-      !parse_bool(systemd_value, false, &config->enable_systemd)) {
-    return config_invalid_value("LINKSTAY_SYSTEMD", systemd_value,
-                                LINKSTAY_CONFIG_BOOL_VALUES, error_msg,
-                                error_size);
+  if (!apply_bool_flag("LINKSTAY_SYSTEMD", systemd_value, false,
+                       &config->enable_systemd, error_msg, error_size)) {
+    return false;
   }
 
-  const char *mode = getenv("LINKSTAY_MODE");
-  if (mode != nullptr && !parse_shutdown_mode(mode, &config->shutdown_mode)) {
-    return config_invalid_value("LINKSTAY_MODE", mode,
-                                LINKSTAY_CONFIG_SHUTDOWN_MODE_VALUES,
-                                error_msg, error_size);
+  const char *poweroff = getenv("LINKSTAY_POWEROFF");
+  if (!apply_bool_flag("LINKSTAY_POWEROFF", poweroff, false, &config->poweroff,
+                       error_msg, error_size)) {
+    return false;
   }
 
   const char *log_level = getenv("LINKSTAY_LOG_LEVEL");
-  if (log_level != nullptr &&
-      !parse_log_level(log_level, &config->log_level)) {
-    return config_invalid_value("LINKSTAY_LOG_LEVEL", log_level,
-                                LINKSTAY_CONFIG_LOG_LEVEL_ALLOWED_VALUES,
-                                error_msg, error_size);
+  if (!apply_log_level("LINKSTAY_LOG_LEVEL", log_level, &config->log_level,
+                       error_msg, error_size)) {
+    return false;
   }
 
   return true;
@@ -496,25 +508,22 @@ static bool load_from_cmdline(config_t *config, int argc, char **argv,
         return false;
       }
       break;
-    case 'm':
-      if (!parse_shutdown_mode(optarg, &config->shutdown_mode)) {
-        return config_invalid_value("--mode", optarg,
-                                    LINKSTAY_CONFIG_SHUTDOWN_MODE_VALUES,
-                                    error_msg, error_size);
+    case 'p':
+      if (!apply_bool_flag("--poweroff", optarg, true, &config->poweroff,
+                           error_msg, error_size)) {
+        return false;
       }
       break;
     case 'l':
-      if (!parse_log_level(optarg, &config->log_level)) {
-        return config_invalid_value("--log-level", optarg,
-                                    LINKSTAY_CONFIG_LOG_LEVEL_ALLOWED_VALUES,
-                                    error_msg, error_size);
+      if (!apply_log_level("--log-level", optarg, &config->log_level,
+                           error_msg, error_size)) {
+        return false;
       }
       break;
     case 's':
-      if (!parse_bool(optarg, true, &config->enable_systemd)) {
-        return config_invalid_value("--systemd", optarg,
-                                    LINKSTAY_CONFIG_BOOL_VALUES, error_msg,
-                                    error_size);
+      if (!apply_bool_flag("--systemd", optarg, true, &config->enable_systemd,
+                           error_msg, error_size)) {
+        return false;
       }
       break;
     case 'v':

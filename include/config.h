@@ -13,12 +13,6 @@
 #include "common.h"
 #include "logger.h"
 
-typedef enum {
-  SHUTDOWN_MODE_DRY_RUN,
-  SHUTDOWN_MODE_TRUE_OFF,
-  SHUTDOWN_MODE_LOG_ONLY
-} shutdown_mode_t;
-
 /* Target buffer: IPv6 max literal is 45 chars; 64 is ample. */
 typedef struct {
   /* Network */
@@ -27,8 +21,8 @@ typedef struct {
   int fail_threshold;
   int timeout_ms;
 
-  /* Shutdown */
-  shutdown_mode_t shutdown_mode;
+  /* Shutdown: true powers the system off via systemctl; false only simulates. */
+  bool poweroff;
 
   /* Logging */
   log_level_t log_level;
@@ -44,6 +38,5 @@ typedef struct {
 [[nodiscard]] bool config_log_timestamps_enabled(const config_t *restrict config);
 void config_print(const config_t *restrict config,
                   const logger_t *restrict logger);
-const char *shutdown_mode_to_string(shutdown_mode_t mode);
 
 #endif /* LINKSTAY_CONFIG_H */

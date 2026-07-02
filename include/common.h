@@ -23,7 +23,7 @@
 #include <time.h>
 
 #define LINKSTAY_VERSION "1.0"
-#define LINKSTAY_PROGRAM_NAME "LinkStay"
+#define LINKSTAY_PROGRAM_NAME "linkstay"
 
 #define LINKSTAY_MS_PER_SEC UINT64_C(1000)
 #define LINKSTAY_EXIT_SUCCESS 0

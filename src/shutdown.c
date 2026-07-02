@@ -143,10 +143,10 @@ shutdown_result_t shutdown_trigger(const config_t *config,
     return SHUTDOWN_RESULT_FAILED;
   }
 
-  logger_warn(logger, "Failure threshold reached, shutdown mode is %s",
-              shutdown_mode_to_string(config->shutdown_mode));
+  logger_warn(logger, "Failure threshold reached, poweroff is %s",
+              config->poweroff ? "true" : "false");
 
-  if (config->shutdown_mode == SHUTDOWN_MODE_DRY_RUN) {
+  if (!config->poweroff) {
     logger_info(logger,
                 "[DRY-RUN] Would power off the system now (no action taken)");
     return SHUTDOWN_RESULT_NO_ACTION;

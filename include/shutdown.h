@@ -4,9 +4,9 @@
 /*
  * shutdown.h — shutdown backend.
  *
- * Invokes `systemctl --no-block poweroff` for true-off while preserving
- * dry-run and log-only semantics. Uses posix_spawn() plus startup
- * observation rather than shelling out.
+ * Invokes `systemctl --no-block poweroff` when poweroff is enabled; otherwise
+ * only simulates the action. Uses posix_spawn() plus startup observation
+ * rather than shelling out.
  */
 
 #include "config.h"

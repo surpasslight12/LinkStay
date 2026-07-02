@@ -2,7 +2,7 @@
 
 ## Build and lint commands
 
-- Build the binary with `make`. The output is `bin/LinkStay`.
+- Build the binary with `make`. The output is `bin/linkstay`.
 - Build a stripped release binary with `make release`.
 - Run linters with `make lint` (`cppcheck` + `clang-tidy`). At the current baseline this command completes but reports existing findings, so do not assume the repository is lint-clean before your changes.
 - Source layout is split: all public headers live in `include/` and all translation units (`.c`) live in `src/`. The Makefile adds `-Iinclude` so quoted includes such as `#include "monitor.h"` resolve without relative paths.
@@ -15,8 +15,8 @@
 - `src/monitor.c` is the core orchestration: the reactor loop, signal handling, ping scheduling, reply deadlines, shutdown FSM, and systemd watchdog scheduling. The loop uses `poll()` plus `signalfd`, not threaded workers. It calls `systemd_notifier_*` directly — there is no separate runtime-services indirection. Ping statistics live in `src/metrics.c`.
 - `src/metrics.c` aggregates ping statistics (counts, latency extremes, uptime) behind a small value type.
 - `src/icmp.c` owns raw-socket ICMP send/receive logic, packet construction, reply matching, and optional BPF socket filters for IPv4/IPv6 traffic.
-- `src/shutdown.c` is the shutdown backend layer. It invokes `systemctl poweroff` for `true-off`, preserves dry-run and log-only behavior, and uses `posix_spawn()` plus startup observation instead of shelling out.
-- `src/systemd.c` implements `sd_notify`-style integration directly over the notify socket. `systemd/LinkStay.service` expects this with `Type=notify`, `NotifyAccess=main`, and `WatchdogSec=30`; the shipped sample unit defaults to `LINKSTAY_MODE=log-only` so monitoring remains persistent until operators explicitly switch to `true-off`. Notifier helpers are no-ops when `enabled=false`, so the monitor can call them unconditionally; the monitor sets `systemd.sockfd = -1` before optionally calling `systemd_notifier_init()` so cleanup never closes fd 0.
+- `src/shutdown.c` is the shutdown backend layer. When `poweroff=true` it invokes `systemctl poweroff`; when `poweroff=false` it only simulates (dry-run), and it uses `posix_spawn()` plus startup observation instead of shelling out.
+- `src/systemd.c` implements `sd_notify`-style integration directly over the notify socket. `systemd/linkstay.service` expects this with `Type=notify`, `NotifyAccess=main`, and `WatchdogSec=30`; the shipped sample unit defaults to `LINKSTAY_POWEROFF=false` so the service only simulates until operators explicitly set `LINKSTAY_POWEROFF=true`. Notifier helpers are no-ops when `enabled=false`, so the monitor can call them unconditionally; the monitor sets `systemd.sockfd = -1` before optionally calling `systemd_notifier_init()` so cleanup never closes fd 0.
 - `src/common.c` is intentionally minimal: it owns only `get_monotonic_ms()`. Use `<string.h>` (`memset`, `memcpy`) and `<stdio.h>` (`snprintf`, `vsnprintf`) directly — there are no custom mem/format wrappers.
 - Headers are organized as a layered hierarchy under `include/`: `include/common.h` is the dependency-free foundation; each module owns its own header (`logger.h`, `metrics.h`, `config.h`, `icmp.h`, `shutdown.h`, `systemd.h`); `include/monitor.h` aggregates them and defines `linkstay_ctx_t`, the shared runtime object holding config, resolved destination address, logger, metrics, ICMP state, and the systemd notifier. The matching `.c` implementations live in `src/`.
 - Top-level structure is intentionally small: `include/` for public module interfaces, `src/` for implementations, `systemd/` for deployable unit examples, `.github/copilot-instructions.md` for AI collaboration rules, and `Makefile` for local build entry points.
@@ -31,7 +31,7 @@ All short options are lowercase and mnemonic:
 | `-i` | `--interval` | `LINKSTAY_INTERVAL` | Ping interval (seconds) |
 | `-n` | `--threshold` / `--fail-threshold` | `LINKSTAY_THRESHOLD` | Consecutive failure threshold; env alias `LINKSTAY_FAIL_THRESHOLD` is also accepted |
 | `-w` | `--timeout` | `LINKSTAY_TIMEOUT` | Ping timeout (milliseconds) |
-| `-m` | `--mode` | `LINKSTAY_MODE` | Shutdown mode: dry-run/true-off/log-only |
+| `-p` | `--poweroff` | `LINKSTAY_POWEROFF` | Optional bool; bare flag = true; when true powers off via systemctl, when false only simulates (dry-run). Accepts true/false/1/0/yes/no/on/off |
 | `-l` | `--log-level` | `LINKSTAY_LOG_LEVEL` | Log level: silent/error/warn/info/debug; aliases `none`=`silent`, `warning`=`warn` |
 | `-s` | `--systemd` | `LINKSTAY_SYSTEMD` | Optional bool; bare flag = true; accepts true/false/1/0/yes/no/on/off |
 | `-v` | `--version` | — | Show version |
@@ -44,7 +44,7 @@ Config precedence: defaults → environment variables → CLI arguments. `config
 - `LINKSTAY_TARGET` and `--target` accept only IPv4/IPv6 literals. DNS names are intentionally rejected.
 - `--systemd` / `-s` uses an optional boolean argument. A bare flag enables integration; explicit disable uses `--systemd=0`, `--systemd=false`, `-s0`, or `-sfalse`.
 - `--fail-threshold` is a clearer long alias for `--threshold`. `LINKSTAY_FAIL_THRESHOLD` is accepted as an environment alias; if it conflicts with `LINKSTAY_THRESHOLD`, config resolution fails fast.
-- `dry-run` is a terminal simulation path: once the threshold is reached and the simulated shutdown path completes, the process exits. Use `log-only` for persistent safe monitoring.
+- `poweroff=false` (the default) is a terminal simulation path: once the threshold is reached and the simulated shutdown path completes, the process exits. Set `poweroff=true` to perform a real `systemctl poweroff`.
 - Log timestamps are derived from systemd integration state, not a separate config knob: timestamps are disabled when systemd logging is enabled and enabled otherwise.
 - The codebase prefers stack buffers and caller-owned error buffers over heap allocation. Many public functions follow `(..., char *restrict error_msg, size_t error_size)` and return `bool`/enum status.
 - Headers form a layered hierarchy rooted at `include/common.h` (no LinkStay dependencies) and live in `include/`, while implementations live in `src/`. Each module owns a focused header; put shared enums, constants, structs, and public declarations in the header of the module that owns them, and keep monitor/runtime orchestration helpers `static` inside `monitor.c` unless another translation unit genuinely needs them.

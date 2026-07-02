@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-test:
+    name: Build, test, and staging install
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc make
+
+      - name: Build
+        run: make clean && make PORTABLE=1
+
+      - name: Test
+        run: make test PORTABLE=1
+
+      - name: Release build
+        run: make release PORTABLE=1
+
+      - name: Staging install
+        run: |
+          make install-systemd DESTDIR="$RUNNER_TEMP/linkstay-stage" PREFIX=/usr/local PORTABLE=1
+          test -x "$RUNNER_TEMP/linkstay-stage/usr/local/bin/LinkStay"
+          test -f "$RUNNER_TEMP/linkstay-stage/etc/systemd/system/LinkStay.service"
+
+  sanitize:
+    name: ASan/UBSan build and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc make
+
+      - name: Sanitizer build and test
+        run: make clean && make sanitize-test PORTABLE=1 SAN=address,undefined
+
+  lint:
+    name: Lint baseline
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install lint tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-tidy cppcheck gcc make
+
+      - name: Lint
+        run: make lint PORTABLE=1
+        # cppcheck/clang-tidy report pre-existing findings at the current
+        # baseline (see .github/copilot-instructions.md); this job is
+        # informational and intentionally non-blocking until the baseline
+        # is cleaned up. Check the job log for new warnings introduced by a
+        # change.
+        continue-on-error: true

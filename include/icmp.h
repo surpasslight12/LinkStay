@@ -16,6 +16,7 @@
 #include <sys/socket.h>
 
 #define LINKSTAY_ICMP_SEND_BUFFER_SIZE 256U
+#define LINKSTAY_ICMP_RECV_BUFFER_SIZE 1500U
 
 typedef struct {
   bool success;
@@ -35,6 +36,8 @@ typedef struct {
   int sockfd;
   int family;
   uint16_t sequence;
+  bool bpf_filter_attached;
+  int bpf_filter_errno;
 
   /* Send buffer (stack-allocated, zero-alloc model).
    * Aligned to 4 so casts to struct icmphdr / icmp6_hdr are well-defined. */
@@ -44,7 +47,7 @@ typedef struct {
    * 1500 bytes covers the largest standard Ethernet-MTU ICMP reply; aligned to
    * 16 so IP/ICMP header accesses are naturally aligned. Reusing it keeps the
    * hot receive path off a large per-call stack frame. */
-  alignas(16) uint8_t recv_buf[1500];
+  alignas(16) uint8_t recv_buf[LINKSTAY_ICMP_RECV_BUFFER_SIZE];
 } icmp_pinger_t;
 
 static_assert(sizeof(struct icmphdr) >= 8,

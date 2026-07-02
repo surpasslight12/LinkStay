@@ -6,7 +6,7 @@ static void main_log_early_error(bool enable_timestamp,
                                  const char *restrict error_msg) {
   logger_t logger;
   logger_init(&logger, LOG_LEVEL_ERROR, enable_timestamp);
-  logger_error(&logger, "LinkStay failed: %s", error_msg);
+  logger_error(&logger, "linkstay failed: %s", error_msg);
 }
 
 int main(int argc, char **argv) {
@@ -32,7 +32,7 @@ int main(int argc, char **argv) {
 
   int rc = linkstay_reactor_run(&ctx);
   if (rc != LINKSTAY_EXIT_SUCCESS) {
-    logger_error(&ctx.logger, "LinkStay exited with code %d", rc);
+    logger_error(&ctx.logger, "linkstay exited with code %d", rc);
   }
   linkstay_ctx_destroy(&ctx);
   return rc;

@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <limits.h>
 #include <linux/filter.h>
 #include <netinet/ip.h>
 #include <stdio.h>
@@ -129,6 +130,11 @@ icmp_parse_ipv6_reply(const uint8_t *restrict recv_buf, size_t received,
     return ICMP_RECEIVE_IGNORED;
   }
 
+  /* Unlike the IPv4 path above, no header offset is skipped here: on Linux,
+   * an IPPROTO_ICMPV6 raw socket delivers only the ICMPv6 payload (the
+   * kernel strips the IPv6 header before handing the datagram to
+   * userspace), whereas an IPPROTO_ICMP raw socket includes the IPv4
+   * header. This is standard Linux raw-socket behavior, not an oversight. */
   const struct icmp6_hdr *icmp6_hdr = (const struct icmp6_hdr *)recv_buf;
   if (icmp6_hdr->icmp6_type != ICMP6_ECHO_REPLY) {
     return ICMP_RECEIVE_IGNORED;
@@ -144,12 +150,21 @@ icmp_parse_ipv6_reply(const uint8_t *restrict recv_buf, size_t received,
 }
 
 /* Non-fatal: BPF filter improves performance but is not required. */
-static void icmp_attach_bpf_filter(int sockfd, struct sock_filter *filter,
-                                   size_t filter_count) {
+static int icmp_attach_bpf_filter(int sockfd, struct sock_filter *filter,
+                                  size_t filter_count) {
+  /* struct sock_fprog.len is an unsigned short; guard against silent
+   * truncation if a future filter program ever grows past that range. */
+  if (filter_count > USHRT_MAX) {
+    return EINVAL;
+  }
+
   struct sock_fprog fprog = {.len = (unsigned short)filter_count,
                              .filter = filter};
-  (void)setsockopt(sockfd, SOL_SOCKET, SO_ATTACH_FILTER, &fprog,
-                   sizeof(fprog));
+  if (setsockopt(sockfd, SOL_SOCKET, SO_ATTACH_FILTER, &fprog,
+                 sizeof(fprog)) == 0) {
+    return 0;
+  }
+  return errno;
 }
 
 bool icmp_pinger_init(icmp_pinger_t *restrict pinger, int family,
@@ -161,6 +176,8 @@ bool icmp_pinger_init(icmp_pinger_t *restrict pinger, int family,
   pinger->sockfd = -1;
   pinger->family = family;
   pinger->sequence = 0;
+  pinger->bpf_filter_attached = false;
+  pinger->bpf_filter_errno = 0;
 
   int proto = (family == AF_INET6) ? IPPROTO_ICMPV6 : IPPROTO_ICMP;
 
@@ -176,6 +193,7 @@ bool icmp_pinger_init(icmp_pinger_t *restrict pinger, int family,
   }
 
   /* Attach kernel BPF filter to drop irrelevant ICMP packets. */
+  bool filter_attempted = false;
   if (family == AF_INET) {
     struct sock_filter filter[] = {
         BPF_STMT(BPF_LD | BPF_B | BPF_ABS,
@@ -189,8 +207,9 @@ bool icmp_pinger_init(icmp_pinger_t *restrict pinger, int family,
         BPF_STMT(BPF_RET | BPF_K, 0xffff), /* Accept (keep full packet)    */
         BPF_STMT(BPF_RET | BPF_K, 0)       /* Reject (drop packet)         */
     };
-    icmp_attach_bpf_filter(pinger->sockfd, filter,
-                           LINKSTAY_ARRAY_LEN(filter));
+      filter_attempted = true;
+      pinger->bpf_filter_errno = icmp_attach_bpf_filter(
+        pinger->sockfd, filter, LINKSTAY_ARRAY_LEN(filter));
   } else if (family == AF_INET6) {
     struct sock_filter filter[] = {
         BPF_STMT(BPF_LD | BPF_B | BPF_ABS, 0), /* A = icmp6[0] (ICMPv6 Type) */
@@ -199,9 +218,13 @@ bool icmp_pinger_init(icmp_pinger_t *restrict pinger, int family,
         BPF_STMT(BPF_RET | BPF_K, 0xffff), /* Accept (keep full packet)    */
         BPF_STMT(BPF_RET | BPF_K, 0)       /* Reject (drop packet)         */
     };
-    icmp_attach_bpf_filter(pinger->sockfd, filter,
-                           LINKSTAY_ARRAY_LEN(filter));
+      filter_attempted = true;
+      pinger->bpf_filter_errno = icmp_attach_bpf_filter(
+        pinger->sockfd, filter, LINKSTAY_ARRAY_LEN(filter));
   }
+
+      pinger->bpf_filter_attached = filter_attempted &&
+                    pinger->bpf_filter_errno == 0;
 
   return true;
 }

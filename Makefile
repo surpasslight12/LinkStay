@@ -2,7 +2,15 @@ CC ?= gcc
 BIN_DIR ?= bin
 SRC_DIR ?= src
 INC_DIR ?= include
-TARGET := $(BIN_DIR)/LinkStay
+TARGET := $(BIN_DIR)/linkstay
+PREFIX ?= /usr/local
+DESTDIR ?=
+BINDIR ?= $(PREFIX)/bin
+SYSCONFDIR ?= /etc
+SYSTEMD_UNIT_DIR ?= $(SYSCONFDIR)/systemd/system
+INSTALL ?= install
+RM ?= rm -f
+BIN ?= $(TARGET)
 
 WARN_CFLAGS := -Wall -Wextra -Wpedantic \
 	-Wshadow -Wnull-dereference -Wdouble-promotion \
@@ -35,7 +43,10 @@ SRCS := $(wildcard $(SRC_DIR)/*.c)
 OBJS := $(patsubst $(SRC_DIR)/%.c,$(BIN_DIR)/%.o,$(SRCS))
 DEPS := $(OBJS:.o=.d)
 
-.PHONY: all clean release lint
+SAN ?= address,undefined
+SANITIZE_BIN_DIR ?= bin-sanitize
+
+.PHONY: all clean release lint test sanitize sanitize-test install install-systemd uninstall
 
 all: $(TARGET)
 
@@ -59,7 +70,34 @@ lint:
 	@cppcheck --enable=all --suppress=missingIncludeSystem -I$(INC_DIR) $(SRC_DIR)/*.c
 	@clang-tidy $(SRC_DIR)/*.c -- $(CFLAGS) $(REQUIRED_CFLAGS)
 
+test: $(TARGET)
+	BIN="$(BIN)" bash tests/run_tests.sh
+
+# Debug-optimized build with ASan/UBSan instrumentation in a separate output
+# directory (bin-sanitize/), so it never mixes object files with the normal
+# optimized build. Override SAN to select sanitizers, e.g. `make sanitize
+# SAN=address,undefined,leak`.
+sanitize:
+	$(MAKE) BIN_DIR=$(SANITIZE_BIN_DIR) \
+		CFLAGS="$(WARN_CFLAGS) -O1 -g -fno-omit-frame-pointer $(CODEGEN_CFLAGS) -fsanitize=$(SAN) -fno-sanitize-recover=all" \
+		LDFLAGS="-fsanitize=$(SAN) -fno-sanitize-recover=all" \
+		all
+	@echo "Sanitizer build complete (SAN=$(SAN)): $(SANITIZE_BIN_DIR)/linkstay"
+
+sanitize-test: sanitize
+	BIN="$(SANITIZE_BIN_DIR)/linkstay" bash tests/run_tests.sh
+
+install: $(TARGET)
+	$(INSTALL) -D -m 755 $(TARGET) $(DESTDIR)$(BINDIR)/linkstay
+
+install-systemd: install
+	$(INSTALL) -D -m 644 systemd/linkstay.service $(DESTDIR)$(SYSTEMD_UNIT_DIR)/linkstay.service
+
+uninstall:
+	$(RM) $(DESTDIR)$(BINDIR)/linkstay
+	$(RM) $(DESTDIR)$(SYSTEMD_UNIT_DIR)/linkstay.service
+
 clean:
-	rm -rf $(BIN_DIR)
+	rm -rf $(BIN_DIR) $(SANITIZE_BIN_DIR)
 
 -include $(DEPS)
