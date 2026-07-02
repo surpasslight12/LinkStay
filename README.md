@@ -93,7 +93,7 @@ make install-systemd DESTDIR=/tmp/linkstay-stage PREFIX=/usr/local
 |------|----------|----------|--------|------|
 | 监控目标 | `-t, --target` | `LINKSTAY_TARGET` | `1.1.1.1` | 目标 IP 字面量（仅支持 IPv4/IPv6，不解析域名） |
 | 检测间隔 | `-i, --interval` | `LINKSTAY_INTERVAL` | `10`（秒） | 两次 ping 之间的间隔 |
-| 失败阈值 | `-n, --threshold, --fail-threshold` | `LINKSTAY_THRESHOLD` | `5` | 连续失败次数触发关机；兼容读取 `LINKSTAY_FAIL_THRESHOLD` |
+| 失败阈值 | `-n, --threshold` | `LINKSTAY_THRESHOLD` | `5` | 连续失败次数触发关机 |
 | 超时时间 | `-w, --timeout` | `LINKSTAY_TIMEOUT` | `2000`（ms） | 单次 ping 等待回包的超时，必须小于 interval |
 | 是否关机 | `-p, --poweroff` | `LINKSTAY_POWEROFF` | `false` | `true` 实际执行关机，`false` 仅模拟；接受 `true/false/1/0/yes/no/on/off` |
 | 日志级别 | `-l, --log-level` | `LINKSTAY_LOG_LEVEL` | `info` | 规范值为 `silent` / `error` / `warn` / `info` / `debug`；兼容别名 `none=silent`、`warning=warn` |
@@ -105,7 +105,6 @@ make install-systemd DESTDIR=/tmp/linkstay-stage PREFIX=/usr/local
 
 - 必选参数既支持分开写法（如 `-i 5`），也支持粘连写法（如 `-i5`）
 - `-p`、`-s` 对应可选参数；不带值时等价于启用，若要显式关闭推荐使用 `--poweroff=0`/`-p0`、`--systemd=0`/`-s0`
-- `LINKSTAY_THRESHOLD` 兼容别名 `LINKSTAY_FAIL_THRESHOLD`；若两者同时设置且值不同，程序会拒绝启动以避免歧义
 
 ## 关机行为说明
 

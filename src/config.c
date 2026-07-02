@@ -8,7 +8,6 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -20,7 +19,6 @@
 #define LINKSTAY_DEFAULT_SYSTEMD true
 #define LINKSTAY_DEFAULT_POWEROFF false
 #define LINKSTAY_THRESHOLD_ENV "LINKSTAY_THRESHOLD"
-#define LINKSTAY_THRESHOLD_ENV_ALIAS "LINKSTAY_FAIL_THRESHOLD"
 
 #define LINKSTAY_CONFIG_BOOL_VALUES "true|false|1|0|yes|no|on|off"
 #define LINKSTAY_CONFIG_LOG_LEVEL_VALUES "silent|error|warn|info|debug"
@@ -68,7 +66,6 @@ static const struct option LONG_OPTIONS[] = {
     {"target", required_argument, 0, 't'},
     {"interval", required_argument, 0, 'i'},
     {"threshold", required_argument, 0, 'n'},
-    {"fail-threshold", required_argument, 0, 'n'},
     {"timeout", required_argument, 0, 'w'},
     {"poweroff", optional_argument, 0, 'p'},
     {"log-level", required_argument, 0, 'l'},
@@ -295,7 +292,6 @@ static void print_usage(void) {
   printf("  -n, --threshold <num>       Consecutive failures threshold "
          "(default: %d)\n",
          LINKSTAY_DEFAULT_FAIL_THRESHOLD);
-  printf("      --fail-threshold <num>  Clear alias for --threshold\n");
   printf("  -w, --timeout <ms>          Ping timeout in milliseconds (default: "
          "%d)\n\n",
          LINKSTAY_DEFAULT_TIMEOUT_MS);
@@ -333,8 +329,7 @@ static void print_usage(void) {
   printf("  -h, --help                  Show this help message\n\n");
   printf("Environment Variables (lower priority than CLI args):\n");
   printf("  Network:      LINKSTAY_TARGET, LINKSTAY_INTERVAL,\n");
-  printf("                LINKSTAY_THRESHOLD (alias: %s), LINKSTAY_TIMEOUT\n",
-         LINKSTAY_THRESHOLD_ENV_ALIAS);
+  printf("                LINKSTAY_THRESHOLD, LINKSTAY_TIMEOUT\n");
   printf("  Shutdown:     LINKSTAY_POWEROFF\n");
   printf("  Logging:      LINKSTAY_LOG_LEVEL\n");
   printf("  Integration:  LINKSTAY_SYSTEMD\n");
@@ -396,22 +391,6 @@ static bool handle_exit_option(int requested, bool *exit_requested) {
 
 /* ---- Env & CLI loading ---- */
 
-static bool resolve_threshold_env(const char **out_name,
-                                  const char **out_value, char *error_msg,
-                                  size_t error_size) {
-  const char *primary = getenv(LINKSTAY_THRESHOLD_ENV);
-  const char *alias = getenv(LINKSTAY_THRESHOLD_ENV_ALIAS);
-  if (primary != nullptr && alias != nullptr && strcmp(primary, alias) != 0) {
-    return config_errorf(error_msg, error_size,
-                         "Conflicting values for %s and %s (use only one)",
-                         LINKSTAY_THRESHOLD_ENV, LINKSTAY_THRESHOLD_ENV_ALIAS);
-  }
-  *out_name = primary != nullptr ? LINKSTAY_THRESHOLD_ENV
-                              : LINKSTAY_THRESHOLD_ENV_ALIAS;
-  *out_value = primary != nullptr ? primary : alias;
-  return true;
-}
-
 static bool load_from_env(config_t *config, char *error_msg,
                           size_t error_size) {
   error_msg[0] = '\0';
@@ -423,14 +402,9 @@ static bool load_from_env(config_t *config, char *error_msg,
     return false;
   }
 
-  const char *threshold_name = nullptr;
-  const char *threshold_value = nullptr;
-  if (!resolve_threshold_env(&threshold_name, &threshold_value, error_msg,
-                             error_size)) {
-    return false;
-  }
+  const char *threshold_value = getenv(LINKSTAY_THRESHOLD_ENV);
   if (threshold_value != nullptr &&
-      !parse_positive_int(threshold_name, threshold_value, "failures",
+      !parse_positive_int(LINKSTAY_THRESHOLD_ENV, threshold_value, "failures",
                           &config->fail_threshold, error_msg, error_size)) {
     return false;
   }
@@ -496,8 +470,8 @@ static bool load_from_cmdline(config_t *config, int argc, char **argv,
       }
       break;
     case 'n':
-      if (!parse_positive_int("--threshold/--fail-threshold", optarg,
-                              "failures", &config->fail_threshold, error_msg,
+      if (!parse_positive_int("--threshold", optarg, "failures",
+                              &config->fail_threshold, error_msg,
                               error_size)) {
         return false;
       }

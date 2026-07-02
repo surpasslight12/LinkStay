@@ -14,8 +14,6 @@
 
 #define LINKSTAY_PACKET_SIZE 64U
 #define LINKSTAY_MAX_REPLY_DRAIN_PER_TICK 32U
-#define LINKSTAY_SCHEDULER_DRIFT_INTERVAL_DIVISOR 10U
-#define LINKSTAY_SCHEDULER_DRIFT_MIN_WARN_MS 100U
 #define POLL_FD_SIGNAL 0
 #define POLL_FD_ICMP 1
 #define POLL_FD_COUNT 2
@@ -299,18 +297,6 @@ static step_result_t handle_scheduler(linkstay_ctx_t *ctx, loop_state_t *state,
                                       uint64_t now_ms) {
   if (ping_in_flight(state) || !timer_elapsed(&state->next_ping, now_ms)) {
     return STEP_CONTINUE;
-  }
-  uint64_t drift_ms = now_ms - state->next_ping.deadline_ms;
-  uint64_t drift_warn_ms = state->interval_ms /
-                           LINKSTAY_SCHEDULER_DRIFT_INTERVAL_DIVISOR;
-  if (drift_warn_ms < LINKSTAY_SCHEDULER_DRIFT_MIN_WARN_MS) {
-    drift_warn_ms = LINKSTAY_SCHEDULER_DRIFT_MIN_WARN_MS;
-  }
-  if (drift_ms > drift_warn_ms) {
-    logger_debug(&ctx->logger,
-                 "Ping scheduler delayed by %" PRIu64
-                 "ms (threshold %" PRIu64 "ms)",
-                 drift_ms, drift_warn_ms);
   }
   step_result_t r = send_ping(ctx, state, now_ms);
   if (r != STEP_CONTINUE) {

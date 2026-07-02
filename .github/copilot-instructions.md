@@ -29,7 +29,7 @@ All short options are lowercase and mnemonic:
 |-------|------|---------|-------------|
 | `-t` | `--target` | `LINKSTAY_TARGET` | IP literal target (no DNS) |
 | `-i` | `--interval` | `LINKSTAY_INTERVAL` | Ping interval (seconds) |
-| `-n` | `--threshold` / `--fail-threshold` | `LINKSTAY_THRESHOLD` | Consecutive failure threshold; env alias `LINKSTAY_FAIL_THRESHOLD` is also accepted |
+| `-n` | `--threshold` | `LINKSTAY_THRESHOLD` | Consecutive failure threshold |
 | `-w` | `--timeout` | `LINKSTAY_TIMEOUT` | Ping timeout (milliseconds) |
 | `-p` | `--poweroff` | `LINKSTAY_POWEROFF` | Optional bool; bare flag = true; when true powers off via systemctl, when false only simulates (dry-run). Accepts true/false/1/0/yes/no/on/off |
 | `-l` | `--log-level` | `LINKSTAY_LOG_LEVEL` | Log level: silent/error/warn/info/debug; aliases `none`=`silent`, `warning`=`warn` |
@@ -43,7 +43,6 @@ Config precedence: defaults → environment variables → CLI arguments. `config
 
 - `LINKSTAY_TARGET` and `--target` accept only IPv4/IPv6 literals. DNS names are intentionally rejected.
 - `--systemd` / `-s` uses an optional boolean argument. A bare flag enables integration; explicit disable uses `--systemd=0`, `--systemd=false`, `-s0`, or `-sfalse`.
-- `--fail-threshold` is a clearer long alias for `--threshold`. `LINKSTAY_FAIL_THRESHOLD` is accepted as an environment alias; if it conflicts with `LINKSTAY_THRESHOLD`, config resolution fails fast.
 - `poweroff=false` (the default) is a terminal simulation path: once the threshold is reached and the simulated shutdown path completes, the process exits. Set `poweroff=true` to perform a real `systemctl poweroff`.
 - Log timestamps are derived from systemd integration state, not a separate config knob: timestamps are disabled when systemd logging is enabled and enabled otherwise.
 - The codebase prefers stack buffers and caller-owned error buffers over heap allocation. Many public functions follow `(..., char *restrict error_msg, size_t error_size)` and return `bool`/enum status.
