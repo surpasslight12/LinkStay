@@ -96,7 +96,7 @@ make install-systemd DESTDIR=/tmp/linkstay-stage PREFIX=/usr/local
 | 失败阈值 | `-n, --threshold` | `LINKSTAY_THRESHOLD` | `5` | 连续失败次数触发关机 |
 | 超时时间 | `-w, --timeout` | `LINKSTAY_TIMEOUT` | `2000`（ms） | 单次 ping 等待回包的超时，必须小于 interval |
 | 是否关机 | `-p, --poweroff` | `LINKSTAY_POWEROFF` | `false` | `true` 实际执行关机，`false` 仅模拟；接受 `true/false/1/0/yes/no/on/off` |
-| 日志级别 | `-l, --log-level` | `LINKSTAY_LOG_LEVEL` | `info` | 规范值为 `silent` / `error` / `warn` / `info` / `debug`；兼容别名 `none=silent`、`warning=warn` |
+| 日志级别 | `-l, --log-level` | `LINKSTAY_LOG_LEVEL` | `info` | 取值为 `silent` / `error` / `warn` / `info` / `debug` |
 | systemd 集成 | `-s, --systemd` | `LINKSTAY_SYSTEMD` | `true` | 启用 `sd_notify`、watchdog 与状态通知；接受 `true/false/1/0/yes/no/on/off`；省略参数时等价于启用，禁用建议写 `--systemd=0`、`--systemd=false`、`-s0` 或 `-sfalse` |
 
 优先级规则：CLI 参数 > 环境变量 > 编译期默认值。
@@ -195,31 +195,33 @@ sudo ./bin/linkstay --target 1.1.1.1
 ## 项目结构
 
 ```
-Makefile                # 构建、release、lint、clean 入口
+Makefile                # 构建、release、lint、test、sanitize、clean 入口
 README.md               # 使用说明与维护约定
 include/                # 公共头文件
-├── common.h           # 基础层：宏、常量、单调时钟声明、静态断言
-├── logger.h           # 分级日志接口
-├── metrics.h          # ping 统计指标聚合
-├── config.h           # 配置类型、解析/校验接口
+├── base.h             # 基础层：宏、常量、统一错误类型 ls_err_t、单调时钟
+├── log.h              # 分级日志接口
+├── stats.h            # ping 统计值类型
+├── opts.h             # 已解析运行选项与解析入口
+├── loop.h             # 通用事件循环：fd 槽 + 定时器槽 + signalfd
 ├── icmp.h             # ICMP raw socket、BPF 过滤、回包匹配接口
-├── shutdown.h         # 关机执行接口
-├── systemd.h          # systemd notify socket 集成接口
-└── monitor.h          # 聚合各模块并定义共享运行时对象 linkstay_ctx_t
+├── notify.h           # systemd notify socket 集成接口
+├── action.h           # 阈值动作后端（关机 / dry-run）
+└── app.h              # 应用组装层：probe 状态机与回调注册
 src/                    # 实现
-├── common.c           # 单调时钟实现
-├── logger.c           # 分级日志、时间戳格式化
-├── metrics.c          # ping 统计指标聚合
-├── config.c           # 配置默认值、CLI/环境变量解析、usage/version、校验
+├── base.c             # ls_err_set、单调时钟实现
+├── log.c              # 分级日志、时间戳格式化
+├── stats.c            # ping 统计聚合
+├── opts.c             # 表驱动配置引擎：一张选项表驱动 env/CLI/help/校验
+├── loop.c             # poll(2) 事件循环、绝对 deadline 定时器、signalfd
 ├── icmp.c             # ICMP raw socket、BPF 过滤、校验和、回包匹配
-├── shutdown.c         # 关机执行（posix_spawn + 启动观测）
-├── systemd.c          # systemd notify socket 集成
-├── monitor.c          # reactor 主循环、定时器状态机、shutdown FSM、编排
-└── main.c             # 入口
+├── notify.c           # sd_notify 集成（去重、重试、watchdog）
+├── action.c           # 关机执行（posix_spawn + 启动观测）
+├── app.c              # 组装：probe FSM、阈值判定、回调、启停横幅
+└── main.c             # 薄入口：opts → app → loop
 systemd/
 └── linkstay.service  # systemd unit 示例文件
 .github/
 └── copilot-instructions.md  # AI 协作与代码维护约定
 ```
 
-模块按层次组织：`include/common.h` 位于底层，上层模块各自拥有独立头文件，`include/monitor.h` 聚合所有模块并定义共享运行时对象 `linkstay_ctx_t`。头文件统一存放于 `include/`，实现统一存放于 `src/`，服务示例统一放在 `systemd/`，便于查阅与维护。
+模块按层次组织：`include/base.h` 位于底层（零项目依赖），`loop`/`icmp`/`notify`/`action` 互不依赖,由 `app` 统一组装并注册进事件循环。所有可失败的 init/parse 接口遵循统一约定：返回 `bool` + 调用方持有的 `ls_err_t` 错误缓冲。头文件统一存放于 `include/`，实现统一存放于 `src/`，服务示例统一放在 `systemd/`，便于查阅与维护。

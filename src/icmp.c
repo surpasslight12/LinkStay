@@ -5,371 +5,16 @@
 #include <limits.h>
 #include <linux/filter.h>
 #include <netinet/ip.h>
-#include <stdio.h>
 #include <string.h>
-#include <sys/types.h>
 #include <unistd.h>
 
-/* ICMP checksum — RFC 1071 one's-complement sum.  Internal to icmp.c.
- * Reads 16-bit words in native byte order (matches how the kernel verifies),
- * stores the result as a native uint16_t — no htons() needed. */
-static uint16_t icmp_calculate_checksum(const void *data, size_t len) {
-  const uint8_t *bytes = (const uint8_t *)data;
-  uint32_t sum = 0;
+/* ---- Target resolution ---- */
 
-  for (size_t i = 0; i + 1 < len; i += 2) {
-    uint16_t word;
-    memcpy(&word, bytes + i, sizeof(word));
-    sum += word;
-  }
-
-  if (len % 2) {
-    sum += bytes[len - 1];
-  }
-
-  while (sum >> 16) {
-    sum = (sum & 0xFFFF) + (sum >> 16);
-  }
-
-  return (uint16_t)(~sum);
-}
-
-static void icmp_fill_echo_payload(uint8_t *restrict packet,
-                                   size_t packet_len, size_t header_len) {
-  if (packet == nullptr || header_len > packet_len) {
-    return;
-  }
-
-  uint8_t *payload = packet + header_len;
-  size_t payload_len = packet_len - header_len;
-  for (size_t i = 0; i != payload_len; i++) {
-    payload[i] = (uint8_t)(i & 0xFFU);
-  }
-}
-
-static bool
-icmp_validate_send_args(const icmp_pinger_t *restrict pinger,
-                        const struct sockaddr_storage *restrict dest_addr,
-                        char *restrict error_msg, size_t error_size) {
-  if (pinger == nullptr || dest_addr == nullptr || error_msg == nullptr ||
-      error_size == 0) {
-    return false;
-  }
-
-  if (pinger->sockfd < 0) {
-    snprintf(error_msg, error_size, "ICMP socket is not initialized");
-    return false;
-  }
-
-  if (dest_addr->ss_family != AF_INET && dest_addr->ss_family != AF_INET6) {
-    snprintf(error_msg, error_size, "Unsupported address family: %d",
-             dest_addr->ss_family);
-    return false;
-  }
-
-  return true;
-}
-
-static bool
-icmp_receive_source_matches(const struct sockaddr_storage *restrict dest_addr,
-                            const struct sockaddr_storage *restrict recv_addr) {
-  if (dest_addr == nullptr || recv_addr == nullptr ||
-      recv_addr->ss_family != dest_addr->ss_family) {
-    return false;
-  }
-
-  if (dest_addr->ss_family == AF_INET) {
-    const struct sockaddr_in *dest4 = (const struct sockaddr_in *)dest_addr;
-    const struct sockaddr_in *recv4 = (const struct sockaddr_in *)recv_addr;
-    return dest4->sin_addr.s_addr == recv4->sin_addr.s_addr;
-  }
-
-  const struct sockaddr_in6 *dest6 = (const struct sockaddr_in6 *)dest_addr;
-  const struct sockaddr_in6 *recv6 = (const struct sockaddr_in6 *)recv_addr;
-  return memcmp(&dest6->sin6_addr, &recv6->sin6_addr,
-                sizeof(dest6->sin6_addr)) == 0;
-}
-
-static icmp_receive_status_t
-icmp_parse_ipv4_reply(const uint8_t *restrict recv_buf, size_t received,
-                      uint16_t identifier, uint16_t expected_sequence) {
-  if (recv_buf == nullptr || received < sizeof(struct ip)) {
-    return ICMP_RECEIVE_IGNORED;
-  }
-
-  const struct ip *ip_hdr = (const struct ip *)recv_buf;
-  if (ip_hdr->ip_p != IPPROTO_ICMP) {
-    return ICMP_RECEIVE_IGNORED;
-  }
-
-  size_t ip_hdr_len = (size_t)ip_hdr->ip_hl * 4;
-  if (ip_hdr_len < sizeof(struct ip) || ip_hdr_len > received ||
-      ip_hdr_len + sizeof(struct icmphdr) > received) {
-    return ICMP_RECEIVE_IGNORED;
-  }
-
-  const struct icmphdr *icmp_hdr =
-      (const struct icmphdr *)(recv_buf + ip_hdr_len);
-  if (icmp_hdr->type != ICMP_ECHOREPLY) {
-    return ICMP_RECEIVE_IGNORED;
-  }
-  if (ntohs(icmp_hdr->un.echo.id) != identifier) {
-    return ICMP_RECEIVE_IGNORED;
-  }
-  if (ntohs(icmp_hdr->un.echo.sequence) != expected_sequence) {
-    return ICMP_RECEIVE_IGNORED;
-  }
-
-  return ICMP_RECEIVE_MATCHED;
-}
-
-static icmp_receive_status_t
-icmp_parse_ipv6_reply(const uint8_t *restrict recv_buf, size_t received,
-                      uint16_t identifier, uint16_t expected_sequence) {
-  if (recv_buf == nullptr || received < sizeof(struct icmp6_hdr)) {
-    return ICMP_RECEIVE_IGNORED;
-  }
-
-  /* Unlike the IPv4 path above, no header offset is skipped here: on Linux,
-   * an IPPROTO_ICMPV6 raw socket delivers only the ICMPv6 payload (the
-   * kernel strips the IPv6 header before handing the datagram to
-   * userspace), whereas an IPPROTO_ICMP raw socket includes the IPv4
-   * header. This is standard Linux raw-socket behavior, not an oversight. */
-  const struct icmp6_hdr *icmp6_hdr = (const struct icmp6_hdr *)recv_buf;
-  if (icmp6_hdr->icmp6_type != ICMP6_ECHO_REPLY) {
-    return ICMP_RECEIVE_IGNORED;
-  }
-  if (ntohs(icmp6_hdr->icmp6_id) != identifier) {
-    return ICMP_RECEIVE_IGNORED;
-  }
-  if (ntohs(icmp6_hdr->icmp6_seq) != expected_sequence) {
-    return ICMP_RECEIVE_IGNORED;
-  }
-
-  return ICMP_RECEIVE_MATCHED;
-}
-
-/* Non-fatal: BPF filter improves performance but is not required. */
-static int icmp_attach_bpf_filter(int sockfd, struct sock_filter *filter,
-                                  size_t filter_count) {
-  /* struct sock_fprog.len is an unsigned short; guard against silent
-   * truncation if a future filter program ever grows past that range. */
-  if (filter_count > USHRT_MAX) {
-    return EINVAL;
-  }
-
-  struct sock_fprog fprog = {.len = (unsigned short)filter_count,
-                             .filter = filter};
-  if (setsockopt(sockfd, SOL_SOCKET, SO_ATTACH_FILTER, &fprog,
-                 sizeof(fprog)) == 0) {
-    return 0;
-  }
-  return errno;
-}
-
-bool icmp_pinger_init(icmp_pinger_t *restrict pinger, int family,
-                      char *restrict error_msg, size_t error_size) {
-  if (pinger == nullptr || error_msg == nullptr || error_size == 0) {
-    return false;
-  }
-
-  pinger->sockfd = -1;
-  pinger->family = family;
-  pinger->sequence = 0;
-  pinger->bpf_filter_attached = false;
-  pinger->bpf_filter_errno = 0;
-
-  int proto = (family == AF_INET6) ? IPPROTO_ICMPV6 : IPPROTO_ICMP;
-
-  /* Create raw socket, CLOEXEC for security, NONBLOCK for poll multiplexing */
-  pinger->sockfd =
-      socket(family, SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK, proto);
-  if (pinger->sockfd < 0) {
-    snprintf(
-        error_msg, error_size,
-        "Failed to create socket (family=%d): %s (require root or CAP_NET_RAW)",
-        family, strerror(errno));
-    return false;
-  }
-
-  /* Attach kernel BPF filter to drop irrelevant ICMP packets. */
-  bool filter_attempted = false;
-  if (family == AF_INET) {
-    struct sock_filter filter[] = {
-        BPF_STMT(BPF_LD | BPF_B | BPF_ABS,
-                 0), /* A = IP Header Length (ip[0]) */
-        BPF_STMT(BPF_ALU | BPF_AND | BPF_K, 0x0f), /* A = A & 0x0f */
-        BPF_STMT(BPF_ALU | BPF_MUL | BPF_K, 4),    /* A = A * 4    */
-        BPF_STMT(BPF_MISC | BPF_TAX, 0), /* X = A                        */
-        BPF_STMT(BPF_LD | BPF_B | BPF_IND, 0), /* A = ip[X] (ICMP Type) */
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, ICMP_ECHOREPLY, 0,
-                 1),                       /* if A == ECHOREPLY, pass  */
-        BPF_STMT(BPF_RET | BPF_K, 0xffff), /* Accept (keep full packet)    */
-        BPF_STMT(BPF_RET | BPF_K, 0)       /* Reject (drop packet)         */
-    };
-      filter_attempted = true;
-      pinger->bpf_filter_errno = icmp_attach_bpf_filter(
-        pinger->sockfd, filter, LINKSTAY_ARRAY_LEN(filter));
-  } else if (family == AF_INET6) {
-    struct sock_filter filter[] = {
-        BPF_STMT(BPF_LD | BPF_B | BPF_ABS, 0), /* A = icmp6[0] (ICMPv6 Type) */
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, ICMP6_ECHO_REPLY, 0,
-                 1),                       /* if A == ECHO_REPLY, pass*/
-        BPF_STMT(BPF_RET | BPF_K, 0xffff), /* Accept (keep full packet)    */
-        BPF_STMT(BPF_RET | BPF_K, 0)       /* Reject (drop packet)         */
-    };
-      filter_attempted = true;
-      pinger->bpf_filter_errno = icmp_attach_bpf_filter(
-        pinger->sockfd, filter, LINKSTAY_ARRAY_LEN(filter));
-  }
-
-      pinger->bpf_filter_attached = filter_attempted &&
-                    pinger->bpf_filter_errno == 0;
-
-  return true;
-}
-
-void icmp_pinger_destroy(icmp_pinger_t *restrict pinger) {
-  if (pinger == nullptr) {
-    return;
-  }
-
-  if (pinger->sockfd >= 0) {
-    close(pinger->sockfd);
-    pinger->sockfd = -1;
-  }
-}
-
-/* Sequence 0 is reserved as the "not waiting" sentinel in monitor state. */
-static uint16_t icmp_next_sequence(icmp_pinger_t *restrict pinger) {
-  if (pinger == nullptr) {
-    return 1;
-  }
-
-  if (pinger->sequence == UINT16_MAX) {
-    pinger->sequence = 1;
-  } else {
-    pinger->sequence = (uint16_t)(pinger->sequence + 1);
-  }
-
-  return pinger->sequence;
-}
-
-bool icmp_pinger_send_echo(icmp_pinger_t *restrict pinger,
-                           const struct sockaddr_storage *restrict dest_addr,
-                           socklen_t dest_addr_len, uint16_t identifier,
-                           size_t packet_len, char *restrict error_msg,
-                           size_t error_size) {
-  if (!icmp_validate_send_args(pinger, dest_addr, error_msg, error_size)) {
-    return false;
-  }
-
-  if (packet_len == 0 || packet_len > sizeof(pinger->send_buf)) {
-    snprintf(error_msg, error_size, "Invalid ICMP packet size: %zu",
-             packet_len);
-    return false;
-  }
-
-  icmp_next_sequence(pinger);
-
-  if (pinger->family == AF_INET6) {
-    struct icmp6_hdr *icmp6_hdr = (struct icmp6_hdr *)pinger->send_buf;
-    memset(icmp6_hdr, 0, sizeof(*icmp6_hdr));
-    icmp6_hdr->icmp6_type = ICMP6_ECHO_REQUEST;
-    icmp6_hdr->icmp6_code = 0;
-    icmp6_hdr->icmp6_id = htons(identifier);
-    icmp6_hdr->icmp6_seq = htons(pinger->sequence);
-    icmp_fill_echo_payload(pinger->send_buf, packet_len,
-                           sizeof(*icmp6_hdr));
-  } else {
-    struct icmphdr *icmp_hdr = (struct icmphdr *)pinger->send_buf;
-    memset(icmp_hdr, 0, sizeof(*icmp_hdr));
-    icmp_hdr->type = ICMP_ECHO;
-    icmp_hdr->code = 0;
-    icmp_hdr->un.echo.id = htons(identifier);
-    icmp_hdr->un.echo.sequence = htons(pinger->sequence);
-    icmp_fill_echo_payload(pinger->send_buf, packet_len, sizeof(*icmp_hdr));
-    icmp_hdr->checksum = icmp_calculate_checksum(pinger->send_buf, packet_len);
-  }
-
-  ssize_t sent =
-      sendto(pinger->sockfd, pinger->send_buf, packet_len, MSG_NOSIGNAL,
-             (const struct sockaddr *)dest_addr, dest_addr_len);
-  if (sent < 0) {
-    snprintf(error_msg, error_size, "Failed to send packet: %s",
-             strerror(errno));
-    return false;
-  }
-  if ((size_t)sent != packet_len) {
-    snprintf(error_msg, error_size, "Short ICMP send: %zd", sent);
-    return false;
-  }
-
-  return true;
-}
-
-icmp_receive_status_t
-icmp_pinger_receive_reply(icmp_pinger_t *restrict pinger,
-                          const struct sockaddr_storage *restrict dest_addr,
-                          uint16_t identifier, uint16_t expected_sequence,
-                          uint64_t send_time_ms, uint64_t now_ms,
-                          ping_result_t *restrict out_result) {
-  if (pinger == nullptr || dest_addr == nullptr || out_result == nullptr) {
-    return ICMP_RECEIVE_ERROR;
-  }
-
-  /* Reuse the pinger-owned receive buffer (see icmp_pinger_t). */
-  uint8_t *const recv_buf = pinger->recv_buf;
-  struct sockaddr_storage recv_addr;
-  socklen_t recv_addr_len = sizeof(recv_addr);
-
-  ssize_t received = recvfrom(pinger->sockfd, recv_buf,
-                              sizeof(pinger->recv_buf), 0,
-                              (struct sockaddr *)&recv_addr, &recv_addr_len);
-  if (received < 0) {
-    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
-      return ICMP_RECEIVE_NO_MORE;
-    }
-
-    out_result->success = false;
-    out_result->latency_ms = -1.0;
-    snprintf(out_result->error_msg, sizeof(out_result->error_msg),
-             "recvfrom failed: %s", strerror(errno));
-    return ICMP_RECEIVE_ERROR;
-  }
-
-  if (received == 0 || !icmp_receive_source_matches(dest_addr, &recv_addr)) {
-    return ICMP_RECEIVE_IGNORED;
-  }
-
-  icmp_receive_status_t status = ICMP_RECEIVE_IGNORED;
-  if (dest_addr->ss_family == AF_INET) {
-    status = icmp_parse_ipv4_reply(recv_buf, (size_t)received, identifier,
-                                   expected_sequence);
-  } else if (dest_addr->ss_family == AF_INET6) {
-    status = icmp_parse_ipv6_reply(recv_buf, (size_t)received, identifier,
-                                   expected_sequence);
-  }
-
-  if (status == ICMP_RECEIVE_MATCHED) {
-    out_result->success = true;
-    /* Guard against impossible clock skew before recording latency. */
-    out_result->latency_ms =
-        (now_ms >= send_time_ms) ? (double)(now_ms - send_time_ms) : 0.0;
-    out_result->sequence = expected_sequence;
-    out_result->error_msg[0] = '\0';
-  }
-
-  return status;
-}
-
-bool icmp_resolve_target(const char *restrict target,
-                         struct sockaddr_storage *restrict addr,
-                         socklen_t *restrict addr_len,
-                         char *restrict error_msg, size_t error_size) {
-  if (target == nullptr || addr == nullptr || addr_len == nullptr || error_msg == nullptr ||
-      error_size == 0) {
-    return false;
+bool ls_icmp_resolve(const char *restrict target,
+                     struct sockaddr_storage *restrict addr,
+                     socklen_t *restrict addr_len, ls_err_t *restrict err) {
+  if (target == nullptr || addr == nullptr || addr_len == nullptr) {
+    return ls_err_set(err, "Invalid ICMP resolve arguments");
   }
 
   memset(addr, 0, sizeof(*addr));
@@ -394,8 +39,264 @@ bool icmp_resolve_target(const char *restrict target,
   } else if (strchr(target, '.') != nullptr) {
     hint = " (looks like an IPv4 literal but parsing failed)";
   }
+  return ls_err_set(err, "Invalid IPv4/IPv6 address (DNS disabled): %s%s",
+                    target, hint);
+}
 
-  snprintf(error_msg, error_size,
-           "Invalid IPv4/IPv6 address (DNS disabled): %s%s", target, hint);
-  return false;
+/* ---- Socket setup ---- */
+
+/* Non-fatal: the BPF filter improves performance but is not required. */
+static int attach_bpf_filter(int sockfd, struct sock_filter *filter,
+                             size_t filter_count) {
+  /* struct sock_fprog.len is an unsigned short; guard against silent
+   * truncation if a future filter program ever grows past that range. */
+  if (filter_count > USHRT_MAX) {
+    return EINVAL;
+  }
+  struct sock_fprog fprog = {.len = (unsigned short)filter_count,
+                             .filter = filter};
+  if (setsockopt(sockfd, SOL_SOCKET, SO_ATTACH_FILTER, &fprog,
+                 sizeof(fprog)) == 0) {
+    return 0;
+  }
+  return errno;
+}
+
+static int attach_family_filter(int sockfd, int family) {
+  if (family == AF_INET) {
+    struct sock_filter filter[] = {
+        BPF_STMT(BPF_LD | BPF_B | BPF_ABS, 0), /* A = ip[0] (ver+IHL)     */
+        BPF_STMT(BPF_ALU | BPF_AND | BPF_K, 0x0f), /* A &= 0x0f (IHL)     */
+        BPF_STMT(BPF_ALU | BPF_MUL | BPF_K, 4),    /* A *= 4 (hdr bytes)  */
+        BPF_STMT(BPF_MISC | BPF_TAX, 0),           /* X = A               */
+        BPF_STMT(BPF_LD | BPF_B | BPF_IND, 0),     /* A = ip[X] (type)    */
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, ICMP_ECHOREPLY, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, 0xffff), /* accept full packet          */
+        BPF_STMT(BPF_RET | BPF_K, 0),      /* drop                        */
+    };
+    return attach_bpf_filter(sockfd, filter, LS_ARRAY_LEN(filter));
+  }
+  struct sock_filter filter[] = {
+      BPF_STMT(BPF_LD | BPF_B | BPF_ABS, 0), /* A = icmp6[0] (type) */
+      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, ICMP6_ECHO_REPLY, 0, 1),
+      BPF_STMT(BPF_RET | BPF_K, 0xffff), /* accept full packet */
+      BPF_STMT(BPF_RET | BPF_K, 0),      /* drop               */
+  };
+  return attach_bpf_filter(sockfd, filter, LS_ARRAY_LEN(filter));
+}
+
+bool ls_icmp_open(ls_icmp_t *restrict icmp, int family,
+                  ls_err_t *restrict err) {
+  if (icmp == nullptr || (family != AF_INET && family != AF_INET6)) {
+    return ls_err_set(err, "Invalid ICMP socket request");
+  }
+
+  *icmp = (ls_icmp_t){.sockfd = -1, .family = family};
+
+  int proto = (family == AF_INET6) ? IPPROTO_ICMPV6 : IPPROTO_ICMP;
+  /* CLOEXEC for hygiene across the shutdown spawn, NONBLOCK for poll(2). */
+  icmp->sockfd = socket(family, SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK,
+                        proto);
+  if (icmp->sockfd < 0) {
+    return ls_err_set(err,
+                      "Failed to create socket (family=%d): %s (require root "
+                      "or CAP_NET_RAW)",
+                      family, strerror(errno));
+  }
+
+  icmp->bpf_errno = attach_family_filter(icmp->sockfd, family);
+  icmp->bpf_attached = icmp->bpf_errno == 0;
+  return true;
+}
+
+void ls_icmp_close(ls_icmp_t *restrict icmp) {
+  if (icmp == nullptr) {
+    return;
+  }
+  if (icmp->sockfd >= 0) {
+    close(icmp->sockfd);
+    icmp->sockfd = -1;
+  }
+}
+
+/* ---- Echo request construction ---- */
+
+/* RFC 1071 one's-complement sum. Reads 16-bit words in native byte order
+ * (matches how the kernel verifies); no htons() needed on the result. */
+static uint16_t icmp_checksum(const void *data, size_t len) {
+  const uint8_t *bytes = (const uint8_t *)data;
+  uint32_t sum = 0;
+
+  for (size_t i = 0; i + 1 < len; i += 2) {
+    uint16_t word;
+    memcpy(&word, bytes + i, sizeof(word));
+    sum += word;
+  }
+  if (len % 2) {
+    sum += bytes[len - 1];
+  }
+  while (sum >> 16) {
+    sum = (sum & 0xFFFF) + (sum >> 16);
+  }
+  return (uint16_t)(~sum);
+}
+
+static void fill_payload(uint8_t *restrict packet, size_t packet_len,
+                         size_t header_len) {
+  uint8_t *payload = packet + header_len;
+  size_t payload_len = packet_len - header_len;
+  for (size_t i = 0; i != payload_len; i++) {
+    payload[i] = (uint8_t)(i & 0xFFU);
+  }
+}
+
+/* Sequence 0 is reserved: probe state uses it as "not waiting". */
+static uint16_t next_sequence(ls_icmp_t *restrict icmp) {
+  icmp->sequence = (icmp->sequence == UINT16_MAX)
+                       ? 1
+                       : (uint16_t)(icmp->sequence + 1);
+  return icmp->sequence;
+}
+
+bool ls_icmp_send_echo(ls_icmp_t *restrict icmp,
+                       const struct sockaddr_storage *restrict dest,
+                       socklen_t dest_len, uint16_t identifier,
+                       size_t packet_len, ls_err_t *restrict err) {
+  if (icmp == nullptr || dest == nullptr || icmp->sockfd < 0) {
+    return ls_err_set(err, "ICMP socket is not initialized");
+  }
+  if (dest->ss_family != AF_INET && dest->ss_family != AF_INET6) {
+    return ls_err_set(err, "Unsupported address family: %d", dest->ss_family);
+  }
+  if (packet_len == 0 || packet_len > sizeof(icmp->send_buf)) {
+    return ls_err_set(err, "Invalid ICMP packet size: %zu", packet_len);
+  }
+
+  next_sequence(icmp);
+
+  if (icmp->family == AF_INET6) {
+    struct icmp6_hdr *hdr = (struct icmp6_hdr *)icmp->send_buf;
+    memset(hdr, 0, sizeof(*hdr));
+    hdr->icmp6_type = ICMP6_ECHO_REQUEST;
+    hdr->icmp6_code = 0;
+    hdr->icmp6_id = htons(identifier);
+    hdr->icmp6_seq = htons(icmp->sequence);
+    fill_payload(icmp->send_buf, packet_len, sizeof(*hdr));
+    /* Checksum stays 0: the kernel computes it for IPPROTO_ICMPV6. */
+  } else {
+    struct icmphdr *hdr = (struct icmphdr *)icmp->send_buf;
+    memset(hdr, 0, sizeof(*hdr));
+    hdr->type = ICMP_ECHO;
+    hdr->code = 0;
+    hdr->un.echo.id = htons(identifier);
+    hdr->un.echo.sequence = htons(icmp->sequence);
+    fill_payload(icmp->send_buf, packet_len, sizeof(*hdr));
+    hdr->checksum = icmp_checksum(icmp->send_buf, packet_len);
+  }
+
+  ssize_t sent = sendto(icmp->sockfd, icmp->send_buf, packet_len, MSG_NOSIGNAL,
+                        (const struct sockaddr *)dest, dest_len);
+  if (sent < 0) {
+    return ls_err_set(err, "Failed to send packet: %s", strerror(errno));
+  }
+  if ((size_t)sent != packet_len) {
+    return ls_err_set(err, "Short ICMP send: %zd", sent);
+  }
+  return true;
+}
+
+/* ---- Reply matching ---- */
+
+static bool source_matches(const struct sockaddr_storage *restrict dest,
+                           const struct sockaddr_storage *restrict from) {
+  if (from->ss_family != dest->ss_family) {
+    return false;
+  }
+  if (dest->ss_family == AF_INET) {
+    const struct sockaddr_in *dest4 = (const struct sockaddr_in *)dest;
+    const struct sockaddr_in *from4 = (const struct sockaddr_in *)from;
+    return dest4->sin_addr.s_addr == from4->sin_addr.s_addr;
+  }
+  const struct sockaddr_in6 *dest6 = (const struct sockaddr_in6 *)dest;
+  const struct sockaddr_in6 *from6 = (const struct sockaddr_in6 *)from;
+  return memcmp(&dest6->sin6_addr, &from6->sin6_addr,
+                sizeof(dest6->sin6_addr)) == 0;
+}
+
+static bool parse_ipv4_reply(const uint8_t *restrict buf, size_t received,
+                             uint16_t identifier, uint16_t expected_sequence) {
+  if (received < sizeof(struct ip)) {
+    return false;
+  }
+  const struct ip *ip_hdr = (const struct ip *)buf;
+  if (ip_hdr->ip_p != IPPROTO_ICMP) {
+    return false;
+  }
+  size_t ip_hdr_len = (size_t)ip_hdr->ip_hl * 4;
+  if (ip_hdr_len < sizeof(struct ip) || ip_hdr_len > received ||
+      ip_hdr_len + sizeof(struct icmphdr) > received) {
+    return false;
+  }
+  const struct icmphdr *hdr = (const struct icmphdr *)(buf + ip_hdr_len);
+  return hdr->type == ICMP_ECHOREPLY &&
+         ntohs(hdr->un.echo.id) == identifier &&
+         ntohs(hdr->un.echo.sequence) == expected_sequence;
+}
+
+static bool parse_ipv6_reply(const uint8_t *restrict buf, size_t received,
+                             uint16_t identifier, uint16_t expected_sequence) {
+  if (received < sizeof(struct icmp6_hdr)) {
+    return false;
+  }
+  /* No IPv6 header to skip: on Linux, an IPPROTO_ICMPV6 raw socket delivers
+   * only the ICMPv6 payload (the kernel strips the IPv6 header), whereas an
+   * IPPROTO_ICMP raw socket includes the IPv4 header. This asymmetry is
+   * standard raw-socket behavior, not an oversight. */
+  const struct icmp6_hdr *hdr = (const struct icmp6_hdr *)buf;
+  return hdr->icmp6_type == ICMP6_ECHO_REPLY &&
+         ntohs(hdr->icmp6_id) == identifier &&
+         ntohs(hdr->icmp6_seq) == expected_sequence;
+}
+
+ls_icmp_recv_status_t ls_icmp_recv(
+    ls_icmp_t *restrict icmp, const struct sockaddr_storage *restrict dest,
+    uint16_t identifier, uint16_t expected_sequence, uint64_t send_time_ms,
+    uint64_t now_ms, ls_icmp_reply_t *restrict out_reply,
+    ls_err_t *restrict err) {
+  if (icmp == nullptr || dest == nullptr || out_reply == nullptr) {
+    (void)ls_err_set(err, "Invalid ICMP receive arguments");
+    return LS_ICMP_RECV_ERROR;
+  }
+
+  struct sockaddr_storage from;
+  socklen_t from_len = sizeof(from);
+  ssize_t received = recvfrom(icmp->sockfd, icmp->recv_buf,
+                              sizeof(icmp->recv_buf), 0,
+                              (struct sockaddr *)&from, &from_len);
+  if (received < 0) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+      return LS_ICMP_RECV_NO_MORE;
+    }
+    (void)ls_err_set(err, "recvfrom failed: %s", strerror(errno));
+    return LS_ICMP_RECV_ERROR;
+  }
+
+  if (received == 0 || !source_matches(dest, &from)) {
+    return LS_ICMP_RECV_IGNORED;
+  }
+
+  bool matched = (dest->ss_family == AF_INET)
+                     ? parse_ipv4_reply(icmp->recv_buf, (size_t)received,
+                                        identifier, expected_sequence)
+                     : parse_ipv6_reply(icmp->recv_buf, (size_t)received,
+                                        identifier, expected_sequence);
+  if (!matched) {
+    return LS_ICMP_RECV_IGNORED;
+  }
+
+  /* Guard against impossible clock skew before recording latency. */
+  out_reply->latency_ms =
+      (now_ms >= send_time_ms) ? (double)(now_ms - send_time_ms) : 0.0;
+  out_reply->sequence = expected_sequence;
+  return LS_ICMP_RECV_MATCHED;
 }

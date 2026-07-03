@@ -2,72 +2,75 @@
 #define LINKSTAY_ICMP_H
 
 /*
- * icmp.h — raw-socket ICMP transport.
+ * icmp.h — raw-socket ICMP echo transport.
  *
  * Owns echo request construction, reply matching, and the optional kernel
- * BPF filter. Follows a zero-allocation model: send/receive buffers live
- * inside icmp_pinger_t and are reused across the hot path.
+ * BPF filter. Zero-allocation model: send/receive buffers live inside
+ * ls_icmp_t and are reused across the hot path.
  */
 
-#include "common.h"
+#include "base.h"
 
 #include <netinet/icmp6.h>
 #include <netinet/ip_icmp.h>
 #include <sys/socket.h>
 
-#define LINKSTAY_ICMP_SEND_BUFFER_SIZE 256U
-#define LINKSTAY_ICMP_RECV_BUFFER_SIZE 1500U
+#define LS_ICMP_SEND_BUFFER_SIZE 256U
+#define LS_ICMP_RECV_BUFFER_SIZE 1500U
 
 typedef struct {
-  bool success;
   double latency_ms;
-  char error_msg[256];
-  uint16_t sequence; /* ICMP echo sequence number of the matched reply */
-} ping_result_t;
+  uint16_t sequence; /* echo sequence of the matched reply */
+} ls_icmp_reply_t;
 
 typedef enum {
-  ICMP_RECEIVE_NO_MORE = -1,
-  ICMP_RECEIVE_IGNORED = 0,
-  ICMP_RECEIVE_MATCHED = 1,
-  ICMP_RECEIVE_ERROR = 2,
-} icmp_receive_status_t;
+  LS_ICMP_RECV_NO_MORE = -1, /* socket drained (EAGAIN) */
+  LS_ICMP_RECV_IGNORED = 0,  /* packet received but not our reply */
+  LS_ICMP_RECV_MATCHED = 1,  /* matching echo reply */
+  LS_ICMP_RECV_ERROR = 2,    /* recvfrom failed */
+} ls_icmp_recv_status_t;
 
 typedef struct {
   int sockfd;
-  int family;
+  int family; /* AF_INET or AF_INET6 */
   uint16_t sequence;
-  bool bpf_filter_attached;
-  int bpf_filter_errno;
+  bool bpf_attached;
+  int bpf_errno; /* non-fatal: filter attach failure reason */
 
-  /* Send buffer (stack-allocated, zero-alloc model).
-   * Aligned to 4 so casts to struct icmphdr / icmp6_hdr are well-defined. */
-  alignas(4) uint8_t send_buf[LINKSTAY_ICMP_SEND_BUFFER_SIZE];
-
-  /* Receive buffer reused across replies (zero-alloc model, mirrors send_buf).
-   * 1500 bytes covers the largest standard Ethernet-MTU ICMP reply; aligned to
-   * 16 so IP/ICMP header accesses are naturally aligned. Reusing it keeps the
-   * hot receive path off a large per-call stack frame. */
-  alignas(16) uint8_t recv_buf[LINKSTAY_ICMP_RECV_BUFFER_SIZE];
-} icmp_pinger_t;
+  /* Reused packet buffers (zero-alloc model). Send buffer aligned to 4 so
+   * casts to struct icmphdr / icmp6_hdr are well-defined; receive buffer
+   * sized for a full Ethernet-MTU reply and aligned to 16 for natural
+   * IP/ICMP header access. */
+  alignas(4) uint8_t send_buf[LS_ICMP_SEND_BUFFER_SIZE];
+  alignas(16) uint8_t recv_buf[LS_ICMP_RECV_BUFFER_SIZE];
+} ls_icmp_t;
 
 static_assert(sizeof(struct icmphdr) >= 8,
               "ICMP header must be at least 8 bytes");
 
-[[nodiscard]] bool icmp_pinger_init(icmp_pinger_t *restrict pinger, int family,
-            char *restrict error_msg, size_t error_size);
-void icmp_pinger_destroy(icmp_pinger_t *restrict pinger);
-[[nodiscard]] bool icmp_pinger_send_echo(
-    icmp_pinger_t *restrict pinger,
-    const struct sockaddr_storage *restrict dest_addr, socklen_t dest_addr_len,
-    uint16_t identifier, size_t packet_len, char *restrict error_msg,
-    size_t error_size);
-icmp_receive_status_t icmp_pinger_receive_reply(
-    icmp_pinger_t *restrict pinger,
-    const struct sockaddr_storage *restrict dest_addr, uint16_t identifier,
-    uint16_t expected_sequence, uint64_t send_time_ms, uint64_t now_ms,
-    ping_result_t *restrict out_result);
-[[nodiscard]] bool icmp_resolve_target(
-  const char *restrict target, struct sockaddr_storage *restrict addr,
-  socklen_t *restrict addr_len, char *restrict error_msg, size_t error_size);
+/* Parses an IPv4/IPv6 literal into a socket address. DNS is rejected. */
+[[nodiscard]] bool ls_icmp_resolve(const char *restrict target,
+                                   struct sockaddr_storage *restrict addr,
+                                   socklen_t *restrict addr_len,
+                                   ls_err_t *restrict err);
+
+/* Opens the raw socket (requires root or CAP_NET_RAW) and attempts to
+ * attach the family-specific BPF filter (non-fatal on failure). */
+[[nodiscard]] bool ls_icmp_open(ls_icmp_t *restrict icmp, int family,
+                                ls_err_t *restrict err);
+void ls_icmp_close(ls_icmp_t *restrict icmp);
+
+/* Sends one echo request; advances icmp->sequence (1..65535, never 0). */
+[[nodiscard]] bool ls_icmp_send_echo(
+    ls_icmp_t *restrict icmp, const struct sockaddr_storage *restrict dest,
+    socklen_t dest_len, uint16_t identifier, size_t packet_len,
+    ls_err_t *restrict err);
+
+/* Receives one packet and matches it against the expected reply. */
+ls_icmp_recv_status_t ls_icmp_recv(
+    ls_icmp_t *restrict icmp, const struct sockaddr_storage *restrict dest,
+    uint16_t identifier, uint16_t expected_sequence, uint64_t send_time_ms,
+    uint64_t now_ms, ls_icmp_reply_t *restrict out_reply,
+    ls_err_t *restrict err);
 
 #endif /* LINKSTAY_ICMP_H */

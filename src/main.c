@@ -1,39 +1,37 @@
-#include "config.h"
-#include "logger.h"
-#include "monitor.h"
+#include "app.h"
+#include "log.h"
+#include "opts.h"
 
-static void main_log_early_error(bool enable_timestamp,
-                                 const char *restrict error_msg) {
-  logger_t logger;
-  logger_init(&logger, LOG_LEVEL_ERROR, enable_timestamp);
-  logger_error(&logger, "linkstay failed: %s", error_msg);
+static void log_early_error(bool timestamps, const char *restrict message) {
+  ls_log_t log;
+  ls_log_init(&log, LS_LOG_ERROR, timestamps);
+  ls_error(&log, "linkstay failed: %s", message);
 }
 
 int main(int argc, char **argv) {
-  char error_msg[256];
+  ls_err_t err = {};
   bool exit_requested = false;
-  config_t config;
+  ls_opts_t opts;
 
-  if (!config_resolve(&config, argc, argv, &exit_requested, error_msg,
-                      sizeof(error_msg))) {
-    main_log_early_error(false, error_msg);
-    return LINKSTAY_EXIT_FAILURE;
+  if (!ls_opts_resolve(&opts, argc, argv, &exit_requested, &err)) {
+    log_early_error(false, err.msg);
+    return LS_EXIT_FAILURE;
   }
-
   if (exit_requested) {
-    return LINKSTAY_EXIT_SUCCESS;
+    return LS_EXIT_SUCCESS;
   }
 
-  linkstay_ctx_t ctx;
-  if (!linkstay_ctx_init(&ctx, &config, error_msg, sizeof(error_msg))) {
-    main_log_early_error(config_log_timestamps_enabled(&config), error_msg);
-    return LINKSTAY_EXIT_FAILURE;
+  ls_app_t app;
+  if (!ls_app_init(&app, &opts, &err)) {
+    log_early_error(ls_opts_timestamps(&opts), err.msg);
+    ls_app_destroy(&app);
+    return LS_EXIT_FAILURE;
   }
 
-  int rc = linkstay_reactor_run(&ctx);
-  if (rc != LINKSTAY_EXIT_SUCCESS) {
-    logger_error(&ctx.logger, "linkstay exited with code %d", rc);
+  int rc = ls_app_run(&app);
+  if (rc != LS_EXIT_SUCCESS) {
+    ls_error(&app.log, "linkstay exited with code %d", rc);
   }
-  linkstay_ctx_destroy(&ctx);
+  ls_app_destroy(&app);
   return rc;
 }
