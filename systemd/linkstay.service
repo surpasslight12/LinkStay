@@ -19,7 +19,7 @@ ExecStart=/usr/local/bin/linkstay
 # sent from log_startup(); WatchdogSec is a separate recurring deadline that
 # only starts counting once the service is considered started (after READY).
 # The two do not race: linkstay sends READY during initialization, well
-# before the reactor loop schedules the first WATCHDOG=1 notification.
+# before the event loop schedules the first WATCHDOG=1 notification.
 TimeoutStartSec=30
 TimeoutStopSec=10
 WatchdogSec=30

@@ -115,7 +115,7 @@ make install-systemd DESTDIR=/tmp/linkstay-stage PREFIX=/usr/local
 
 ### `--poweroff=true`
 达到阈值后立即执行真正关机。
-统一调用 `systemctl --no-block poweroff`，不再保留非 systemd 的关机后端。
+关机后端仅有一个：统一调用 `systemctl --no-block poweroff`。
 该模式要求主机存在可用的 systemd 环境（`/usr/bin/systemctl` 与 `/run/systemd/system`）。
 
 ## 日志时间戳行为

@@ -52,6 +52,4 @@ compile_commands.json
 .clang-tidy
 .editorconfig
 
-# 工具 (Tools)
-_codeql_detected_source_root
 tests/

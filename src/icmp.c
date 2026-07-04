@@ -150,7 +150,8 @@ static void fill_payload(uint8_t *restrict packet, size_t packet_len,
   }
 }
 
-/* Sequence 0 is reserved: probe state uses it as "not waiting". */
+/* Sequence is never 0: app.c clears its expected sequence to 0 while idle,
+ * so a cleared probe can never match a live reply. */
 static void next_sequence(ls_icmp_t *restrict icmp) {
   icmp->sequence = (icmp->sequence == UINT16_MAX)
                        ? 1
