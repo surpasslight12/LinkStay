@@ -260,10 +260,8 @@ static bool parse_ipv6_reply(const uint8_t *restrict buf, size_t received,
 
 ls_icmp_recv_status_t ls_icmp_recv(
     ls_icmp_t *restrict icmp, const struct sockaddr_storage *restrict dest,
-    uint16_t identifier, uint16_t expected_sequence, uint64_t send_time_ms,
-    uint64_t now_ms, ls_icmp_reply_t *restrict out_reply,
-    ls_err_t *restrict err) {
-  if (icmp == nullptr || dest == nullptr || out_reply == nullptr) {
+    uint16_t identifier, uint16_t expected_sequence, ls_err_t *restrict err) {
+  if (icmp == nullptr || dest == nullptr) {
     (void)ls_err_set(err, "Invalid ICMP receive arguments");
     return LS_ICMP_RECV_ERROR;
   }
@@ -290,13 +288,5 @@ ls_icmp_recv_status_t ls_icmp_recv(
                                         identifier, expected_sequence)
                      : parse_ipv6_reply(icmp->recv_buf, (size_t)received,
                                         identifier, expected_sequence);
-  if (!matched) {
-    return LS_ICMP_RECV_IGNORED;
-  }
-
-  /* Guard against impossible clock skew before recording latency. */
-  out_reply->latency_ms =
-      (now_ms >= send_time_ms) ? (double)(now_ms - send_time_ms) : 0.0;
-  out_reply->sequence = expected_sequence;
-  return LS_ICMP_RECV_MATCHED;
+  return matched ? LS_ICMP_RECV_MATCHED : LS_ICMP_RECV_IGNORED;
 }

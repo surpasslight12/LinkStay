@@ -39,7 +39,7 @@ typedef struct {
   ls_timer_t *watchdog_timer; /* systemd watchdog heartbeat */
 
   ls_probe_state_t probe_state;
-  uint64_t probe_sent_ms;
+  uint64_t probe_sent_ns; /* fine-grained clock, for sub-ms latency */
   uint16_t probe_sequence;
   int consecutive_fails;
 

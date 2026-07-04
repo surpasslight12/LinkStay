@@ -44,25 +44,25 @@ static void log_statistics(ls_app_t *app) {
 
 static void probe_reset(ls_app_t *app) {
   app->probe_state = LS_PROBE_IDLE;
-  app->probe_sent_ms = 0;
+  app->probe_sent_ns = 0;
   app->probe_sequence = 0;
   ls_timer_disarm(app->reply_timer);
 }
 
-static void on_probe_ok(ls_app_t *app, const ls_icmp_reply_t *reply) {
+static void on_probe_ok(ls_app_t *app, uint16_t sequence, double latency_ms) {
   app->consecutive_fails = 0;
-  ls_stats_add_ok(&app->stats, reply->latency_ms);
+  ls_stats_add_ok(&app->stats, latency_ms);
   ls_debug(&app->log,
            "Reply from %s: seq=%u time=%.2fms (avg %.2fms, %" PRIu64
            "/%" PRIu64 " OK, %.1f%% success)",
-           app->opts.target, (unsigned)reply->sequence, reply->latency_ms,
+           app->opts.target, (unsigned)sequence, latency_ms,
            ls_stats_avg_latency(&app->stats), app->stats.ok, app->stats.total,
            ls_stats_success_rate(&app->stats));
   ls_notify_statusf(&app->notify,
                     "Online: %s up %" PRIu64 "s, last %.2fms, avg %.2fms, "
                     "%" PRIu64 "/%" PRIu64 " OK (%.1f%%)",
                     app->opts.target, ls_stats_uptime_sec(&app->stats),
-                    reply->latency_ms, ls_stats_avg_latency(&app->stats),
+                    latency_ms, ls_stats_avg_latency(&app->stats),
                     app->stats.ok, app->stats.total,
                     ls_stats_success_rate(&app->stats));
 }
@@ -121,7 +121,7 @@ static void on_ping_timer(ls_loop_t *loop, void *userdata) {
     return;
   }
   app->probe_state = LS_PROBE_AWAIT_REPLY;
-  app->probe_sent_ms = now_ms;
+  app->probe_sent_ns = ls_now_ns();
   app->probe_sequence = app->icmp.sequence;
   ls_timer_arm_after(app->reply_timer, now_ms,
                      (uint64_t)app->opts.timeout_ms);
@@ -151,17 +151,15 @@ static void on_watchdog_timer(ls_loop_t *loop, void *userdata) {
 }
 
 static void on_icmp_readable(ls_loop_t *loop, int fd, void *userdata) {
+  (void)loop;
   (void)fd;
   ls_app_t *app = userdata;
-  uint64_t now_ms = ls_loop_now(loop);
 
-  ls_icmp_reply_t reply;
   ls_err_t err = {};
   for (size_t i = 0; i < LS_MAX_REPLY_DRAIN_PER_WAKEUP; i++) {
     ls_icmp_recv_status_t status =
         ls_icmp_recv(&app->icmp, &app->dest, app->identifier,
-                     app->probe_sequence, app->probe_sent_ms, now_ms, &reply,
-                     &err);
+                     app->probe_sequence, &err);
     if (status == LS_ICMP_RECV_NO_MORE) {
       return;
     }
@@ -172,8 +170,17 @@ static void on_icmp_readable(ls_loop_t *loop, int fd, void *userdata) {
     }
     if (status == LS_ICMP_RECV_MATCHED &&
         app->probe_state == LS_PROBE_AWAIT_REPLY) {
+      /* Sub-ms latency from the fine-grained clock; guard clock failure
+       * and impossible skew by clamping to zero. */
+      uint64_t now_ns = ls_now_ns();
+      double latency_ms =
+          (now_ns != UINT64_MAX && app->probe_sent_ns != UINT64_MAX &&
+           now_ns >= app->probe_sent_ns)
+              ? (double)(now_ns - app->probe_sent_ns) / 1e6
+              : 0.0;
+      uint16_t sequence = app->probe_sequence;
       probe_reset(app);
-      on_probe_ok(app, &reply);
+      on_probe_ok(app, sequence, latency_ms);
       return;
     }
   }

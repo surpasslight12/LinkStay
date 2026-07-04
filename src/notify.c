@@ -172,8 +172,9 @@ bool ls_notify_ready(ls_notify_t *restrict notify) {
   return send_message(notify, "READY=1");
 }
 
-bool ls_notify_status(ls_notify_t *restrict notify,
-                      const char *restrict status) {
+/* Core STATUS primitive; external callers use ls_notify_statusf(). */
+static bool notify_status(ls_notify_t *restrict notify,
+                          const char *restrict status) {
   if (notify == nullptr || !notify->enabled || status == nullptr) {
     return false;
   }
@@ -209,7 +210,7 @@ bool ls_notify_statusf(ls_notify_t *restrict notify, const char *restrict fmt,
   va_start(args, fmt);
   (void)vsnprintf(status, sizeof(status), fmt, args);
   va_end(args);
-  return ls_notify_status(notify, status);
+  return notify_status(notify, status);
 }
 
 bool ls_notify_stopping(ls_notify_t *restrict notify) {

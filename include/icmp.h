@@ -18,11 +18,6 @@
 #define LS_ICMP_SEND_BUFFER_SIZE 256U
 #define LS_ICMP_RECV_BUFFER_SIZE 1500U
 
-typedef struct {
-  double latency_ms;
-  uint16_t sequence; /* echo sequence of the matched reply */
-} ls_icmp_reply_t;
-
 typedef enum {
   LS_ICMP_RECV_NO_MORE = -1, /* socket drained (EAGAIN) */
   LS_ICMP_RECV_IGNORED = 0,  /* packet received but not our reply */
@@ -66,11 +61,10 @@ void ls_icmp_close(ls_icmp_t *restrict icmp);
     socklen_t dest_len, uint16_t identifier, size_t packet_len,
     ls_err_t *restrict err);
 
-/* Receives one packet and matches it against the expected reply. */
+/* Receives one packet and matches it against the expected reply.
+ * Latency measurement is the caller's concern (see app.c). */
 ls_icmp_recv_status_t ls_icmp_recv(
     ls_icmp_t *restrict icmp, const struct sockaddr_storage *restrict dest,
-    uint16_t identifier, uint16_t expected_sequence, uint64_t send_time_ms,
-    uint64_t now_ms, ls_icmp_reply_t *restrict out_reply,
-    ls_err_t *restrict err);
+    uint16_t identifier, uint16_t expected_sequence, ls_err_t *restrict err);
 
 #endif /* LINKSTAY_ICMP_H */

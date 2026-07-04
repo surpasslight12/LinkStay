@@ -30,8 +30,6 @@ void ls_notify_destroy(ls_notify_t *restrict notify);
 [[nodiscard]] bool ls_notify_enabled(const ls_notify_t *restrict notify);
 
 bool ls_notify_ready(ls_notify_t *restrict notify);
-bool ls_notify_status(ls_notify_t *restrict notify,
-                      const char *restrict status);
 [[gnu::format(printf, 2, 3)]] bool
 ls_notify_statusf(ls_notify_t *restrict notify, const char *restrict fmt, ...);
 bool ls_notify_stopping(ls_notify_t *restrict notify);

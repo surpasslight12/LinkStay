@@ -31,3 +31,16 @@ uint64_t ls_now_ms(void) {
   }
   return ls_add_sat(seconds_ms, (uint64_t)ts.tv_nsec / UINT64_C(1000000));
 }
+
+uint64_t ls_now_ns(void) {
+  struct timespec ts;
+  if (LS_UNLIKELY(clock_gettime(CLOCK_MONOTONIC, &ts) != 0)) {
+    return UINT64_MAX;
+  }
+  uint64_t seconds_ns = 0;
+  if (LS_UNLIKELY(ckd_mul(&seconds_ns, (uint64_t)ts.tv_sec,
+                          UINT64_C(1000000000)))) {
+    return UINT64_MAX;
+  }
+  return ls_add_sat(seconds_ns, (uint64_t)ts.tv_nsec);
+}

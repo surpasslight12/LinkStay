@@ -55,6 +55,11 @@ typedef struct {
  * Returns UINT64_MAX on clock failure or arithmetic overflow. */
 [[nodiscard]] uint64_t ls_now_ms(void);
 
+/* Monotonic nanoseconds since an unspecified epoch, for latency measurement
+ * (uses the fine-grained clock, unlike the coarse scheduling clock above).
+ * Returns UINT64_MAX on clock failure or arithmetic overflow. */
+[[nodiscard]] uint64_t ls_now_ns(void);
+
 /* a + b with saturation at UINT64_MAX instead of wrap-around. */
 [[nodiscard]] static inline uint64_t ls_add_sat(uint64_t a, uint64_t b) {
   uint64_t result = 0;
