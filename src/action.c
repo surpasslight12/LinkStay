@@ -28,13 +28,9 @@ static bool sleep_retry_window(void) {
   return true;
 }
 
-/* Interprets one waitpid() observation; SIMULATED = child still running. */
-static ls_action_result_t consume_child_status(pid_t child_pid,
-                                               pid_t wait_result, int status,
+/* Interprets the exit status of the reaped systemctl child. */
+static ls_action_result_t consume_child_status(int status,
                                                const ls_log_t *log) {
-  if (wait_result != child_pid) {
-    return LS_ACTION_SIMULATED; /* not exited yet */
-  }
   if (WIFEXITED(status)) {
     int code = WEXITSTATUS(status);
     if (code == 0) {
@@ -71,7 +67,7 @@ static ls_action_result_t observe_startup(pid_t child_pid,
     int status = 0;
     pid_t result = waitpid(child_pid, &status, WNOHANG);
     if (result == child_pid) {
-      return consume_child_status(child_pid, result, status, log);
+      return consume_child_status(status, log);
     }
     if (result < 0) {
       if (errno == EINTR) {

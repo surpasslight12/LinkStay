@@ -151,11 +151,10 @@ static void fill_payload(uint8_t *restrict packet, size_t packet_len,
 }
 
 /* Sequence 0 is reserved: probe state uses it as "not waiting". */
-static uint16_t next_sequence(ls_icmp_t *restrict icmp) {
+static void next_sequence(ls_icmp_t *restrict icmp) {
   icmp->sequence = (icmp->sequence == UINT16_MAX)
                        ? 1
                        : (uint16_t)(icmp->sequence + 1);
-  return icmp->sequence;
 }
 
 bool ls_icmp_send_echo(ls_icmp_t *restrict icmp,
@@ -168,7 +167,11 @@ bool ls_icmp_send_echo(ls_icmp_t *restrict icmp,
   if (dest->ss_family != AF_INET && dest->ss_family != AF_INET6) {
     return ls_err_set(err, "Unsupported address family: %d", dest->ss_family);
   }
-  if (packet_len == 0 || packet_len > sizeof(icmp->send_buf)) {
+  /* Lower bound covers the echo header (8 bytes for both families) so the
+   * payload length below can never underflow. */
+  size_t header_len = (icmp->family == AF_INET6) ? sizeof(struct icmp6_hdr)
+                                                 : sizeof(struct icmphdr);
+  if (packet_len < header_len || packet_len > sizeof(icmp->send_buf)) {
     return ls_err_set(err, "Invalid ICMP packet size: %zu", packet_len);
   }
 
