@@ -106,6 +106,34 @@ static bool send_message(ls_notify_t *restrict notify,
   return false;
 }
 
+/* Core STATUS primitive; external callers use ls_notify_statusf().
+ * De-duplicates identical status messages within a short window to
+ * keep notify-socket traffic low. */
+static bool notify_status(ls_notify_t *restrict notify,
+                          const char *restrict status) {
+  if (notify == nullptr || !notify->enabled || status == nullptr) {
+    return false;
+  }
+
+  uint64_t now_ms = ls_now_ms();
+  bool same = strcmp(notify->last_status, status) == 0;
+  if (same && notify->last_status_ms != 0 && now_ms != UINT64_MAX &&
+      now_ms - notify->last_status_ms < LS_NOTIFY_DEDUP_WINDOW_MS) {
+    return true;
+  }
+
+  char message[LS_NOTIFY_MESSAGE_SIZE];
+  (void)snprintf(message, sizeof(message), "STATUS=%.*s",
+                 (int)LS_NOTIFY_STATUS_SIZE - 1, status);
+  bool ok = send_message(notify, message);
+  if (ok) {
+    (void)snprintf(notify->last_status, sizeof(notify->last_status), "%s",
+                   status);
+    notify->last_status_ms = (now_ms == UINT64_MAX) ? 0 : now_ms;
+  }
+  return ok;
+}
+
 /* ---- Public API ---- */
 
 void ls_notify_init(ls_notify_t *restrict notify) {
@@ -170,34 +198,6 @@ bool ls_notify_enabled(const ls_notify_t *restrict notify) {
 
 bool ls_notify_ready(ls_notify_t *restrict notify) {
   return send_message(notify, "READY=1");
-}
-
-/* Core STATUS primitive; external callers use ls_notify_statusf(). */
-static bool notify_status(ls_notify_t *restrict notify,
-                          const char *restrict status) {
-  if (notify == nullptr || !notify->enabled || status == nullptr) {
-    return false;
-  }
-
-  uint64_t now_ms = ls_now_ms();
-  /* De-duplicate identical status messages within the window to reduce
-   * socket traffic. strcmp is safe: both strings are NUL-terminated. */
-  bool same = strcmp(notify->last_status, status) == 0;
-  if (same && notify->last_status_ms != 0 && now_ms != UINT64_MAX &&
-      now_ms - notify->last_status_ms < LS_NOTIFY_DEDUP_WINDOW_MS) {
-    return true;
-  }
-
-  char message[LS_NOTIFY_MESSAGE_SIZE];
-  (void)snprintf(message, sizeof(message), "STATUS=%.*s",
-                 (int)LS_NOTIFY_STATUS_SIZE - 1, status);
-  bool ok = send_message(notify, message);
-  if (ok) {
-    (void)snprintf(notify->last_status, sizeof(notify->last_status), "%s",
-                   status);
-    notify->last_status_ms = (now_ms == UINT64_MAX) ? 0 : now_ms;
-  }
-  return ok;
 }
 
 bool ls_notify_statusf(ls_notify_t *restrict notify, const char *restrict fmt,

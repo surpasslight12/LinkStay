@@ -81,36 +81,45 @@ bool ls_loop_watch_signals(ls_loop_t *restrict loop,
 
   loop->signal_cb = cb;
   loop->signal_userdata = userdata;
-  if (!ls_loop_add_fd(loop, loop->signal_fd, dispatch_signal_fd, nullptr)) {
-    return ls_err_set(err, "Event loop fd capacity exceeded");
+  if (!ls_loop_add_fd(loop, loop->signal_fd, dispatch_signal_fd, nullptr,
+                      true, err)) {
+    return false; /* ls_loop_add_fd already set err */
   }
   return true;
 }
 
 bool ls_loop_add_fd(ls_loop_t *restrict loop, int fd, ls_fd_cb_t cb,
-                    void *userdata) {
-  if (loop == nullptr || fd < 0 || cb == nullptr ||
-      loop->fd_count >= LS_LOOP_MAX_FDS) {
-    return false;
+                    void *userdata, bool critical, ls_err_t *restrict err) {
+  if (loop == nullptr || fd < 0 || cb == nullptr) {
+    return ls_err_set(err, "Invalid fd registration arguments");
+  }
+  if (loop->fd_count >= LS_LOOP_MAX_FDS) {
+    return ls_err_set(err, "Maximum fd slots (%u) reached", LS_LOOP_MAX_FDS);
   }
   size_t slot = loop->fd_count++;
   loop->fds[slot] = (struct pollfd){.fd = fd, .events = POLLIN};
   loop->fd_cbs[slot] = cb;
   loop->fd_userdata[slot] = userdata;
+  loop->fd_critical[slot] = critical;
   return true;
 }
 
-ls_timer_t *ls_loop_add_timer(ls_loop_t *restrict loop, ls_timer_cb_t cb,
-                              void *userdata) {
-  if (loop == nullptr || cb == nullptr ||
-      loop->timer_count >= LS_LOOP_MAX_TIMERS) {
-    return nullptr;
+bool ls_loop_add_timer(ls_loop_t *restrict loop, ls_timer_cb_t cb,
+                       void *userdata, ls_timer_t **restrict out,
+                       ls_err_t *restrict err) {
+  if (loop == nullptr || cb == nullptr || out == nullptr) {
+    return ls_err_set(err, "Invalid timer registration arguments");
+  }
+  if (loop->timer_count >= LS_LOOP_MAX_TIMERS) {
+    return ls_err_set(err, "Maximum timer slots (%u) reached",
+                      LS_LOOP_MAX_TIMERS);
   }
   ls_timer_t *timer = &loop->timers[loop->timer_count++];
   timer->cb = cb;
   timer->userdata = userdata;
   ls_timer_disarm(timer);
-  return timer;
+  *out = timer;
+  return true;
 }
 
 /* ---- Run ---- */
@@ -168,9 +177,16 @@ static void dispatch_fds(ls_loop_t *loop) {
     short revents = loop->fds[i].revents;
     loop->fds[i].revents = 0;
     if (revents & error_events) {
-      ls_error(loop->log, "fd %d entered error state", loop->fds[i].fd);
-      ls_loop_stop(loop, LS_EXIT_FAILURE);
-      return;
+      if (loop->fd_critical[i]) {
+        ls_error(loop->log, "Critical fd %d entered error state, stopping",
+                 loop->fds[i].fd);
+        ls_loop_stop(loop, LS_EXIT_FAILURE);
+        return;
+      }
+      ls_warn(loop->log, "Non-critical fd %d entered error state (revents=0x%x), "
+              "continuing",
+              loop->fds[i].fd, (unsigned)revents);
+      continue;
     }
     if (revents & POLLIN) {
       loop->fd_cbs[i](loop, loop->fds[i].fd, loop->fd_userdata[i]);

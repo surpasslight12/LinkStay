@@ -14,9 +14,13 @@
 #define LS_DEFAULT_TARGET "1.1.1.1"
 #define LS_DEFAULT_INTERVAL_SEC 10
 #define LS_DEFAULT_FAIL_THRESHOLD 5
-#define LS_DEFAULT_TIMEOUT_MS 2000
+#define LS_DEFAULT_TIMEOUT_MS 3000
 #define LS_DEFAULT_POWEROFF false
 #define LS_DEFAULT_SYSTEMD true
+
+/* Validation constraints (not user-visible). */
+#define LS_TIMEOUT_MARGIN_MS 100
+#define LS_MAX_TIMEOUT_MS 60000
 
 #define LS_BOOL_VALUES "true|false|1|0|yes|no|on|off"
 #define LS_LOG_LEVEL_VALUES "silent|error|warn|info|debug"
@@ -348,11 +352,17 @@ static bool validate(const ls_opts_t *opts, ls_err_t *err) {
     return ls_err_set(
         err, "Interval is too large to convert safely to milliseconds");
   }
-  if ((uint64_t)opts->timeout_ms >= interval_ms) {
+  if ((uint64_t)opts->timeout_ms > LS_MAX_TIMEOUT_MS) {
     return ls_err_set(err,
-                      "Timeout (%d ms) must be smaller than interval (%d s = "
-                      "%" PRIu64 " ms) to avoid overlapping probes",
-                      opts->timeout_ms, opts->interval_sec, interval_ms);
+                      "Timeout (%d ms) exceeds maximum (%d ms)",
+                      opts->timeout_ms, LS_MAX_TIMEOUT_MS);
+  }
+  if ((uint64_t)opts->timeout_ms + LS_TIMEOUT_MARGIN_MS > interval_ms) {
+    return ls_err_set(err,
+                      "Timeout (%d ms) plus margin (%d ms) must not exceed "
+                      "interval (%d s = %" PRIu64 " ms)",
+                      opts->timeout_ms, LS_TIMEOUT_MARGIN_MS,
+                      opts->interval_sec, interval_ms);
   }
 
   if (opts->poweroff && !systemd_runtime_available()) {
@@ -426,7 +436,7 @@ static void print_usage(void) {
 
 static void print_version(void) {
   printf("%s version %s\n", LS_PROGRAM_NAME, LS_VERSION);
-  printf("linkstay network monitor\n");
+  printf("%s network monitor\n", LS_PROGRAM_NAME);
 }
 
 static bool handle_exit_option(int requested, bool *exit_requested) {
@@ -445,7 +455,9 @@ static bool handle_exit_option(int requested, bool *exit_requested) {
 
 /* Pre-scans argv for --help/--version so they are honored even when the
  * environment or other arguments are invalid. Saves and restores getopt
- * globals so the real parse starts clean. */
+ * globals so the real parse starts clean. Assumes glibc/musl getopt with
+ * only the four standard POSIX globals (optind, opterr, optopt, optarg);
+ * platforms with additional globals (e.g. BSD optreset) are not supported. */
 static int scan_exit_option(int argc, char **argv) {
   char optstring[OPTION_COUNT * 3 + 1];
   struct option longopts[OPTION_COUNT + 1];

@@ -7,19 +7,21 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define SYSTEMCTL_PATH "/usr/bin/systemctl"
-#define STARTUP_GRACE_MS 1000U
-#define POLL_INTERVAL_NS 50000000L
+#define LS_SYSTEMCTL_PATH "/usr/bin/systemctl"
+#define LS_STARTUP_GRACE_MS 1000U
+#define LS_POLL_INTERVAL_NS 50000000L
 
 /* Minimal environment for defense-in-depth and deterministic output. */
-static char *const SHUTDOWN_ENVP[] = {
+static char *const LS_SHUTDOWN_ENVP[] = {
     "PATH=/usr/bin:/usr/sbin:/bin:/sbin", "LANG=C", "LC_ALL=C", nullptr};
 
-static char *const SHUTDOWN_ARGV[] = {(char *)SYSTEMCTL_PATH, "--no-block",
-                                      "poweroff", nullptr};
+static char *const LS_SHUTDOWN_ARGV[] = {
+    (char *)LS_SYSTEMCTL_PATH, "--no-block", "poweroff", nullptr};
+
+/* ---- Spawn helpers ---- */
 
 static bool sleep_retry_window(void) {
-  struct timespec remaining = {.tv_sec = 0, .tv_nsec = POLL_INTERVAL_NS};
+  struct timespec remaining = {.tv_sec = 0, .tv_nsec = LS_POLL_INTERVAL_NS};
   while (nanosleep(&remaining, &remaining) < 0) {
     if (errno != EINTR) {
       return false;
@@ -38,7 +40,7 @@ static ls_action_result_t consume_child_status(int status,
       return LS_ACTION_TRIGGERED;
     }
     ls_error(log, "Shutdown command failed with exit code %d: %s", code,
-             SYSTEMCTL_PATH);
+             LS_SYSTEMCTL_PATH);
     return LS_ACTION_FAILED;
   }
   if (WIFSIGNALED(status)) {
@@ -49,7 +51,9 @@ static ls_action_result_t consume_child_status(int status,
   return LS_ACTION_FAILED;
 }
 
-/* Watches the spawned systemctl for up to STARTUP_GRACE_MS:
+/* ---- Spawn & observe ---- */
+
+/* Watches the spawned systemctl for up to LS_STARTUP_GRACE_MS:
  *  - early non-zero exit ⇒ FAILED
  *  - clean exit          ⇒ TRIGGERED
  *  - still running       ⇒ assume hand-off succeeded, TRIGGERED */
@@ -61,7 +65,7 @@ static ls_action_result_t observe_startup(pid_t child_pid,
                   "clock unavailable");
     return LS_ACTION_FAILED;
   }
-  uint64_t deadline_ms = ls_add_sat(start_ms, STARTUP_GRACE_MS);
+  uint64_t deadline_ms = ls_add_sat(start_ms, LS_STARTUP_GRACE_MS);
 
   while (true) {
     int status = 0;
@@ -117,8 +121,8 @@ static ls_action_result_t spawn_shutdown_command(const ls_log_t *log) {
   }
 
   pid_t child_pid = -1;
-  int spawn_err = posix_spawn(&child_pid, SHUTDOWN_ARGV[0], &actions, nullptr,
-                              SHUTDOWN_ARGV, SHUTDOWN_ENVP);
+  int spawn_err = posix_spawn(&child_pid, LS_SHUTDOWN_ARGV[0], &actions,
+                              nullptr, LS_SHUTDOWN_ARGV, LS_SHUTDOWN_ENVP);
   posix_spawn_file_actions_destroy(&actions);
   if (spawn_err != 0) {
     ls_error(log, "posix_spawn failed: %s", strerror(spawn_err));
@@ -126,6 +130,8 @@ static ls_action_result_t spawn_shutdown_command(const ls_log_t *log) {
   }
   return observe_startup(child_pid, log);
 }
+
+/* ---- Public API ---- */
 
 ls_action_result_t ls_action_shutdown(bool poweroff,
                                       const ls_log_t *restrict log) {

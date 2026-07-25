@@ -30,7 +30,7 @@ make test     # 运行功能测试
 ./bin/linkstay --help
 
 # 前台调试运行（不实际关机，仅模拟）
-sudo ./bin/linkstay --target 1.1.1.1 --interval 10 --timeout 2000 \
+sudo ./bin/linkstay --target 1.1.1.1 --interval 10 --timeout 3000 \
      --threshold 3 --log-level debug
 
 # 短选项示例：必选参数既可写成 "-i 5"，也可写成 "-i5"
@@ -94,7 +94,7 @@ make install-systemd DESTDIR=/tmp/linkstay-stage PREFIX=/usr/local
 | 监控目标 | `-t, --target` | `LINKSTAY_TARGET` | `1.1.1.1` | 目标 IP 字面量（仅支持 IPv4/IPv6，不解析域名） |
 | 检测间隔 | `-i, --interval` | `LINKSTAY_INTERVAL` | `10`（秒） | 两次 ping 之间的间隔 |
 | 失败阈值 | `-n, --threshold` | `LINKSTAY_THRESHOLD` | `5` | 连续失败次数触发关机 |
-| 超时时间 | `-w, --timeout` | `LINKSTAY_TIMEOUT` | `2000`（ms） | 单次 ping 等待回包的超时，必须小于 interval |
+| 超时时间 | `-w, --timeout` | `LINKSTAY_TIMEOUT` | `3000`（ms） | 单次 ping 等待回包的超时，必须小于 interval |
 | 是否关机 | `-p, --poweroff` | `LINKSTAY_POWEROFF` | `false` | `true` 实际执行关机，`false` 仅模拟；接受 `true/false/1/0/yes/no/on/off` |
 | 日志级别 | `-l, --log-level` | `LINKSTAY_LOG_LEVEL` | `info` | 取值为 `silent` / `error` / `warn` / `info` / `debug` |
 | systemd 集成 | `-s, --systemd` | `LINKSTAY_SYSTEMD` | `true` | 启用 `sd_notify`、watchdog 与状态通知；接受 `true/false/1/0/yes/no/on/off`；省略参数时等价于启用，禁用建议写 `--systemd=0`、`--systemd=false`、`-s0` 或 `-sfalse` |

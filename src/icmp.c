@@ -168,6 +168,11 @@ bool ls_icmp_send_echo(ls_icmp_t *restrict icmp,
   if (dest->ss_family != AF_INET && dest->ss_family != AF_INET6) {
     return ls_err_set(err, "Unsupported address family: %d", dest->ss_family);
   }
+  if (dest->ss_family != icmp->family) {
+    return ls_err_set(
+        err, "Address family mismatch: dest=%d, socket=%d",
+        dest->ss_family, icmp->family);
+  }
   /* Lower bound covers the echo header (8 bytes for both families) so the
    * payload length below can never underflow. */
   size_t header_len = (icmp->family == AF_INET6) ? sizeof(struct icmp6_hdr)
@@ -236,6 +241,9 @@ static bool parse_ipv4_reply(const uint8_t *restrict buf, size_t received,
   if (ip_hdr->ip_p != IPPROTO_ICMP) {
     return false;
   }
+  /* ip_hl is the IPv4 header length in 32-bit words — multiply by 4 for
+   * bytes. This correctly handles IPv4 options that extend the header
+   * beyond the base sizeof(struct ip). */
   size_t ip_hdr_len = (size_t)ip_hdr->ip_hl * 4;
   if (ip_hdr_len < sizeof(struct ip) || ip_hdr_len > received ||
       ip_hdr_len + sizeof(struct icmphdr) > received) {

@@ -29,6 +29,9 @@ typedef void (*ls_timer_cb_t)(ls_loop_t *loop, void *userdata);
 typedef void (*ls_signal_cb_t)(ls_loop_t *loop, uint32_t signo,
                                void *userdata);
 
+/* Timer slot. Contract: when a timer fires, its callback MUST re-arm
+ * (ls_timer_step) or disarm (ls_timer_disarm) the timer; otherwise the
+ * loop spins on the still-elapsed timer. */
 typedef struct {
   uint64_t deadline_ms; /* UINT64_MAX = disarmed */
   ls_timer_cb_t cb;
@@ -44,6 +47,7 @@ struct ls_loop {
   struct pollfd fds[LS_LOOP_MAX_FDS];
   ls_fd_cb_t fd_cbs[LS_LOOP_MAX_FDS];
   void *fd_userdata[LS_LOOP_MAX_FDS];
+  bool fd_critical[LS_LOOP_MAX_FDS];
   size_t fd_count;
 
   ls_timer_t timers[LS_LOOP_MAX_TIMERS];
@@ -70,13 +74,19 @@ void ls_loop_destroy(ls_loop_t *restrict loop);
                                          void *userdata,
                                          ls_err_t *restrict err);
 
-/* Registers a non-blocking fd for POLLIN dispatch. */
+/* Registers a non-blocking fd for POLLIN dispatch. Set critical=true for
+ * fds whose error (POLLERR/POLLHUP/POLLNVAL) should stop the loop
+ * (e.g. signalfd); non-critical fd errors are logged but tolerated. */
 [[nodiscard]] bool ls_loop_add_fd(ls_loop_t *restrict loop, int fd,
-                                  ls_fd_cb_t cb, void *userdata);
+                                  ls_fd_cb_t cb, void *userdata, bool critical,
+                                  ls_err_t *restrict err);
 
-/* Claims a timer slot (initially disarmed). Returns nullptr when full. */
-[[nodiscard]] ls_timer_t *ls_loop_add_timer(ls_loop_t *restrict loop,
-                                            ls_timer_cb_t cb, void *userdata);
+/* Claims a timer slot (initially disarmed). Returns false and sets err
+ * when the timer table is full or arguments are invalid. */
+[[nodiscard]] bool ls_loop_add_timer(ls_loop_t *restrict loop,
+                                     ls_timer_cb_t cb, void *userdata,
+                                     ls_timer_t **restrict out,
+                                     ls_err_t *restrict err);
 
 /* Runs until ls_loop_stop() or a fatal loop error; returns the exit code. */
 int ls_loop_run(ls_loop_t *restrict loop);
