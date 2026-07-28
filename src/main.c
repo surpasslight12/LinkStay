@@ -1,6 +1,4 @@
 #include "app.h"
-#include "log.h"
-#include "opts.h"
 
 /* ---- Early-error logging ---- */
 

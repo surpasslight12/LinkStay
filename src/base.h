@@ -1,26 +1,71 @@
-#ifndef LINKSTAY_LOG_H
-#define LINKSTAY_LOG_H
+#ifndef LINKSTAY_BASE_H
+#define LINKSTAY_BASE_H
+
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE
+#endif
 
 /*
- * log.h — leveled logging to stderr.
+ * base.h — dependency-free foundation.
  *
- * The hot-path loggers (info/debug) are inline and gated on the configured
- * level so filtered messages cost nothing beyond a comparison. The cold
- * loggers (error/warn) carry the `cold` attribute since they fire rarely.
+ * Project identity, generic macros, the unified error type, monotonic clock,
+ * and leveled logging. Every other module includes this header.
  */
 
-#include "base.h"
-
 #include <stdarg.h>
+#include <stdckdint.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <time.h>
+
+#define LS_VERSION "1.0"
+#define LS_PROGRAM_NAME "linkstay"
+
+#define LS_MS_PER_SEC UINT64_C(1000)
+#define LS_EXIT_SUCCESS 0
+#define LS_EXIT_FAILURE 1
+
+#define LS_ARRAY_LEN(arr) (sizeof(arr) / sizeof((arr)[0]))
+
+#define LS_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#define LS_LIKELY(x) __builtin_expect(!!(x), 1)
+#define LS_COLD [[gnu::cold]]
+
+static_assert(sizeof(uint64_t) == 8, "uint64_t must be 8 bytes");
+
+/* ---- Unified error type ---- */
+
+typedef struct {
+  char msg[256];
+} ls_err_t;
+
+[[gnu::format(printf, 2, 3)]] bool ls_err_set(ls_err_t *err, const char *fmt,
+                                              ...);
+
+/* ---- Monotonic clock ---- */
+
+[[nodiscard]] uint64_t ls_now_ms(void);
+[[nodiscard]] uint64_t ls_now_ns(void);
+
+[[nodiscard]] static inline uint64_t ls_add_sat(uint64_t a, uint64_t b) {
+  uint64_t result = 0;
+  return ckd_add(&result, a, b) ? UINT64_MAX : result;
+}
+
+/* ---- Leveled logging ---- */
 
 #define LS_LOG_BUFFER_SIZE 2048U
 
 typedef enum {
-  LS_LOG_SILENT = -1, /* completely silent */
+  LS_LOG_SILENT = -1,
   LS_LOG_ERROR = 0,
   LS_LOG_WARN = 1,
-  LS_LOG_INFO = 2, /* default */
-  LS_LOG_DEBUG = 3 /* verbose: prints per-ping latency */
+  LS_LOG_INFO = 2,
+  LS_LOG_DEBUG = 3,
 } ls_log_level_t;
 
 typedef struct {
@@ -34,9 +79,6 @@ void ls_log_va(const ls_log_t *restrict log, ls_log_level_t level,
                const char *restrict fmt, va_list ap);
 const char *ls_log_level_name(ls_log_level_t level);
 
-/* ls_error / ls_warn are marked cold since they fire rarely. The level check
- * avoids all formatting cost when the message is filtered. A null log is
- * silently ignored so callers need not guard every call. */
 #define LS_DEFINE_LOGGER(name, lvl, attrs)                                     \
   [[gnu::format(printf, 2, 3)]] attrs                                          \
   static inline void name(const ls_log_t *restrict log,                       \
@@ -57,4 +99,4 @@ LS_DEFINE_LOGGER(ls_warn, LS_LOG_WARN, LS_COLD)
 LS_DEFINE_LOGGER(ls_info, LS_LOG_INFO, )
 LS_DEFINE_LOGGER(ls_debug, LS_LOG_DEBUG, )
 
-#endif /* LINKSTAY_LOG_H */
+#endif /* LINKSTAY_BASE_H */

@@ -10,7 +10,6 @@
  */
 
 #include "base.h"
-#include "log.h"
 
 typedef struct {
   /* Network */

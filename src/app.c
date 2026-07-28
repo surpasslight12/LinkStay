@@ -1,10 +1,17 @@
 #include "app.h"
 
-#include "action.h"
-
+#include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <signal.h>
+#include <spawn.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #define LS_PACKET_SIZE 64U
@@ -433,3 +440,446 @@ int ls_app_run(ls_app_t *restrict app) {
   ls_loop_destroy(&app->loop);
   return exit_code;
 }
+
+#define LS_US_PER_MS_F 1000.0
+
+#define LS_SYSTEMCTL_PATH "/usr/bin/systemctl"
+#define LS_STARTUP_GRACE_MS 1000U
+#define LS_POLL_INTERVAL_NS 50000000L
+
+#define LS_NOTIFY_MESSAGE_SIZE 256U
+#define LS_NOTIFY_RETRY_COUNT 3
+#define LS_NOTIFY_RETRY_NS 10000000L
+
+/* ===================================================================
+ *  Statistics
+ * =================================================================== */
+
+void ls_stats_init(ls_stats_t *stats) {
+  if (stats == nullptr) {
+    return;
+  }
+  *stats = (ls_stats_t){
+      .latency_min_us = LS_STATS_NO_SAMPLE,
+      .latency_max_us = LS_STATS_NO_SAMPLE,
+      .started_at_ms = ls_now_ms(),
+  };
+}
+
+void ls_stats_add_ok(ls_stats_t *stats, double latency_ms) {
+  if (LS_UNLIKELY(stats == nullptr)) {
+    return;
+  }
+  if (LS_UNLIKELY(latency_ms < 0.0)) {
+    latency_ms = 0.0;
+  }
+  if (LS_LIKELY(stats->total < UINT64_MAX)) {
+    stats->total++;
+  }
+  if (LS_LIKELY(stats->ok < UINT64_MAX)) {
+    stats->ok++;
+  }
+  uint64_t latency_us = (uint64_t)(latency_ms * LS_US_PER_MS_F);
+  stats->latency_sum_us = ls_add_sat(stats->latency_sum_us, latency_us);
+  if (latency_us < stats->latency_min_us) {
+    stats->latency_min_us = latency_us;
+  }
+  if (latency_us > stats->latency_max_us) {
+    stats->latency_max_us = latency_us;
+  }
+}
+
+void ls_stats_add_fail(ls_stats_t *stats) {
+  if (LS_UNLIKELY(stats == nullptr)) {
+    return;
+  }
+  if (LS_LIKELY(stats->total < UINT64_MAX)) {
+    stats->total++;
+  }
+  if (LS_LIKELY(stats->failed < UINT64_MAX)) {
+    stats->failed++;
+  }
+}
+
+double ls_stats_success_rate(const ls_stats_t *stats) {
+  if (stats == nullptr || stats->total == 0) {
+    return 0.0;
+  }
+  return (double)stats->ok / (double)stats->total * 100.0;
+}
+
+double ls_stats_avg_latency(const ls_stats_t *stats) {
+  if (stats == nullptr || stats->ok == 0) {
+    return 0.0;
+  }
+  return (double)stats->latency_sum_us / (double)stats->ok / LS_US_PER_MS_F;
+}
+
+double ls_stats_latency_min_ms(const ls_stats_t *stats) {
+  if (stats == nullptr || stats->latency_min_us == LS_STATS_NO_SAMPLE) {
+    return 0.0;
+  }
+  return (double)stats->latency_min_us / LS_US_PER_MS_F;
+}
+
+double ls_stats_latency_max_ms(const ls_stats_t *stats) {
+  if (stats == nullptr || stats->latency_max_us == LS_STATS_NO_SAMPLE) {
+    return 0.0;
+  }
+  return (double)stats->latency_max_us / LS_US_PER_MS_F;
+}
+
+uint64_t ls_stats_uptime_sec(const ls_stats_t *stats) {
+  if (stats == nullptr) {
+    return 0;
+  }
+  uint64_t now_ms = ls_now_ms();
+  if (now_ms == UINT64_MAX || stats->started_at_ms == UINT64_MAX ||
+      now_ms < stats->started_at_ms) {
+    return 0;
+  }
+  return (now_ms - stats->started_at_ms) / LS_MS_PER_SEC;
+}
+
+/* ===================================================================
+ *  Threshold action (systemctl poweroff)
+ * =================================================================== */
+
+static char *const LS_SHUTDOWN_ENVP[] = {
+    "PATH=/usr/bin:/usr/sbin:/bin:/sbin", "LANG=C", "LC_ALL=C", nullptr};
+
+static char *const LS_SHUTDOWN_ARGV[] = {
+    (char *)LS_SYSTEMCTL_PATH, "--no-block", "poweroff", nullptr};
+
+static bool sleep_retry_window(void) {
+  struct timespec remaining = {.tv_sec = 0, .tv_nsec = LS_POLL_INTERVAL_NS};
+  while (nanosleep(&remaining, &remaining) < 0) {
+    if (errno != EINTR) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static ls_action_result_t consume_child_status(int status,
+                                               const ls_log_t *log) {
+  if (WIFEXITED(status)) {
+    int code = WEXITSTATUS(status);
+    if (code == 0) {
+      ls_info(log, "Shutdown command accepted by systemd");
+      return LS_ACTION_TRIGGERED;
+    }
+    ls_error(log, "Shutdown command failed with exit code %d: %s", code,
+             LS_SYSTEMCTL_PATH);
+    return LS_ACTION_FAILED;
+  }
+  if (WIFSIGNALED(status)) {
+    ls_error(log, "Shutdown command terminated by signal %d", WTERMSIG(status));
+    return LS_ACTION_FAILED;
+  }
+  ls_error(log, "Shutdown command exited unexpectedly");
+  return LS_ACTION_FAILED;
+}
+
+static ls_action_result_t observe_startup(pid_t child_pid,
+                                          const ls_log_t *log) {
+  uint64_t start_ms = ls_now_ms();
+  if (start_ms == UINT64_MAX) {
+    ls_error(log, "Unable to confirm shutdown command result: monotonic "
+                  "clock unavailable");
+    return LS_ACTION_FAILED;
+  }
+  uint64_t deadline_ms = ls_add_sat(start_ms, LS_STARTUP_GRACE_MS);
+
+  while (true) {
+    int status = 0;
+    pid_t result = waitpid(child_pid, &status, WNOHANG);
+    if (result == child_pid) {
+      return consume_child_status(status, log);
+    }
+    if (result < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      ls_error(log, "waitpid() failed: %s", strerror(errno));
+      return LS_ACTION_FAILED;
+    }
+
+    uint64_t now_ms = ls_now_ms();
+    if (now_ms == UINT64_MAX) {
+      ls_error(log, "Unable to confirm shutdown command result: monotonic "
+                    "clock unavailable");
+      return LS_ACTION_FAILED;
+    }
+    if (now_ms >= deadline_ms) {
+      ls_warn(log, "Shutdown command did not exit within startup grace; "
+                   "assuming request was handed off");
+      return LS_ACTION_TRIGGERED;
+    }
+    if (!sleep_retry_window()) {
+      ls_error(log,
+               "Startup observation sleep interrupted by non-retryable error");
+      return LS_ACTION_FAILED;
+    }
+  }
+}
+
+static ls_action_result_t spawn_shutdown_command(const ls_log_t *log) {
+  posix_spawn_file_actions_t actions;
+  int rc = posix_spawn_file_actions_init(&actions);
+  if (rc != 0) {
+    ls_error(log, "posix_spawn_file_actions_init failed: %s", strerror(rc));
+    return LS_ACTION_FAILED;
+  }
+  if ((rc = posix_spawn_file_actions_addopen(&actions, STDIN_FILENO,
+                                             "/dev/null", O_RDONLY, 0)) == 0 &&
+      (rc = posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO,
+                                             "/dev/null", O_WRONLY, 0)) == 0) {
+    rc = posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null",
+                                          O_WRONLY, 0);
+  }
+  if (rc != 0) {
+    ls_error(log, "Failed to prepare stdio redirection: %s", strerror(rc));
+    posix_spawn_file_actions_destroy(&actions);
+    return LS_ACTION_FAILED;
+  }
+
+  pid_t child_pid = -1;
+  int spawn_err = posix_spawn(&child_pid, LS_SHUTDOWN_ARGV[0], &actions,
+                              nullptr, LS_SHUTDOWN_ARGV, LS_SHUTDOWN_ENVP);
+  posix_spawn_file_actions_destroy(&actions);
+  if (spawn_err != 0) {
+    ls_error(log, "posix_spawn failed: %s", strerror(spawn_err));
+    return LS_ACTION_FAILED;
+  }
+  return observe_startup(child_pid, log);
+}
+
+ls_action_result_t ls_action_shutdown(bool poweroff,
+                                      const ls_log_t *restrict log) {
+  ls_warn(log, "Failure threshold reached, poweroff is %s",
+          poweroff ? "true" : "false");
+
+  if (!poweroff) {
+    ls_info(log, "[DRY-RUN] Would power off the system now (no action taken)");
+    return LS_ACTION_SIMULATED;
+  }
+
+  ls_warn(log, "Triggering system shutdown now");
+  return spawn_shutdown_command(log);
+}
+
+/* ===================================================================
+ *  systemd notify integration
+ * =================================================================== */
+
+static bool parse_uint64(const char *restrict value,
+                         uint64_t *restrict out_value) {
+  if (value == nullptr) {
+    return false;
+  }
+  errno = 0;
+  char *endptr = nullptr;
+  unsigned long long parsed = strtoull(value, &endptr, 10);
+  if (errno != 0 || endptr == value || *endptr != '\0') {
+    return false;
+  }
+  uint64_t converted = (uint64_t)parsed;
+  if (converted != parsed) {
+    return false;
+  }
+  *out_value = converted;
+  return true;
+}
+
+static bool watchdog_pid_matches_self(void) {
+  const char *pid_str = getenv("WATCHDOG_PID");
+  if (pid_str == nullptr || pid_str[0] == '\0') {
+    return true;
+  }
+  errno = 0;
+  char *endptr = nullptr;
+  long parsed = strtol(pid_str, &endptr, 10);
+  if (errno != 0 || endptr == pid_str || *endptr != '\0' || parsed <= 0) {
+    return false;
+  }
+  return (pid_t)parsed == getpid();
+}
+
+static bool build_socket_addr(const char *restrict path,
+                              struct sockaddr_un *restrict addr,
+                              socklen_t *restrict addr_len) {
+  memset(addr, 0, sizeof(*addr));
+  addr->sun_family = AF_UNIX;
+
+  if (path[0] == '@') {
+    size_t name_len = strlen(path + 1);
+    if (name_len == 0 || name_len > sizeof(addr->sun_path) - 1) {
+      return false;
+    }
+    addr->sun_path[0] = '\0';
+    memcpy(addr->sun_path + 1, path + 1, name_len);
+    *addr_len =
+        (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + name_len);
+    return true;
+  }
+
+  size_t path_len = strlen(path);
+  if (path_len == 0 || path_len >= sizeof(addr->sun_path)) {
+    return false;
+  }
+  memcpy(addr->sun_path, path, path_len + 1);
+  *addr_len = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + path_len +
+                          1);
+  return true;
+}
+
+static bool send_message(ls_notify_t *restrict notify,
+                         const char *restrict message) {
+  if (LS_UNLIKELY(notify == nullptr || message == nullptr ||
+                  !notify->enabled)) {
+    return false;
+  }
+
+  size_t message_len = strlen(message);
+  for (int attempt = 0; attempt < LS_NOTIFY_RETRY_COUNT; attempt++) {
+    if (send(notify->sockfd, message, message_len, MSG_NOSIGNAL) >= 0) {
+      return true;
+    }
+    if (errno == EINTR) {
+      continue;
+    }
+    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOBUFS) {
+      struct timespec retry = {.tv_sec = 0, .tv_nsec = LS_NOTIFY_RETRY_NS};
+      while (nanosleep(&retry, &retry) < 0 && errno == EINTR) {
+      }
+      continue;
+    }
+    break;
+  }
+  return false;
+}
+
+static bool notify_status(ls_notify_t *restrict notify,
+                          const char *restrict status) {
+  if (notify == nullptr || !notify->enabled || status == nullptr) {
+    return false;
+  }
+
+  uint64_t now_ms = ls_now_ms();
+  bool same = strcmp(notify->last_status, status) == 0;
+  if (same && notify->last_status_ms != 0 && now_ms != UINT64_MAX &&
+      now_ms - notify->last_status_ms < LS_NOTIFY_DEDUP_WINDOW_MS) {
+    return true;
+  }
+
+  char message[LS_NOTIFY_MESSAGE_SIZE];
+  (void)snprintf(message, sizeof(message), "STATUS=%.*s",
+                 (int)LS_NOTIFY_STATUS_SIZE - 1, status);
+  bool ok = send_message(notify, message);
+  if (ok) {
+    (void)snprintf(notify->last_status, sizeof(notify->last_status), "%s",
+                   status);
+    notify->last_status_ms = (now_ms == UINT64_MAX) ? 0 : now_ms;
+  }
+  return ok;
+}
+
+void ls_notify_init(ls_notify_t *restrict notify) {
+  if (notify == nullptr) {
+    return;
+  }
+  *notify = (ls_notify_t){.sockfd = -1};
+
+  const char *socket_path = getenv("NOTIFY_SOCKET");
+  if (socket_path == nullptr) {
+    return;
+  }
+
+  notify->sockfd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+  if (notify->sockfd < 0) {
+    return;
+  }
+
+  struct sockaddr_un addr;
+  socklen_t addr_len;
+  if (!build_socket_addr(socket_path, &addr, &addr_len)) {
+    close(notify->sockfd);
+    notify->sockfd = -1;
+    return;
+  }
+
+  int rc;
+  do {
+    rc = connect(notify->sockfd, (const struct sockaddr *)&addr, addr_len);
+  } while (rc < 0 && errno == EINTR);
+  if (rc < 0) {
+    close(notify->sockfd);
+    notify->sockfd = -1;
+    return;
+  }
+
+  notify->enabled = true;
+
+  const char *watchdog_str = getenv("WATCHDOG_USEC");
+  if (watchdog_str != nullptr && watchdog_pid_matches_self()) {
+    uint64_t usec = 0;
+    if (parse_uint64(watchdog_str, &usec)) {
+      notify->watchdog_usec = usec;
+    }
+  }
+}
+
+void ls_notify_destroy(ls_notify_t *restrict notify) {
+  if (notify == nullptr) {
+    return;
+  }
+  if (notify->sockfd >= 0) {
+    close(notify->sockfd);
+    notify->sockfd = -1;
+  }
+  notify->enabled = false;
+}
+
+bool ls_notify_enabled(const ls_notify_t *restrict notify) {
+  return notify != nullptr && notify->enabled;
+}
+
+bool ls_notify_ready(ls_notify_t *restrict notify) {
+  return send_message(notify, "READY=1");
+}
+
+bool ls_notify_statusf(ls_notify_t *restrict notify, const char *restrict fmt,
+                       ...) {
+  if (notify == nullptr || !notify->enabled || fmt == nullptr) {
+    return false;
+  }
+  char status[LS_NOTIFY_STATUS_SIZE];
+  va_list args;
+  va_start(args, fmt);
+  (void)vsnprintf(status, sizeof(status), fmt, args);
+  va_end(args);
+  return notify_status(notify, status);
+}
+
+bool ls_notify_stopping(ls_notify_t *restrict notify) {
+  return send_message(notify, "STOPPING=1");
+}
+
+bool ls_notify_watchdog(ls_notify_t *restrict notify) {
+  if (LS_UNLIKELY(notify == nullptr || !notify->enabled ||
+                  notify->watchdog_usec == 0)) {
+    return false;
+  }
+  return send_message(notify, "WATCHDOG=1");
+}
+
+uint64_t ls_notify_watchdog_interval_ms(const ls_notify_t *restrict notify) {
+  if (notify == nullptr || !notify->enabled || notify->watchdog_usec == 0) {
+    return 0;
+  }
+  uint64_t interval_ms = notify->watchdog_usec / (LS_MS_PER_SEC * 2);
+  return interval_ms == 0 ? 1 : interval_ms;
+}
+
+/* ---- Application assembly ---- */

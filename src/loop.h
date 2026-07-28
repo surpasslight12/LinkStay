@@ -14,7 +14,6 @@
  */
 
 #include "base.h"
-#include "log.h"
 
 #include <poll.h>
 #include <signal.h>

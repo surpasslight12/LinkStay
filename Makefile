@@ -1,7 +1,7 @@
 CC ?= gcc
 BIN_DIR ?= bin
 SRC_DIR ?= src
-INC_DIR ?= include
+INC_DIR ?= src
 TARGET := $(BIN_DIR)/linkstay
 PREFIX ?= /usr/local
 DESTDIR ?=
