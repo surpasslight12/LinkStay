@@ -6,6 +6,7 @@
 #include <inttypes.h>
 #include <limits.h>
 #include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
 #include <strings.h>
 #include <sys/stat.h>
@@ -160,7 +161,10 @@ static bool load_cli(ls_opts_t *opts, int argc, char **argv,
   while ((letter = getopt_long(argc, argv, OPTSTRING, LONG_OPTIONS, nullptr)) !=
          -1) {
     if (letter == '?') {
-      if (optopt != 0) {
+      /* getopt_long reports both missing arguments and unknown short options
+       * as '?'. A non-zero optopt is a missing required short/long argument
+       * only when that letter has a required argument in OPTSTRING. */
+      if (optopt != 0 && strchr("tinwl", optopt) != nullptr) {
         return ls_err_set(
             err, "Option requires an argument or has invalid value: -%c",
             optopt);
