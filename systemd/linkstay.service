@@ -43,22 +43,7 @@ NoNewPrivileges=true
 CapabilityBoundingSet=CAP_NET_RAW
 
 # Filesystem isolation
-PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
-UMask=0077
-
-# Kernel and privilege hardening
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectKernelLogs=true
-ProtectControlGroups=true
-ProtectClock=true
-ProtectHostname=true
-RestrictRealtime=true
-RestrictSUIDSGID=true
-RestrictNamespaces=true
-LockPersonality=true
 
 # Network and syscall restrictions
 # AF_NETLINK is intentionally not included: linkstay only opens raw ICMP
@@ -67,7 +52,6 @@ LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 SystemCallFilter=@system-service @network-io @process
-SystemCallFilter=~@debug @module @mount @swap @obsolete @cpu-emulation
 
 # Resource limits
 MemoryMax=50M

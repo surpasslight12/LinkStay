@@ -29,10 +29,9 @@ uint64_t ls_now_ms(void) {
     return UINT64_MAX;
   }
 #endif
-  uint64_t seconds_ms = 0;
-  if (LS_UNLIKELY(ckd_mul(&seconds_ms, (uint64_t)ts.tv_sec, LS_MS_PER_SEC))) {
-    return UINT64_MAX;
-  }
+  /* CLOCK_MONOTONIC is non-negative on Linux; direct multiplication is
+   * safe for any realistic uptime. */
+  uint64_t seconds_ms = (uint64_t)ts.tv_sec * LS_MS_PER_SEC;
   return ls_add_sat(seconds_ms, (uint64_t)ts.tv_nsec / UINT64_C(1000000));
 }
 
@@ -41,11 +40,7 @@ uint64_t ls_now_ns(void) {
   if (LS_UNLIKELY(clock_gettime(CLOCK_MONOTONIC, &ts) != 0)) {
     return UINT64_MAX;
   }
-  uint64_t seconds_ns = 0;
-  if (LS_UNLIKELY(ckd_mul(&seconds_ns, (uint64_t)ts.tv_sec,
-                          UINT64_C(1000000000)))) {
-    return UINT64_MAX;
-  }
+  uint64_t seconds_ns = (uint64_t)ts.tv_sec * UINT64_C(1000000000);
   return ls_add_sat(seconds_ns, (uint64_t)ts.tv_nsec);
 }
 

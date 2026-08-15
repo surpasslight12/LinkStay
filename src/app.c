@@ -20,12 +20,47 @@
 /* Nanoseconds-to-milliseconds conversion (kept as double for latency). */
 #define LS_NS_PER_MS_F 1000000.0
 
-/* Safety-warning thresholds. */
+/* The only runtime safety warning worth keeping: real poweroff is dangerous
+ * with an extremely low threshold. */
 #define LS_WARN_THRESHOLD_MIN_WITH_POWEROFF 3
-#define LS_WARN_TIMEOUT_AGGRESSIVE_MS 500
-#define LS_WARN_TIMEOUT_INTERVAL_RATIO_PCT 80
-#define LS_WARN_INTERVAL_LONG_SEC 3600
-#define LS_WARN_THRESHOLD_HIGH 100
+
+/* Implementation-private constants for the statistics/action/notify helpers
+ * defined later in this file. */
+#define LS_STATS_NO_SAMPLE UINT64_MAX
+#define LS_US_PER_MS_F 1000.0
+#define LS_SYSTEMCTL_PATH "/usr/bin/systemctl"
+#define LS_STARTUP_GRACE_MS 1000U
+#define LS_POLL_INTERVAL_NS 50000000L
+#define LS_NOTIFY_MESSAGE_SIZE 256U
+#define LS_NOTIFY_DEDUP_WINDOW_MS UINT64_C(2000)
+
+typedef enum {
+  LS_ACTION_SIMULATED = 0,
+  LS_ACTION_TRIGGERED = 1,
+  LS_ACTION_FAILED = 2,
+} ls_action_result_t;
+
+/* Forward declarations for the private implementation sections below. */
+static void ls_stats_init(ls_stats_t *stats);
+static void ls_stats_add_ok(ls_stats_t *stats, double latency_ms);
+static void ls_stats_add_fail(ls_stats_t *stats);
+[[nodiscard]] static double ls_stats_success_rate(const ls_stats_t *stats);
+[[nodiscard]] static double ls_stats_avg_latency(const ls_stats_t *stats);
+[[nodiscard]] static double ls_stats_latency_min_ms(const ls_stats_t *stats);
+[[nodiscard]] static double ls_stats_latency_max_ms(const ls_stats_t *stats);
+[[nodiscard]] static uint64_t ls_stats_uptime_sec(const ls_stats_t *stats);
+static ls_action_result_t ls_action_shutdown(bool poweroff,
+                                             const ls_log_t *restrict log);
+static void ls_notify_init(ls_notify_t *restrict notify);
+static void ls_notify_destroy(ls_notify_t *restrict notify);
+[[nodiscard]] static bool ls_notify_enabled(const ls_notify_t *restrict notify);
+static bool ls_notify_ready(ls_notify_t *restrict notify);
+[[gnu::format(printf, 2, 3)]] static bool
+ls_notify_statusf(ls_notify_t *restrict notify, const char *restrict fmt, ...);
+static bool ls_notify_stopping(ls_notify_t *restrict notify);
+static bool ls_notify_watchdog(ls_notify_t *restrict notify);
+[[nodiscard]] static uint64_t
+ls_notify_watchdog_interval_ms(const ls_notify_t *restrict notify);
 
 /* ---- Error path ---- */
 
@@ -248,10 +283,11 @@ static void on_signal(ls_loop_t *loop, uint32_t signo, void *userdata) {
 /* ---- Startup / shutdown banners ---- */
 
 static void log_startup(ls_app_t *app) {
-  int detection_sec = app->opts.fail_threshold * app->opts.interval_sec;
+  uint64_t detection_sec =
+      (uint64_t)app->opts.fail_threshold * (uint64_t)app->opts.interval_sec;
   ls_info(&app->log,
           LS_PROGRAM_NAME " %s monitoring %s | interval %ds, timeout %dms, " \
-          "threshold %d (detection ~%ds), poweroff %s",
+          "threshold %d (detection ~%" PRIu64 "s), poweroff %s",
           LS_VERSION, app->opts.target, app->opts.interval_sec,
           app->opts.timeout_ms, app->opts.fail_threshold, detection_sec,
           app->opts.poweroff ? "true" : "false");
@@ -350,31 +386,6 @@ bool ls_app_init(ls_app_t *restrict app, const ls_opts_t *restrict opts,
             "failures — a single network blip could trigger a shutdown",
             app->opts.fail_threshold);
   }
-  if (app->opts.timeout_ms < LS_WARN_TIMEOUT_AGGRESSIVE_MS) {
-    ls_warn(&app->log,
-            "Timeout is very aggressive (%d ms); false positives are likely "
-            "on high-latency WAN or satellite links",
-            app->opts.timeout_ms);
-  }
-  if ((uint64_t)app->opts.timeout_ms * 100 >
-      app->interval_ms * LS_WARN_TIMEOUT_INTERVAL_RATIO_PCT) {
-    ls_warn(&app->log,
-            "Timeout (%d ms) is close to the interval (%" PRIu64
-            " ms); little margin remains for late replies",
-            app->opts.timeout_ms, app->interval_ms);
-  }
-  if (app->opts.interval_sec > LS_WARN_INTERVAL_LONG_SEC) {
-    ls_info(&app->log,
-            "Interval is very long (%d s); network outages may take hours "
-            "to detect",
-            app->opts.interval_sec);
-  }
-  if (app->opts.fail_threshold > LS_WARN_THRESHOLD_HIGH) {
-    ls_info(&app->log,
-            "Failure threshold is very high (%d); shutdown would require "
-            "%d consecutive failures",
-            app->opts.fail_threshold, app->opts.fail_threshold);
-  }
 
   return true;
 }
@@ -441,21 +452,11 @@ int ls_app_run(ls_app_t *restrict app) {
   return exit_code;
 }
 
-#define LS_US_PER_MS_F 1000.0
-
-#define LS_SYSTEMCTL_PATH "/usr/bin/systemctl"
-#define LS_STARTUP_GRACE_MS 1000U
-#define LS_POLL_INTERVAL_NS 50000000L
-
-#define LS_NOTIFY_MESSAGE_SIZE 256U
-#define LS_NOTIFY_RETRY_COUNT 3
-#define LS_NOTIFY_RETRY_NS 10000000L
-
 /* ===================================================================
  *  Statistics
  * =================================================================== */
 
-void ls_stats_init(ls_stats_t *stats) {
+static void ls_stats_init(ls_stats_t *stats) {
   if (stats == nullptr) {
     return;
   }
@@ -466,7 +467,7 @@ void ls_stats_init(ls_stats_t *stats) {
   };
 }
 
-void ls_stats_add_ok(ls_stats_t *stats, double latency_ms) {
+static void ls_stats_add_ok(ls_stats_t *stats, double latency_ms) {
   if (LS_UNLIKELY(stats == nullptr)) {
     return;
   }
@@ -489,7 +490,7 @@ void ls_stats_add_ok(ls_stats_t *stats, double latency_ms) {
   }
 }
 
-void ls_stats_add_fail(ls_stats_t *stats) {
+static void ls_stats_add_fail(ls_stats_t *stats) {
   if (LS_UNLIKELY(stats == nullptr)) {
     return;
   }
@@ -501,35 +502,35 @@ void ls_stats_add_fail(ls_stats_t *stats) {
   }
 }
 
-double ls_stats_success_rate(const ls_stats_t *stats) {
+static double ls_stats_success_rate(const ls_stats_t *stats) {
   if (stats == nullptr || stats->total == 0) {
     return 0.0;
   }
   return (double)stats->ok / (double)stats->total * 100.0;
 }
 
-double ls_stats_avg_latency(const ls_stats_t *stats) {
+static double ls_stats_avg_latency(const ls_stats_t *stats) {
   if (stats == nullptr || stats->ok == 0) {
     return 0.0;
   }
   return (double)stats->latency_sum_us / (double)stats->ok / LS_US_PER_MS_F;
 }
 
-double ls_stats_latency_min_ms(const ls_stats_t *stats) {
+static double ls_stats_latency_min_ms(const ls_stats_t *stats) {
   if (stats == nullptr || stats->latency_min_us == LS_STATS_NO_SAMPLE) {
     return 0.0;
   }
   return (double)stats->latency_min_us / LS_US_PER_MS_F;
 }
 
-double ls_stats_latency_max_ms(const ls_stats_t *stats) {
+static double ls_stats_latency_max_ms(const ls_stats_t *stats) {
   if (stats == nullptr || stats->latency_max_us == LS_STATS_NO_SAMPLE) {
     return 0.0;
   }
   return (double)stats->latency_max_us / LS_US_PER_MS_F;
 }
 
-uint64_t ls_stats_uptime_sec(const ls_stats_t *stats) {
+static uint64_t ls_stats_uptime_sec(const ls_stats_t *stats) {
   if (stats == nullptr) {
     return 0;
   }
@@ -655,8 +656,8 @@ static ls_action_result_t spawn_shutdown_command(const ls_log_t *log) {
   return observe_startup(child_pid, log);
 }
 
-ls_action_result_t ls_action_shutdown(bool poweroff,
-                                      const ls_log_t *restrict log) {
+static ls_action_result_t ls_action_shutdown(bool poweroff,
+                                             const ls_log_t *restrict log) {
   ls_warn(log, "Failure threshold reached, poweroff is %s",
           poweroff ? "true" : "false");
 
@@ -741,23 +742,11 @@ static bool send_message(ls_notify_t *restrict notify,
     return false;
   }
 
-  size_t message_len = strlen(message);
-  for (int attempt = 0; attempt < LS_NOTIFY_RETRY_COUNT; attempt++) {
-    if (send(notify->sockfd, message, message_len, MSG_NOSIGNAL) >= 0) {
-      return true;
-    }
-    if (errno == EINTR) {
-      continue;
-    }
-    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOBUFS) {
-      struct timespec retry = {.tv_sec = 0, .tv_nsec = LS_NOTIFY_RETRY_NS};
-      while (nanosleep(&retry, &retry) < 0 && errno == EINTR) {
-      }
-      continue;
-    }
-    break;
-  }
-  return false;
+  ssize_t sent;
+  do {
+    sent = send(notify->sockfd, message, strlen(message), MSG_NOSIGNAL);
+  } while (sent < 0 && errno == EINTR);
+  return sent >= 0;
 }
 
 static bool notify_status(ls_notify_t *restrict notify,
@@ -785,7 +774,7 @@ static bool notify_status(ls_notify_t *restrict notify,
   return ok;
 }
 
-void ls_notify_init(ls_notify_t *restrict notify) {
+static void ls_notify_init(ls_notify_t *restrict notify) {
   if (notify == nullptr) {
     return;
   }
@@ -796,29 +785,24 @@ void ls_notify_init(ls_notify_t *restrict notify) {
     return;
   }
 
-  notify->sockfd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
-  if (notify->sockfd < 0) {
+  int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+  if (fd < 0) {
     return;
   }
 
   struct sockaddr_un addr;
   socklen_t addr_len;
   if (!build_socket_addr(socket_path, &addr, &addr_len)) {
-    close(notify->sockfd);
-    notify->sockfd = -1;
+    close(fd);
     return;
   }
 
-  int rc;
-  do {
-    rc = connect(notify->sockfd, (const struct sockaddr *)&addr, addr_len);
-  } while (rc < 0 && errno == EINTR);
-  if (rc < 0) {
-    close(notify->sockfd);
-    notify->sockfd = -1;
+  if (connect(fd, (const struct sockaddr *)&addr, addr_len) != 0) {
+    close(fd);
     return;
   }
 
+  notify->sockfd = fd;
   notify->enabled = true;
 
   const char *watchdog_str = getenv("WATCHDOG_USEC");
@@ -830,7 +814,7 @@ void ls_notify_init(ls_notify_t *restrict notify) {
   }
 }
 
-void ls_notify_destroy(ls_notify_t *restrict notify) {
+static void ls_notify_destroy(ls_notify_t *restrict notify) {
   if (notify == nullptr) {
     return;
   }
@@ -841,16 +825,16 @@ void ls_notify_destroy(ls_notify_t *restrict notify) {
   notify->enabled = false;
 }
 
-bool ls_notify_enabled(const ls_notify_t *restrict notify) {
+static bool ls_notify_enabled(const ls_notify_t *restrict notify) {
   return notify != nullptr && notify->enabled;
 }
 
-bool ls_notify_ready(ls_notify_t *restrict notify) {
+static bool ls_notify_ready(ls_notify_t *restrict notify) {
   return send_message(notify, "READY=1");
 }
 
-bool ls_notify_statusf(ls_notify_t *restrict notify, const char *restrict fmt,
-                       ...) {
+static bool ls_notify_statusf(ls_notify_t *restrict notify,
+                            const char *restrict fmt, ...) {
   if (notify == nullptr || !notify->enabled || fmt == nullptr) {
     return false;
   }
@@ -862,11 +846,11 @@ bool ls_notify_statusf(ls_notify_t *restrict notify, const char *restrict fmt,
   return notify_status(notify, status);
 }
 
-bool ls_notify_stopping(ls_notify_t *restrict notify) {
+static bool ls_notify_stopping(ls_notify_t *restrict notify) {
   return send_message(notify, "STOPPING=1");
 }
 
-bool ls_notify_watchdog(ls_notify_t *restrict notify) {
+static bool ls_notify_watchdog(ls_notify_t *restrict notify) {
   if (LS_UNLIKELY(notify == nullptr || !notify->enabled ||
                   notify->watchdog_usec == 0)) {
     return false;
@@ -874,7 +858,8 @@ bool ls_notify_watchdog(ls_notify_t *restrict notify) {
   return send_message(notify, "WATCHDOG=1");
 }
 
-uint64_t ls_notify_watchdog_interval_ms(const ls_notify_t *restrict notify) {
+static uint64_t
+ls_notify_watchdog_interval_ms(const ls_notify_t *restrict notify) {
   if (notify == nullptr || !notify->enabled || notify->watchdog_usec == 0) {
     return 0;
   }

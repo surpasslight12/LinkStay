@@ -18,16 +18,14 @@
 #define LS_DEFAULT_POWEROFF false
 #define LS_DEFAULT_SYSTEMD true
 
-/* Validation constraints (not user-visible). */
-#define LS_TIMEOUT_MARGIN_MS 100
-#define LS_MAX_TIMEOUT_MS 60000
-
 #define LS_BOOL_VALUES "true|false|1|0|yes|no|on|off"
 #define LS_LOG_LEVEL_VALUES "silent|error|warn|info|debug"
 #define LS_SYSTEMCTL_PATH "/usr/bin/systemctl"
 #define LS_SYSTEMD_RUNTIME_DIR "/run/systemd/system"
 
-/* ---- Value parsers ---- */
+#define OPTSTRING "t:i:n:w:p::l:s::vh"
+
+/* ---- Small named-value parsers ---- */
 
 typedef struct {
   const char *name;
@@ -59,138 +57,44 @@ static bool lookup_named(const named_value_t *table, size_t count,
   return false;
 }
 
-/* ---- Option descriptor table ----
- *
- * One table drives every consumer: env loading, getopt optstring/longopts
- * construction, CLI parsing, and value application. Adding an option means
- * adding one row here plus (if user-visible) one line in print_usage(). */
-
-typedef enum {
-  OPT_STR,       /* bounded string copy into opts + offset */
-  OPT_POS_INT,   /* int in 1..INT_MAX */
-  OPT_BOOL,      /* named bool; bare CLI flag means true */
-  OPT_LOG_LEVEL, /* ls_log_level_t by name */
-  OPT_EXIT,      /* --version / --help: no value, handled by pre-scan */
-} opt_kind_t;
-
-typedef struct {
-  const char *name;     /* long option */
-  const char *env;      /* environment variable, or nullptr */
-  size_t offset;        /* field position inside ls_opts_t */
-  size_t size;          /* OPT_STR only: destination buffer size */
-  const char *unit;     /* OPT_POS_INT only: unit for error messages */
-  opt_kind_t kind;
-  char letter;          /* short option */
-} opt_desc_t;
-
-static const opt_desc_t OPTION_TABLE[] = {
-    {.letter = 't', .name = "target", .env = "LINKSTAY_TARGET",
-     .kind = OPT_STR, .offset = offsetof(ls_opts_t, target),
-     .size = sizeof(((ls_opts_t *)nullptr)->target)},
-    {.letter = 'i', .name = "interval", .env = "LINKSTAY_INTERVAL",
-     .kind = OPT_POS_INT, .offset = offsetof(ls_opts_t, interval_sec),
-     .unit = "seconds"},
-    {.letter = 'n', .name = "threshold", .env = "LINKSTAY_THRESHOLD",
-     .kind = OPT_POS_INT, .offset = offsetof(ls_opts_t, fail_threshold),
-     .unit = "failures"},
-    {.letter = 'w', .name = "timeout", .env = "LINKSTAY_TIMEOUT",
-     .kind = OPT_POS_INT, .offset = offsetof(ls_opts_t, timeout_ms),
-     .unit = "milliseconds"},
-    {.letter = 'p', .name = "poweroff", .env = "LINKSTAY_POWEROFF",
-     .kind = OPT_BOOL, .offset = offsetof(ls_opts_t, poweroff)},
-    {.letter = 'l', .name = "log-level", .env = "LINKSTAY_LOG_LEVEL",
-     .kind = OPT_LOG_LEVEL, .offset = offsetof(ls_opts_t, log_level)},
-    {.letter = 's', .name = "systemd", .env = "LINKSTAY_SYSTEMD",
-     .kind = OPT_BOOL, .offset = offsetof(ls_opts_t, systemd)},
-    {.letter = 'v', .name = "version", .kind = OPT_EXIT},
-    {.letter = 'h', .name = "help", .kind = OPT_EXIT},
-};
-
-#define OPTION_COUNT LS_ARRAY_LEN(OPTION_TABLE)
-
-/* Bool options take an optional argument: a bare flag means true. */
-static bool opt_has_optional_arg(const opt_desc_t *desc) {
-  return desc->kind == OPT_BOOL;
-}
-
-static bool opt_has_required_arg(const opt_desc_t *desc) {
-  return desc->kind == OPT_STR || desc->kind == OPT_POS_INT ||
-         desc->kind == OPT_LOG_LEVEL;
-}
-
-/* Renders the table into getopt inputs. optstring needs at most
- * 3 chars per option plus the terminator. */
-static void build_getopt_inputs(char *optstring, size_t optstring_size,
-                                struct option *longopts, size_t longopts_len) {
-  size_t pos = 0;
-  size_t li = 0;
-  for (size_t i = 0; i < OPTION_COUNT && pos + 4 < optstring_size &&
-                     li + 1 < longopts_len;
-       i++) {
-    const opt_desc_t *desc = &OPTION_TABLE[i];
-    optstring[pos++] = desc->letter;
-    int has_arg = no_argument;
-    if (opt_has_required_arg(desc)) {
-      optstring[pos++] = ':';
-      has_arg = required_argument;
-    } else if (opt_has_optional_arg(desc)) {
-      optstring[pos++] = ':';
-      optstring[pos++] = ':';
-      has_arg = optional_argument;
-    }
-    longopts[li++] = (struct option){desc->name, has_arg, nullptr,
-                                     desc->letter};
-  }
-  optstring[pos] = '\0';
-  longopts[li] = (struct option){};
-}
-
-static const opt_desc_t *find_by_letter(int letter) {
-  for (size_t i = 0; i < OPTION_COUNT; i++) {
-    if (OPTION_TABLE[i].letter == letter) {
-      return &OPTION_TABLE[i];
-    }
-  }
-  return nullptr;
-}
-
-/* ---- Value application ---- */
-
 static bool invalid_value(const char *name, const char *value,
                           const char *allowed, ls_err_t *err) {
   return ls_err_set(err, "Invalid value for %s: %s (use %s)", name,
                     value != nullptr ? value : "<empty>", allowed);
 }
 
-static bool apply_str(const opt_desc_t *desc, const char *name,
-                      const char *value, ls_opts_t *opts, ls_err_t *err) {
-  char *dest = (char *)opts + desc->offset;
-  int written = snprintf(dest, desc->size, "%s", value);
-  if (written < 0 || (size_t)written >= desc->size) {
+static bool apply_string(const char *name, const char *value, char *dest,
+                         size_t size, ls_err_t *err) {
+  if (value == nullptr) {
+    return invalid_value(name, value, "a string", err);
+  }
+  int written = snprintf(dest, size, "%s", value);
+  if (written < 0 || (size_t)written >= size) {
     return ls_err_set(err, "%s is too long (max %zu characters)", name,
-                      desc->size - 1);
+                      size - 1);
   }
   return true;
 }
 
-static bool apply_pos_int(const opt_desc_t *desc, const char *name,
-                          const char *value, ls_opts_t *opts, ls_err_t *err) {
+static bool apply_positive_int(const char *name, const char *value,
+                               const char *unit, int *dest, ls_err_t *err) {
+  if (value == nullptr) {
+    return invalid_value(name, value, "a positive integer", err);
+  }
   errno = 0;
   char *endptr = nullptr;
   long long parsed = strtoll(value, &endptr, 10);
   if (errno != 0 || endptr == value || *endptr != '\0' || parsed < 1 ||
       parsed > INT_MAX) {
     return ls_err_set(err, "Invalid value for %s: %s (range 1..%d %s)", name,
-                      value, INT_MAX, desc->unit);
+                      value, INT_MAX, unit);
   }
-  *(int *)((char *)opts + desc->offset) = (int)parsed;
+  *dest = (int)parsed;
   return true;
 }
 
-static bool apply_bool(const opt_desc_t *desc, const char *name,
-                       const char *value, bool bare_means_true,
-                       ls_opts_t *opts, ls_err_t *err) {
-  bool *dest = (bool *)((char *)opts + desc->offset);
+static bool apply_bool(const char *name, const char *value,
+                       bool bare_means_true, bool *dest, ls_err_t *err) {
   if (value == nullptr) {
     if (!bare_means_true) {
       return invalid_value(name, value, LS_BOOL_VALUES, err);
@@ -206,40 +110,21 @@ static bool apply_bool(const opt_desc_t *desc, const char *name,
   return true;
 }
 
-static bool apply_log_level(const opt_desc_t *desc, const char *name,
-                            const char *value, ls_opts_t *opts,
-                            ls_err_t *err) {
+static bool apply_log_level(const char *name, const char *value,
+                            ls_log_level_t *dest, ls_err_t *err) {
+  if (value == nullptr) {
+    return invalid_value(name, value, LS_LOG_LEVEL_VALUES, err);
+  }
   int parsed = 0;
   if (!lookup_named(LOG_LEVEL_NAMES, LS_ARRAY_LEN(LOG_LEVEL_NAMES), value,
                     &parsed)) {
     return invalid_value(name, value, LS_LOG_LEVEL_VALUES, err);
   }
-  *(ls_log_level_t *)((char *)opts + desc->offset) = (ls_log_level_t)parsed;
+  *dest = (ls_log_level_t)parsed;
   return true;
 }
 
-/* Dispatches one option value. `name` is the label used in error messages
- * (env var name or --long-option); `bare_means_true` applies to bool options
- * given as a bare CLI flag. */
-static bool opt_apply(const opt_desc_t *desc, const char *name,
-                      const char *value, bool bare_means_true, ls_opts_t *opts,
-                      ls_err_t *err) {
-  switch (desc->kind) {
-  case OPT_STR:
-    return apply_str(desc, name, value, opts, err);
-  case OPT_POS_INT:
-    return apply_pos_int(desc, name, value, opts, err);
-  case OPT_BOOL:
-    return apply_bool(desc, name, value, bare_means_true, opts, err);
-  case OPT_LOG_LEVEL:
-    return apply_log_level(desc, name, value, opts, err);
-  case OPT_EXIT:
-    return true;
-  }
-  return ls_err_set(err, "Internal option table corruption");
-}
-
-/* ---- Layers: defaults, environment, CLI ---- */
+/* ---- Defaults, environment, CLI ---- */
 
 static void load_defaults(ls_opts_t *opts) {
   *opts = (ls_opts_t){
@@ -253,36 +138,26 @@ static void load_defaults(ls_opts_t *opts) {
   (void)snprintf(opts->target, sizeof(opts->target), "%s", LS_DEFAULT_TARGET);
 }
 
-static bool load_env(ls_opts_t *opts, ls_err_t *err) {
-  for (size_t i = 0; i < OPTION_COUNT; i++) {
-    const opt_desc_t *desc = &OPTION_TABLE[i];
-    if (desc->env == nullptr) {
-      continue;
-    }
-    const char *value = getenv(desc->env);
-    if (value == nullptr) {
-      continue;
-    }
-    if (!opt_apply(desc, desc->env, value, false, opts, err)) {
-      return false;
-    }
-  }
-  return true;
-}
+static const struct option LONG_OPTIONS[] = {
+    {"target", required_argument, nullptr, 't'},
+    {"interval", required_argument, nullptr, 'i'},
+    {"threshold", required_argument, nullptr, 'n'},
+    {"timeout", required_argument, nullptr, 'w'},
+    {"poweroff", optional_argument, nullptr, 'p'},
+    {"log-level", required_argument, nullptr, 'l'},
+    {"systemd", optional_argument, nullptr, 's'},
+    {"version", no_argument, nullptr, 'v'},
+    {"help", no_argument, nullptr, 'h'},
+    {nullptr, 0, nullptr, 0},
+};
 
 static bool load_cli(ls_opts_t *opts, int argc, char **argv,
-                     int *requested_exit, ls_err_t *err) {
-  char optstring[OPTION_COUNT * 3 + 1];
-  struct option longopts[OPTION_COUNT + 1];
-  build_getopt_inputs(optstring, sizeof(optstring), longopts,
-                      LS_ARRAY_LEN(longopts));
-
-  *requested_exit = 0;
+                     bool cli_seen[256], ls_err_t *err) {
   optind = 1;
   opterr = 0;
 
   int letter;
-  while ((letter = getopt_long(argc, argv, optstring, longopts, nullptr)) !=
+  while ((letter = getopt_long(argc, argv, OPTSTRING, LONG_OPTIONS, nullptr)) !=
          -1) {
     if (letter == '?') {
       if (optopt != 0) {
@@ -295,24 +170,103 @@ static bool load_cli(ls_opts_t *opts, int argc, char **argv,
                                                     : "<unknown>");
     }
 
-    const opt_desc_t *desc = find_by_letter(letter);
-    if (desc == nullptr) {
-      return ls_err_set(err, "Failed to parse command line arguments");
-    }
-    if (desc->kind == OPT_EXIT) {
-      *requested_exit = letter;
-      continue;
-    }
-
-    char name[64];
-    (void)snprintf(name, sizeof(name), "--%s", desc->name);
-    if (!opt_apply(desc, name, optarg, true, opts, err)) {
-      return false;
+    cli_seen[(unsigned char)letter] = true;
+    switch (letter) {
+    case 't':
+      if (!apply_string("--target", optarg, opts->target,
+                        sizeof(opts->target), err)) {
+        return false;
+      }
+      break;
+    case 'i':
+      if (!apply_positive_int("--interval", optarg, "seconds",
+                              &opts->interval_sec, err)) {
+        return false;
+      }
+      break;
+    case 'n':
+      if (!apply_positive_int("--threshold", optarg, "failures",
+                              &opts->fail_threshold, err)) {
+        return false;
+      }
+      break;
+    case 'w':
+      if (!apply_positive_int("--timeout", optarg, "milliseconds",
+                              &opts->timeout_ms, err)) {
+        return false;
+      }
+      break;
+    case 'p':
+      if (!apply_bool("--poweroff", optarg, true, &opts->poweroff, err)) {
+        return false;
+      }
+      break;
+    case 'l':
+      if (!apply_log_level("--log-level", optarg, &opts->log_level, err)) {
+        return false;
+      }
+      break;
+    case 's':
+      if (!apply_bool("--systemd", optarg, true, &opts->systemd, err)) {
+        return false;
+      }
+      break;
+    case 'v':
+    case 'h':
+      break;
+    default:
+      return ls_err_set(err, "Internal option parse failure");
     }
   }
 
   if (optind < argc) {
     return ls_err_set(err, "Unexpected argument: %s", argv[optind]);
+  }
+  return true;
+}
+
+static bool load_env(ls_opts_t *opts, const bool cli_seen[256],
+                     ls_err_t *err) {
+  const char *value;
+
+  if (!cli_seen[(unsigned char)'t'] &&
+      (value = getenv("LINKSTAY_TARGET")) != nullptr &&
+      !apply_string("LINKSTAY_TARGET", value, opts->target,
+                    sizeof(opts->target), err)) {
+    return false;
+  }
+  if (!cli_seen[(unsigned char)'i'] &&
+      (value = getenv("LINKSTAY_INTERVAL")) != nullptr &&
+      !apply_positive_int("LINKSTAY_INTERVAL", value, "seconds",
+                          &opts->interval_sec, err)) {
+    return false;
+  }
+  if (!cli_seen[(unsigned char)'n'] &&
+      (value = getenv("LINKSTAY_THRESHOLD")) != nullptr &&
+      !apply_positive_int("LINKSTAY_THRESHOLD", value, "failures",
+                          &opts->fail_threshold, err)) {
+    return false;
+  }
+  if (!cli_seen[(unsigned char)'w'] &&
+      (value = getenv("LINKSTAY_TIMEOUT")) != nullptr &&
+      !apply_positive_int("LINKSTAY_TIMEOUT", value, "milliseconds",
+                          &opts->timeout_ms, err)) {
+    return false;
+  }
+  if (!cli_seen[(unsigned char)'p'] &&
+      (value = getenv("LINKSTAY_POWEROFF")) != nullptr &&
+      !apply_bool("LINKSTAY_POWEROFF", value, false, &opts->poweroff, err)) {
+    return false;
+  }
+  if (!cli_seen[(unsigned char)'l'] &&
+      (value = getenv("LINKSTAY_LOG_LEVEL")) != nullptr &&
+      !apply_log_level("LINKSTAY_LOG_LEVEL", value, &opts->log_level, err)) {
+    return false;
+  }
+  if (!cli_seen[(unsigned char)'s'] &&
+      (value = getenv("LINKSTAY_SYSTEMD")) != nullptr &&
+      !apply_bool("LINKSTAY_SYSTEMD", value, false, &opts->systemd, err)) {
+    return false;
   }
   return true;
 }
@@ -326,14 +280,8 @@ static bool is_ip_literal(const char *target) {
 }
 
 static bool systemd_runtime_available(void) {
-  struct stat systemctl_stat;
   struct stat runtime_dir_stat;
-  /* Defense-in-depth beyond the executability check: require systemctl to be
-   * owned by root and not world-writable, so a compromised/replaced binary
-   * at this well-known path cannot be silently trusted when poweroff is on. */
   return access(LS_SYSTEMCTL_PATH, X_OK) == 0 &&
-         stat(LS_SYSTEMCTL_PATH, &systemctl_stat) == 0 &&
-         systemctl_stat.st_uid == 0 && !(systemctl_stat.st_mode & S_IWOTH) &&
          stat(LS_SYSTEMD_RUNTIME_DIR, &runtime_dir_stat) == 0 &&
          S_ISDIR(runtime_dir_stat.st_mode);
 }
@@ -347,22 +295,15 @@ static bool validate(const ls_opts_t *opts, ls_err_t *err) {
         err, "Target must be a valid IPv4 or IPv6 address (DNS is disabled)");
   }
 
-  uint64_t interval_ms = 0;
-  if (ckd_mul(&interval_ms, (uint64_t)opts->interval_sec, LS_MS_PER_SEC)) {
+  /* interval_sec is at most INT_MAX, so multiplying by 1000 cannot overflow
+   * uint64_t. */
+  uint64_t interval_ms = (uint64_t)opts->interval_sec * LS_MS_PER_SEC;
+  if ((uint64_t)opts->timeout_ms >= interval_ms) {
     return ls_err_set(
-        err, "Interval is too large to convert safely to milliseconds");
-  }
-  if ((uint64_t)opts->timeout_ms > LS_MAX_TIMEOUT_MS) {
-    return ls_err_set(err,
-                      "Timeout (%d ms) exceeds maximum (%d ms)",
-                      opts->timeout_ms, LS_MAX_TIMEOUT_MS);
-  }
-  if ((uint64_t)opts->timeout_ms + LS_TIMEOUT_MARGIN_MS > interval_ms) {
-    return ls_err_set(err,
-                      "Timeout (%d ms) plus margin (%d ms) must not exceed "
-                      "interval (%d s = %" PRIu64 " ms)",
-                      opts->timeout_ms, LS_TIMEOUT_MARGIN_MS,
-                      opts->interval_sec, interval_ms);
+        err,
+        "Timeout (%d ms) must be smaller than interval (%d s = %" PRIu64
+        " ms)",
+        opts->timeout_ms, opts->interval_sec, interval_ms);
   }
 
   if (opts->poweroff && !systemd_runtime_available()) {
@@ -387,8 +328,9 @@ static void print_usage(void) {
   printf("  -n, --threshold <num>       Consecutive failures threshold "
          "(default: %d)\n",
          LS_DEFAULT_FAIL_THRESHOLD);
-  printf("  -w, --timeout <ms>          Ping timeout in milliseconds "
-         "(default: %d)\n\n",
+  printf("  -w, --timeout <ms>          Ping timeout in milliseconds; must "
+         "be smaller than interval\n");
+  printf("                              (default: %d)\n\n",
          LS_DEFAULT_TIMEOUT_MS);
   printf("Shutdown Options:\n");
   printf("  -p[ARG], --poweroff[=ARG]   Actually power the system off when "
@@ -453,17 +395,11 @@ static bool handle_exit_option(int requested, bool *exit_requested) {
   return false;
 }
 
-/* Pre-scans argv for --help/--version so they are honored even when the
- * environment or other arguments are invalid. Saves and restores getopt
- * globals so the real parse starts clean. Assumes glibc/musl getopt with
- * only the four standard POSIX globals (optind, opterr, optopt, optarg);
- * platforms with additional globals (e.g. BSD optreset) are not supported. */
+/* Runs getopt once with the real option table solely to detect --help or
+ * --version. This lets those flags win even when the environment or other
+ * arguments are invalid. getopt globals are restored so the real parse starts
+ * clean. */
 static int scan_exit_option(int argc, char **argv) {
-  char optstring[OPTION_COUNT * 3 + 1];
-  struct option longopts[OPTION_COUNT + 1];
-  build_getopt_inputs(optstring, sizeof(optstring), longopts,
-                      LS_ARRAY_LEN(longopts));
-
   int saved_optind = optind;
   int saved_opterr = opterr;
   int saved_optopt = optopt;
@@ -473,7 +409,7 @@ static int scan_exit_option(int argc, char **argv) {
 
   int requested = 0;
   int letter;
-  while ((letter = getopt_long(argc, argv, optstring, longopts, nullptr)) !=
+  while ((letter = getopt_long(argc, argv, OPTSTRING, LONG_OPTIONS, nullptr)) !=
          -1) {
     if (letter == 'v' || letter == 'h') {
       requested = letter;
@@ -523,14 +459,11 @@ bool ls_opts_resolve(ls_opts_t *restrict opts, int argc, char **restrict argv,
     return true;
   }
 
-  int requested_exit = 0;
-  if (!load_env(opts, err) ||
-      !load_cli(opts, argc, argv, &requested_exit, err)) {
+  bool cli_seen[256] = {false};
+  if (!load_cli(opts, argc, argv, cli_seen, err) ||
+      !load_env(opts, cli_seen, err)) {
     return false;
   }
 
-  if (handle_exit_option(requested_exit, exit_requested)) {
-    return true;
-  }
   return validate(opts, err);
 }

@@ -87,6 +87,8 @@ journalctl -fu linkstay
 make install-systemd DESTDIR=/tmp/linkstay-stage PREFIX=/usr/local
 ```
 
+默认构建不启用 `-march=native`，产物可在同架构其他机器上运行；如需为本机 CPU 调优，可使用 `make NATIVE=1`。
+
 ## 参数一览
 
 | 参数 | CLI 选项 | 环境变量 | 默认值 | 说明 |
@@ -178,13 +180,7 @@ sudo ./bin/linkstay --target 1.1.1.1
 | 指令 | 用途 |
 |------|------|
 | `NoNewPrivileges=true` | 禁止提权 |
-| `PrivateTmp=true` | 隔离 /tmp |
 | `ProtectSystem=strict` | 只读挂载 /usr、/boot、/etc |
-| `ProtectHome=true` | 隐藏 /home |
-| `UMask=0077` | 收紧新建文件权限 |
-| `ProtectKernelTunables` / `ProtectKernelModules` / `ProtectKernelLogs` | 禁止改写内核参数、加载模块、读取内核日志 |
-| `ProtectControlGroups` / `ProtectClock` / `ProtectHostname` | 保护 cgroup、系统时钟与主机名 |
-| `RestrictRealtime` / `RestrictSUIDSGID` / `RestrictNamespaces` / `LockPersonality` | 禁用实时调度、SUID/SGID、命名空间与 personality 切换 |
 | `RestrictAddressFamilies` | 仅允许 AF_UNIX、AF_INET、AF_INET6（无 DNS/netlink 需求，不含 AF_NETLINK） |
 | `SystemCallFilter` | 白名单 @system-service @network-io @process |
 
@@ -197,31 +193,19 @@ sudo ./bin/linkstay --target 1.1.1.1
 ```
 Makefile                # 构建、release、lint、test、sanitize、clean 入口
 README.md               # 使用说明与维护约定
-include/                # 公共头文件
-├── base.h             # 基础层：宏、常量、统一错误类型 ls_err_t、单调时钟
-├── log.h              # 分级日志接口
-├── stats.h            # ping 统计值类型
-├── opts.h             # 已解析运行选项与解析入口
-├── loop.h             # 通用事件循环：fd 槽 + 定时器槽 + signalfd
-├── icmp.h             # ICMP raw socket、BPF 过滤、回包匹配接口
-├── notify.h           # systemd notify socket 集成接口
-├── action.h           # 阈值动作后端（关机 / dry-run）
-└── app.h              # 应用组装层：probe 状态机与回调注册
-src/                    # 实现
-├── base.c             # ls_err_set、单调时钟实现
-├── log.c              # 分级日志、时间戳格式化
-├── stats.c            # ping 统计聚合
-├── opts.c             # 表驱动配置引擎：一张选项表驱动 env/CLI/help/校验
-├── loop.c             # poll(2) 事件循环、绝对 deadline 定时器、signalfd
-├── icmp.c             # ICMP raw socket、BPF 过滤、校验和、回包匹配
-├── notify.c           # sd_notify 集成（去重、重试、watchdog）
-├── action.c           # 关机执行（posix_spawn + 启动观测）
-├── app.c              # 组装：probe FSM、阈值判定、回调、启停横幅
+src/                    # 头文件与实现同目录，flat layout
+├── base.h / base.c    # 基础层：错误类型、单调时钟、分级日志
+├── opts.h / opts.c    # 配置解析：默认值 → 环境变量 → CLI → 校验
+├── loop.h / loop.c    # poll(2) 事件循环、绝对 deadline 定时器、signalfd
+├── icmp.h / icmp.c    # ICMP raw socket、BPF 过滤、校验和、回包匹配
+├── app.h / app.c      # 组装层：probe 状态机、统计、关机动作、sd_notify
 └── main.c             # 薄入口：opts → app → loop
 systemd/
 └── linkstay.service  # systemd unit 示例文件
+tests/
+└── run_tests.sh      # 配置解析 + 可选的 CAP_NET_RAW 实网测试
 .github/
 └── copilot-instructions.md  # AI 协作与代码维护约定
 ```
 
-模块按层次组织：`include/base.h` 位于底层（零项目依赖），`loop`/`icmp`/`notify`/`action` 互不依赖,由 `app` 统一组装并注册进事件循环。所有可失败的 init/parse 接口遵循统一约定：返回 `bool` + 调用方持有的 `ls_err_t` 错误缓冲。头文件统一存放于 `include/`，实现统一存放于 `src/`，服务示例统一放在 `systemd/`，便于查阅与维护。
+模块边界保持简单：`base` 零项目依赖，`loop`/`icmp`/`opts` 各自独立，`app` 统一组装。统计、关机动作和 sd_notify 目前只被 `app.c` 使用，因此它们的实现是 `app.c` 的私有细节，不再暴露为公共 API。所有可失败的 init/parse 接口遵循统一约定：返回 `bool` + 调用方持有的 `ls_err_t` 错误缓冲。

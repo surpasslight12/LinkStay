@@ -12,13 +12,11 @@
 /*
  * base.h — dependency-free foundation.
  *
- * Project identity, generic macros, the unified error type, monotonic clock,
+ * Project identity, shared macros, the unified error type, monotonic clock,
  * and leveled logging. Every other module includes this header.
  */
 
 #include <stdarg.h>
-#include <stdckdint.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <time.h>
 
@@ -52,8 +50,7 @@ typedef struct {
 [[nodiscard]] uint64_t ls_now_ns(void);
 
 [[nodiscard]] static inline uint64_t ls_add_sat(uint64_t a, uint64_t b) {
-  uint64_t result = 0;
-  return ckd_add(&result, a, b) ? UINT64_MAX : result;
+  return b > UINT64_MAX - a ? UINT64_MAX : a + b;
 }
 
 /* ---- Leveled logging ---- */

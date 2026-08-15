@@ -4,9 +4,10 @@
 /*
  * opts.h — resolved runtime options.
  *
- * A single table-driven engine (see opts.c) resolves options from three
- * layers, lowest priority first: built-in defaults, LINKSTAY_* environment
- * variables, then CLI arguments. Cross-field validation runs last.
+ * opts.c resolves options from three layers, lowest priority first:
+ * built-in defaults, LINKSTAY_* environment variables, then CLI arguments.
+ * A cli_seen[] bitmap lets valid CLI options override even invalid env
+ * values. Cross-field validation runs last.
  */
 
 #include "base.h"
@@ -25,7 +26,7 @@ typedef struct {
   bool systemd;
 } ls_opts_t;
 
-/* Resolves defaults → environment → CLI, then validates. On success returns
+/* Resolves defaults → CLI → environment, then validates. On success returns
  * true; *exit_requested is set when --help/--version was handled (caller
  * should exit 0 without starting the monitor). */
 [[nodiscard]] bool ls_opts_resolve(ls_opts_t *restrict opts, int argc,

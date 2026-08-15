@@ -2,13 +2,12 @@
 #define LINKSTAY_APP_H
 
 /*
- * app.h — application assembly, statistics, threshold action, and systemd
- * notify integration.
+ * app.h — application assembly layer.
  *
- * Wires the resolved options, ICMP transport, and notifier into the event
- * loop. Owns the explicit probe state machine (IDLE ↔ AWAIT_REPLY) and the
- * consecutive-failure counter. Also bundles the statistics value type,
- * threshold action backend, and sd_notify integration.
+ * Wires resolved options, the ICMP transport, and the notifier into the event
+ * loop and owns the probe state machine. Statistics, threshold action, and
+ * systemd notify integration are implementation details of app.c; their
+ * types appear here only because ls_app_t embeds them.
  */
 
 #include "base.h"
@@ -17,8 +16,6 @@
 #include "opts.h"
 
 /* ---- Statistics value type ---- */
-
-#define LS_STATS_NO_SAMPLE UINT64_MAX
 
 typedef struct {
   uint64_t total;
@@ -30,31 +27,9 @@ typedef struct {
   uint64_t started_at_ms;
 } ls_stats_t;
 
-void ls_stats_init(ls_stats_t *stats);
-void ls_stats_add_ok(ls_stats_t *stats, double latency_ms);
-void ls_stats_add_fail(ls_stats_t *stats);
-
-[[nodiscard]] double ls_stats_avg_latency(const ls_stats_t *stats);
-[[nodiscard]] double ls_stats_latency_min_ms(const ls_stats_t *stats);
-[[nodiscard]] double ls_stats_latency_max_ms(const ls_stats_t *stats);
-[[nodiscard]] double ls_stats_success_rate(const ls_stats_t *stats);
-[[nodiscard]] uint64_t ls_stats_uptime_sec(const ls_stats_t *stats);
-
-/* ---- Threshold action ---- */
-
-typedef enum {
-  LS_ACTION_SIMULATED = 0,
-  LS_ACTION_TRIGGERED = 1,
-  LS_ACTION_FAILED = 2,
-} ls_action_result_t;
-
-ls_action_result_t ls_action_shutdown(bool poweroff,
-                                      const ls_log_t *restrict log);
-
-/* ---- systemd notify integration ---- */
+/* ---- systemd notify state ---- */
 
 #define LS_NOTIFY_STATUS_SIZE 240U
-#define LS_NOTIFY_DEDUP_WINDOW_MS UINT64_C(2000)
 
 typedef struct {
   bool enabled;
@@ -63,18 +38,6 @@ typedef struct {
   uint64_t last_status_ms;
   char last_status[LS_NOTIFY_STATUS_SIZE];
 } ls_notify_t;
-
-void ls_notify_init(ls_notify_t *restrict notify);
-void ls_notify_destroy(ls_notify_t *restrict notify);
-[[nodiscard]] bool ls_notify_enabled(const ls_notify_t *restrict notify);
-
-bool ls_notify_ready(ls_notify_t *restrict notify);
-[[gnu::format(printf, 2, 3)]] bool
-ls_notify_statusf(ls_notify_t *restrict notify, const char *restrict fmt, ...);
-bool ls_notify_stopping(ls_notify_t *restrict notify);
-bool ls_notify_watchdog(ls_notify_t *restrict notify);
-[[nodiscard]] uint64_t
-ls_notify_watchdog_interval_ms(const ls_notify_t *restrict notify);
 
 /* ---- Application state ---- */
 

@@ -4,16 +4,16 @@
 
 - Build the binary with `make`. The output is `bin/linkstay`.
 - Build a stripped release binary with `make release`.
-- Run linters with `make lint` (`cppcheck` + `clang-tidy`). At the current baseline this command completes but reports existing findings, so do not assume the repository is lint-clean before your changes.
+- Run linters with `make lint` (`cppcheck` + `clang-tidy`). At the current baseline this command completes cleanly; keep it that way in your changes.
 - Source layout is flat: all headers (`.h`) and translation units (`.c`) live together in `src/`. The Makefile adds `-Isrc` so quoted includes such as `#include "app.h"` resolve without relative paths.
 - The repository intentionally has no `LICENSE` file or license badge. Do not re-add one unless the user explicitly asks.
 
 ## High-level architecture
 
 - `src/main.c` is a thin entry point: `ls_opts_resolve()` parses defaults, environment, and CLI; `ls_app_init()` wires runtime state; `ls_app_run()` registers callbacks into the event loop and runs it.
-- `src/opts.c` is a table-driven configuration engine: a single `OPTION_TABLE` of descriptors (short/long option, env var, kind, `offsetof` target) drives env loading, getopt optstring/longopts construction, and value application. Cross-field validation (IP literal, timeout < interval, systemd runtime check for poweroff) is an explicit post step. `--help`/`--version` use a getopt pre-scan so they win over invalid env/args.
+- `src/opts.c` uses a static `getopt_long` option table plus direct per-option parsers. Precedence is defaults → CLI → environment, with a `cli_seen[]` bitmap so an env var is only applied when the corresponding CLI option was not given; invalid env values therefore do not defeat valid CLI overrides. Cross-field validation (IP literal, timeout < interval, systemd runtime check for poweroff) is an explicit post step. `--help`/`--version` use a getopt pre-scan so they win over invalid env/args.
 - `src/loop.c` is a generic single-threaded event loop: fixed-capacity fd slots (pollfd + callback) and timer slots (absolute deadline in monotonic ms, `UINT64_MAX` = disarmed, phase-preserving `ls_timer_step`), plus an integrated signalfd channel. Timer contract: a fired callback MUST re-arm or disarm its timer. No dynamic registration removal, no vtables.
-- `src/app.c` is the application assembly: it owns the explicit probe FSM (`LS_PROBE_IDLE` ↔ `LS_PROBE_AWAIT_REPLY`), the consecutive-failure counter, threshold → action dispatch, statistics logging (SIGUSR1 + shutdown), and the startup/shutdown banners. It registers three timers (watchdog, reply deadline, ping scheduler — in that firing order) and the ICMP fd + signal callbacks into the loop. Also bundles the statistics value type (`ls_stats_t`), threshold action backend (`ls_action_shutdown` via `posix_spawn` + 1s startup observation), and `sd_notify`-style integration (READY/STATUS with 2s dedup/WATCHDOG/STOPPING) directly over the notify socket. `systemd/linkstay.service` expects this with `Type=notify`, `NotifyAccess=main`, and `WatchdogSec=30`. Notifier helpers are no-ops when `enabled=false`; `ls_app_init` sets `notify.sockfd = -1` up front so destroy never closes fd 0.
+- `src/app.c` is the application assembly: it owns the explicit probe FSM (`LS_PROBE_IDLE` ↔ `LS_PROBE_AWAIT_REPLY`), the consecutive-failure counter, threshold → action dispatch, statistics logging (SIGUSR1 + shutdown), and the startup/shutdown banners. It registers three timers (watchdog, reply deadline, ping scheduler — in that firing order) and the ICMP fd + signal callbacks into the loop. Statistics, threshold action (`posix_spawn` + 1s startup observation), and `sd_notify`-style integration (READY/STATUS with 2s dedup/WATCHDOG/STOPPING) are private `static` implementation sections of `app.c`; only their state types are exposed in `app.h` because `ls_app_t` embeds them. The notify socket is non-blocking. `systemd/linkstay.service` expects this with `Type=notify`, `NotifyAccess=main`, and `WatchdogSec=30`. Notifier helpers are no-ops when `enabled=false`; `ls_app_init` sets `notify.sockfd = -1` up front so destroy never closes fd 0.
 - `src/icmp.c` owns raw-socket ICMP send/receive logic, packet construction, reply matching, and optional BPF socket filters for IPv4/IPv6 traffic (non-fatal when unavailable). IPv4 raw sockets deliver the IP header (skip `ip_hl*4`); IPv6 raw sockets deliver payload only (kernel strips the header) — both are correct, don't "fix" them.
 - `src/base.c` + `src/base.h` form the dependency-free foundation: `ls_now_ms()`, `ls_add_sat()`, the unified error type `ls_err_t` (`char msg[256]`), and five-level logging (`ls_error/ls_warn` are `[[gnu::cold]]`, `ls_info/ls_debug` inline-gated). Every fallible init/parse/resolve function returns `bool` + `ls_err_t *` out-param via `ls_err_set()` — this is the single error-reporting convention; do not add ad-hoc `(char *buf, size_t size)` pairs.
 - All public symbols use the `ls_` prefix; macros use `LS_`. Env vars remain `LINKSTAY_*`.
@@ -35,7 +35,7 @@ All short options are lowercase and mnemonic:
 | `-v` | `--version` | — | Show version |
 | `-h` | `--help` | — | Show help |
 
-Config precedence: defaults → environment variables → CLI arguments. `ls_opts_resolve()` is the single orchestration path.
+Effective precedence: defaults → environment variables → CLI arguments. The parser applies CLI first and consults an env var only when the corresponding CLI option was not given. `ls_opts_resolve()` is the single orchestration path.
 
 ## Key conventions
 

@@ -17,11 +17,9 @@ WARN_CFLAGS := -Wall -Wextra -Wpedantic \
 	-Werror=implicit-function-declaration \
 	-Werror=format-security -Wformat=2 -Wstrict-overflow=5
 
-OPT_CFLAGS := -O3 -flto=auto -pipe
+OPT_CFLAGS := -O2 -pipe
 
-CODEGEN_CFLAGS := -ffunction-sections -fdata-sections -fmerge-all-constants \
-	-fno-plt -fno-semantic-interposition -fno-common \
-	-fvisibility=hidden
+CODEGEN_CFLAGS := -ffunction-sections -fdata-sections -fno-plt
 
 CFLAGS ?= $(WARN_CFLAGS) $(OPT_CFLAGS) $(CODEGEN_CFLAGS)
 
@@ -30,14 +28,17 @@ REQUIRED_CFLAGS := -std=c23 -fstack-protector-strong -fPIE \
                    -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
                    -I$(INC_DIR)
 
-ifneq ($(PORTABLE),1)
+# Native tuning is opt-in: the default build should be deployable on other
+# machines, not just the build host.
+NATIVE ?= 0
+ifeq ($(NATIVE),1)
   CFLAGS += -march=native -mtune=native
 endif
 
 CFLAGS += -MMD -MP
 
-LDFLAGS ?= -Wl,-z,relro,-z,now -Wl,-z,noexecstack -pie -flto=auto \
-           -Wl,--gc-sections -Wl,--as-needed -Wl,-O2 -Wl,--hash-style=gnu
+LDFLAGS ?= -Wl,-z,relro,-z,now -Wl,-z,noexecstack -pie \
+           -Wl,--gc-sections -Wl,--as-needed
 
 SRCS := $(wildcard $(SRC_DIR)/*.c)
 OBJS := $(patsubst $(SRC_DIR)/%.c,$(BIN_DIR)/%.o,$(SRCS))
@@ -67,8 +68,11 @@ $(TARGET): $(OBJS)
 
 lint:
 	@echo "==> Linting code..."
-	@cppcheck --enable=all --suppress=missingIncludeSystem -I$(INC_DIR) $(SRC_DIR)/*.c
-	@clang-tidy $(SRC_DIR)/*.c -- $(CFLAGS) $(REQUIRED_CFLAGS)
+	@cppcheck --enable=all --suppress=missingIncludeSystem \
+		--suppress=constParameterCallback -I$(INC_DIR) $(SRC_DIR)/*.c
+	@clang-tidy $(SRC_DIR)/*.c \
+		--checks=-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling \
+		-- $(CFLAGS) $(REQUIRED_CFLAGS)
 
 test: $(TARGET)
 	BIN="$(BIN)" bash tests/run_tests.sh

@@ -2,7 +2,6 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
-#include <limits.h>
 #include <linux/filter.h>
 #include <netinet/ip.h>
 #include <string.h>
@@ -48,11 +47,6 @@ bool ls_icmp_resolve(const char *restrict target,
 /* Non-fatal: the BPF filter improves performance but is not required. */
 static int attach_bpf_filter(int sockfd, struct sock_filter *filter,
                              size_t filter_count) {
-  /* struct sock_fprog.len is an unsigned short; guard against silent
-   * truncation if a future filter program ever grows past that range. */
-  if (filter_count > USHRT_MAX) {
-    return EINVAL;
-  }
   struct sock_fprog fprog = {.len = (unsigned short)filter_count,
                              .filter = filter};
   if (setsockopt(sockfd, SOL_SOCKET, SO_ATTACH_FILTER, &fprog,

@@ -81,7 +81,7 @@ void ls_loop_destroy(ls_loop_t *restrict loop);
                                   ls_err_t *restrict err);
 
 /* Claims a timer slot (initially disarmed). Returns false and sets err
- * when the timer table is full or arguments are invalid. */
+ * when the timer slot array is full or arguments are invalid. */
 [[nodiscard]] bool ls_loop_add_timer(ls_loop_t *restrict loop,
                                      ls_timer_cb_t cb, void *userdata,
                                      ls_timer_t **restrict out,
