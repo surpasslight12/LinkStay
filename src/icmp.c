@@ -135,7 +135,7 @@ static uint16_t icmp_checksum(const void *data, size_t len) {
   return (uint16_t)(~sum);
 }
 
-static void fill_payload(uint8_t *restrict packet, size_t packet_len,
+static void fill_payload(uint8_t *packet, size_t packet_len,
                          size_t header_len) {
   uint8_t *payload = packet + header_len;
   size_t payload_len = packet_len - header_len;
@@ -146,7 +146,7 @@ static void fill_payload(uint8_t *restrict packet, size_t packet_len,
 
 /* Sequence is never 0: app.c clears its expected sequence to 0 while idle,
  * so a cleared probe can never match a live reply. */
-static void next_sequence(ls_icmp_t *restrict icmp) {
+static void next_sequence(ls_icmp_t *icmp) {
   icmp->sequence = (icmp->sequence == UINT16_MAX)
                        ? 1
                        : (uint16_t)(icmp->sequence + 1);
@@ -210,8 +210,8 @@ bool ls_icmp_send_echo(ls_icmp_t *restrict icmp,
 
 /* ---- Reply matching ---- */
 
-static bool source_matches(const struct sockaddr_storage *restrict dest,
-                           const struct sockaddr_storage *restrict from) {
+static bool source_matches(const struct sockaddr_storage *dest,
+                           const struct sockaddr_storage *from) {
   if (from->ss_family != dest->ss_family) {
     return false;
   }
@@ -226,20 +226,20 @@ static bool source_matches(const struct sockaddr_storage *restrict dest,
                 sizeof(dest6->sin6_addr)) == 0;
 }
 
-static bool parse_ipv4_reply(const uint8_t *restrict buf, size_t received,
+static bool parse_ipv4_reply(const uint8_t *buf, size_t received,
                              uint16_t identifier, uint16_t expected_sequence) {
-  if (received < sizeof(struct ip)) {
+  const struct ip *ip_hdr = (const struct ip *)buf;
+  if (received < sizeof(*ip_hdr)) {
     return false;
   }
-  const struct ip *ip_hdr = (const struct ip *)buf;
   if (ip_hdr->ip_p != IPPROTO_ICMP) {
     return false;
   }
   /* ip_hl is the IPv4 header length in 32-bit words — multiply by 4 for
    * bytes. This correctly handles IPv4 options that extend the header
-   * beyond the base sizeof(struct ip). */
+   * beyond the base sizeof(*ip_hdr). */
   size_t ip_hdr_len = (size_t)ip_hdr->ip_hl * 4;
-  if (ip_hdr_len < sizeof(struct ip) || ip_hdr_len > received ||
+  if (ip_hdr_len < sizeof(*ip_hdr) || ip_hdr_len > received ||
       ip_hdr_len + sizeof(struct icmphdr) > received) {
     return false;
   }
@@ -249,16 +249,16 @@ static bool parse_ipv4_reply(const uint8_t *restrict buf, size_t received,
          ntohs(hdr->un.echo.sequence) == expected_sequence;
 }
 
-static bool parse_ipv6_reply(const uint8_t *restrict buf, size_t received,
+static bool parse_ipv6_reply(const uint8_t *buf, size_t received,
                              uint16_t identifier, uint16_t expected_sequence) {
-  if (received < sizeof(struct icmp6_hdr)) {
-    return false;
-  }
   /* No IPv6 header to skip: on Linux, an IPPROTO_ICMPV6 raw socket delivers
    * only the ICMPv6 payload (the kernel strips the IPv6 header), whereas an
    * IPPROTO_ICMP raw socket includes the IPv4 header. This asymmetry is
    * standard raw-socket behavior, not an oversight. */
   const struct icmp6_hdr *hdr = (const struct icmp6_hdr *)buf;
+  if (received < sizeof(*hdr)) {
+    return false;
+  }
   return hdr->icmp6_type == ICMP6_ECHO_REPLY &&
          ntohs(hdr->icmp6_id) == identifier &&
          ntohs(hdr->icmp6_seq) == expected_sequence;

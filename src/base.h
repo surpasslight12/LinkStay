@@ -23,7 +23,15 @@
 #define LS_VERSION "1.0"
 #define LS_PROGRAM_NAME "linkstay"
 
-#define LS_MS_PER_SEC UINT64_C(1000)
+/* Path to the shutdown command; validated at option resolution (opts.c) and
+ * used to trigger the real poweroff (app.c). */
+#define LS_SYSTEMCTL_PATH "/usr/bin/systemctl"
+
+/* Time unit conversion constants (integers; float conversions for latency
+ * math live in app.c and are derived from these). */
+#define LS_NS_PER_MS UINT64_C(1000000) /* nanoseconds per millisecond */
+#define LS_US_PER_MS UINT64_C(1000)    /* microseconds per millisecond */
+#define LS_MS_PER_SEC UINT64_C(1000)   /* milliseconds per second */
 #define LS_EXIT_SUCCESS 0
 #define LS_EXIT_FAILURE 1
 
@@ -52,6 +60,17 @@ typedef struct {
 [[nodiscard]] static inline uint64_t ls_add_sat(uint64_t a, uint64_t b) {
   return b > UINT64_MAX - a ? UINT64_MAX : a + b;
 }
+
+/* Saturating multiplication; used where derived durations could overflow. */
+[[nodiscard]] static inline uint64_t ls_mul_sat(uint64_t a, uint64_t b) {
+  return b != 0 && a > UINT64_MAX / b ? UINT64_MAX : a * b;
+}
+
+/* ---- Duration formatting ---- */
+
+/* Formats a millisecond duration compactly: whole seconds as "<n>s",
+ * otherwise "<n>ms". Always NUL-terminates. */
+void ls_format_duration(uint64_t ms, char *buf, size_t size);
 
 /* ---- Leveled logging ---- */
 

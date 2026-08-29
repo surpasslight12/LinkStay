@@ -1,5 +1,6 @@
 #include "base.h"
 
+#include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
 
@@ -44,9 +45,19 @@ uint64_t ls_now_ns(void) {
   return ls_add_sat(seconds_ns, (uint64_t)ts.tv_nsec);
 }
 
+/* ---- Duration formatting ---- */
+
+void ls_format_duration(uint64_t ms, char *buf, size_t size) {
+  if (ms >= LS_MS_PER_SEC && ms % LS_MS_PER_SEC == 0) {
+    (void)snprintf(buf, size, "%" PRIu64 "s", ms / LS_MS_PER_SEC);
+  } else {
+    (void)snprintf(buf, size, "%" PRIu64 "ms", ms);
+  }
+}
+
 /* ---- Logging ---- */
 
-static void format_timestamp(char *restrict buffer, size_t size) {
+static void format_timestamp(char *buffer, size_t size) {
   struct timespec ts;
   struct tm tm_info;
   if (LS_UNLIKELY(clock_gettime(CLOCK_REALTIME, &ts) != 0 ||

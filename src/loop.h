@@ -28,9 +28,7 @@ typedef void (*ls_timer_cb_t)(ls_loop_t *loop, void *userdata);
 typedef void (*ls_signal_cb_t)(ls_loop_t *loop, uint32_t signo,
                                void *userdata);
 
-/* Timer slot. Contract: when a timer fires, its callback MUST re-arm
- * (ls_timer_step) or disarm (ls_timer_disarm) the timer; otherwise the
- * loop spins on the still-elapsed timer. */
+/* Timer slot (absolute deadline; see the timer contract above). */
 typedef struct {
   uint64_t deadline_ms; /* UINT64_MAX = disarmed */
   ls_timer_cb_t cb;

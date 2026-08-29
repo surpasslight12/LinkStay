@@ -14,6 +14,7 @@ BIN ?= $(TARGET)
 
 WARN_CFLAGS := -Wall -Wextra -Wpedantic \
 	-Wshadow -Wnull-dereference -Wdouble-promotion \
+	-Wconversion -Wsign-conversion -Wundef \
 	-Werror=implicit-function-declaration \
 	-Werror=format-security -Wformat=2 -Wstrict-overflow=5
 

@@ -67,7 +67,6 @@ typedef struct {
   uint16_t probe_sequence;
   int consecutive_fails;
 
-  uint64_t interval_ms;
   uint64_t watchdog_interval_ms;
   bool watchdog_last_failed;
   bool signal_stop;

@@ -362,6 +362,37 @@ expect_accept "leading zeros accepted" \
   "$BIN" -t 1.1.1.1 -i 0005 -w 1000 -s0 -l silent
 
 ###############################################################################
+section "Duration suffix parsing (s / ms)"
+###############################################################################
+# Plain numbers keep their historical units: interval=seconds, timeout=ms.
+expect_accept "plain -i keeps seconds unit" "$BIN" -t 1.1.1.1 -i 2 -w 500 -s0 -l silent
+expect_accept "-i 500ms accepted" "$BIN" -t 1.1.1.1 -i 500ms -w 400 -s0 -l silent
+expect_accept "-i 2s accepted" "$BIN" -t 1.1.1.1 -i 2s -w 500 -s0 -l silent
+expect_accept "-i 0005ms accepted (leading zeros)" \
+  "$BIN" -t 1.1.1.1 -i 0005ms -w 400 -s0 -l silent
+expect_accept "-w 1s accepted" "$BIN" -t 1.1.1.1 -i 2 -w 1s -s0 -l silent
+expect_accept "-w 500ms accepted" "$BIN" -t 1.1.1.1 -i 1 -w 500ms -s0 -l silent
+expect_reject "-i 5S rejected (lowercase suffixes only)" \
+  "Invalid value for --interval" "$BIN" -t 1.1.1.1 -i 5S -w 500
+expect_reject "-w 1.5s rejected (integers only)" "Invalid value for --timeout" \
+  "$BIN" -t 1.1.1.1 -i 2 -w 1.5s
+expect_reject "-w 1m rejected (unknown suffix)" "Invalid value for --timeout" \
+  "$BIN" -t 1.1.1.1 -i 2 -w 1m
+expect_reject "interval in ms must still exceed timeout" \
+  "must be smaller than interval" "$BIN" -t 1.1.1.1 -i 500ms -w 600
+expect_reject "-w 2147484s exceeds INT_MAX ms" "Invalid value for --timeout" \
+  "$BIN" -t 1.1.1.1 -i 2147485 -w 2147484s
+expect_debug_contains "dump shows ms-suffixed interval" "Interval: 1500ms" \
+  "$BIN" -t 1.1.1.1 -i 1500ms -w 500 -l debug -s0
+expect_debug_contains "dump shows s-suffixed timeout" "Timeout: 1s" \
+  "$BIN" -t 1.1.1.1 -i 2 -w 1s -l debug -s0
+expect_accept "LINKSTAY_INTERVAL with ms suffix" \
+  env LINKSTAY_INTERVAL=500ms "$BIN" -t 1.1.1.1 -w 400 -s0 -l silent
+expect_reject "LINKSTAY_TIMEOUT with unknown suffix" \
+  "Invalid value for LINKSTAY_TIMEOUT" \
+  env LINKSTAY_TIMEOUT=1m "$BIN" -t 1.1.1.1
+
+###############################################################################
 section "Cross-field validation"
 ###############################################################################
 expect_reject "timeout > interval rejected" "must be smaller than interval" \
@@ -581,11 +612,11 @@ section "Debug config dump"
 # checked without CAP_NET_RAW.
 expect_debug_contains "dump shows target" "Target: 8.8.8.8" \
   "$BIN" -t 8.8.8.8 -i 7 -w 600 -n 4 -p0 -l debug -s0
-expect_debug_contains "dump shows interval" "Interval: 7 seconds" \
+expect_debug_contains "dump shows interval" "Interval: 7s" \
   "$BIN" -t 8.8.8.8 -i 7 -w 600 -n 4 -p0 -l debug -s0
 expect_debug_contains "dump shows threshold" "Threshold: 4" \
   "$BIN" -t 8.8.8.8 -i 7 -w 600 -n 4 -p0 -l debug -s0
-expect_debug_contains "dump shows timeout" "Timeout: 600 ms" \
+expect_debug_contains "dump shows timeout" "Timeout: 600ms" \
   "$BIN" -t 8.8.8.8 -i 7 -w 600 -n 4 -p0 -l debug -s0
 expect_debug_contains "dump shows poweroff false" "Poweroff: false" \
   "$BIN" -t 8.8.8.8 -i 7 -w 600 -n 4 -p0 -l debug -s0
@@ -601,10 +632,10 @@ expect_debug_contains "systemd=true disables timestamps" "Timestamp: false" \
 expect_debug_contains "CLI target wins over valid env target" "Target: 1.1.1.1" \
   env LINKSTAY_TARGET=8.8.8.8 \
   "$BIN" -t 1.1.1.1 -i 2 -w 500 -n 3 -p0 -l debug -s0
-expect_debug_contains "CLI interval wins over valid env interval" "Interval: 2 seconds" \
+expect_debug_contains "CLI interval wins over valid env interval" "Interval: 2s" \
   env LINKSTAY_INTERVAL=9 \
   "$BIN" -t 1.1.1.1 -i 2 -w 500 -n 3 -p0 -l debug -s0
-expect_debug_contains "CLI timeout wins over valid env timeout" "Timeout: 500 ms" \
+expect_debug_contains "CLI timeout wins over valid env timeout" "Timeout: 500ms" \
   env LINKSTAY_TIMEOUT=900 \
   "$BIN" -t 1.1.1.1 -i 2 -w 500 -n 3 -p0 -l debug -s0
 expect_debug_contains "CLI threshold wins over valid env threshold" "Threshold: 3" \

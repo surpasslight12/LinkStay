@@ -1,17 +1,14 @@
 #include "app.h"
 
-/* ---- Early-error logging ---- */
+/* ---- Fatal-error logging ----
+ *
+ * Logs a fatal startup error. Before options resolve only the error level
+ * is known; afterwards the resolved level and timestamp policy apply. */
 
-static void log_early_error(bool timestamps, const char *restrict message) {
+static void log_fatal_error(ls_log_level_t level, bool timestamps,
+                            const char *restrict message) {
   ls_log_t log;
-  ls_log_init(&log, LS_LOG_ERROR, timestamps);
-  ls_error(&log, LS_PROGRAM_NAME " failed: %s", message);
-}
-
-static void log_resolved_error(const ls_opts_t *restrict opts,
-                               const char *restrict message) {
-  ls_log_t log;
-  ls_log_init(&log, opts->log_level, ls_opts_timestamps(opts));
+  ls_log_init(&log, level, timestamps);
   ls_error(&log, LS_PROGRAM_NAME " failed: %s", message);
 }
 
@@ -23,7 +20,7 @@ int main(int argc, char **argv) {
   ls_opts_t opts;
 
   if (!ls_opts_resolve(&opts, argc, argv, &exit_requested, &err)) {
-    log_early_error(false, err.msg);
+    log_fatal_error(LS_LOG_ERROR, false, err.msg);
     return LS_EXIT_FAILURE;
   }
   if (exit_requested) {
@@ -32,7 +29,7 @@ int main(int argc, char **argv) {
 
   ls_app_t app;
   if (!ls_app_init(&app, &opts, &err)) {
-    log_resolved_error(&opts, err.msg);
+    log_fatal_error(opts.log_level, ls_opts_timestamps(&opts), err.msg);
     ls_app_destroy(&app);
     return LS_EXIT_FAILURE;
   }

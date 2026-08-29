@@ -94,14 +94,16 @@ make install-systemd DESTDIR=/tmp/linkstay-stage PREFIX=/usr/local
 | 参数 | CLI 选项 | 环境变量 | 默认值 | 说明 |
 |------|----------|----------|--------|------|
 | 监控目标 | `-t, --target` | `LINKSTAY_TARGET` | `1.1.1.1` | 目标 IP 字面量（仅支持 IPv4/IPv6，不解析域名） |
-| 检测间隔 | `-i, --interval` | `LINKSTAY_INTERVAL` | `10`（秒） | 两次 ping 之间的间隔 |
+| 检测间隔 | `-i, --interval` | `LINKSTAY_INTERVAL` | `10s` | 两次 ping 之间的间隔；纯数字按秒，支持 `s`/`ms` 后缀 |
 | 失败阈值 | `-n, --threshold` | `LINKSTAY_THRESHOLD` | `5` | 连续失败次数触发关机 |
-| 超时时间 | `-w, --timeout` | `LINKSTAY_TIMEOUT` | `3000`（ms） | 单次 ping 等待回包的超时，必须小于 interval |
+| 超时时间 | `-w, --timeout` | `LINKSTAY_TIMEOUT` | `3000ms` | 单次 ping 等待回包的超时；纯数字按毫秒，支持 `s`/`ms` 后缀；必须小于 interval |
 | 是否关机 | `-p, --poweroff` | `LINKSTAY_POWEROFF` | `false` | `true` 实际执行关机，`false` 仅模拟；接受 `true/false/1/0/yes/no/on/off` |
 | 日志级别 | `-l, --log-level` | `LINKSTAY_LOG_LEVEL` | `info` | 取值为 `silent` / `error` / `warn` / `info` / `debug` |
 | systemd 集成 | `-s, --systemd` | `LINKSTAY_SYSTEMD` | `true` | 启用 `sd_notify`、watchdog 与状态通知；接受 `true/false/1/0/yes/no/on/off`；省略参数时等价于启用，禁用建议写 `--systemd=0`、`--systemd=false`、`-s0` 或 `-sfalse` |
 
 优先级规则：CLI 参数 > 环境变量 > 编译期默认值。
+
+时间参数统一说明：`--interval` 与 `--timeout` 均接受可选的 `s`/`ms` 后缀（仅小写，如 `-i 500ms`、`-w 1s`）；不带后缀时保持历史单位——interval 按秒、timeout 按毫秒。两者内部统一以毫秒处理，跨参数约束只有一条：`timeout_ms < interval_ms`。日志、`--help` 与 `--debug` 输出中的时长统一由 `ls_format_duration()` 格式化（整秒显示为 `10s`，否则显示为 `1500ms`）。
 
 短选项格式说明：
 
@@ -139,10 +141,10 @@ make install-systemd DESTDIR=/tmp/linkstay-stage PREFIX=/usr/local
 
 ### `Timeout (...) must be smaller than interval (...)`
 
-`--timeout` 的单位是毫秒，`--interval` 的单位是秒，二者必须满足：
+`--interval` 与 `--timeout` 内部均以毫秒处理，二者必须满足：
 
 ```text
-timeout_ms < interval_sec * 1000
+timeout_ms < interval_ms
 ```
 
 例如：
@@ -153,6 +155,10 @@ timeout_ms < interval_sec * 1000
 
 # 正确：3000 ms 小于 5 s = 5000 ms
 ./bin/linkstay --target 1.1.1.1 --interval 5 --timeout 3000
+
+# 等价写法：使用统一后缀，无需心算单位
+./bin/linkstay --target 1.1.1.1 --interval 5s --timeout 3s
+./bin/linkstay --target 1.1.1.1 --interval 5000ms --timeout 3000ms
 ```
 
 ### `Operation not permitted (require root or CAP_NET_RAW)`

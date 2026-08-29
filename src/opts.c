@@ -6,22 +6,21 @@
 #include <inttypes.h>
 #include <limits.h>
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #define LS_DEFAULT_TARGET "1.1.1.1"
-#define LS_DEFAULT_INTERVAL_SEC 10
+#define LS_DEFAULT_INTERVAL_MS UINT64_C(10000)
 #define LS_DEFAULT_FAIL_THRESHOLD 5
-#define LS_DEFAULT_TIMEOUT_MS 3000
+#define LS_DEFAULT_TIMEOUT_MS UINT64_C(3000)
 #define LS_DEFAULT_POWEROFF false
 #define LS_DEFAULT_SYSTEMD true
 
 #define LS_BOOL_VALUES "true|false|1|0|yes|no|on|off"
 #define LS_LOG_LEVEL_VALUES "silent|error|warn|info|debug"
-#define LS_SYSTEMCTL_PATH "/usr/bin/systemctl"
 #define LS_SYSTEMD_RUNTIME_DIR "/run/systemd/system"
 
 #define OPTSTRING "t:i:n:w:p::l:s::vh"
@@ -111,6 +110,52 @@ static bool apply_bool(const char *name, const char *value,
   return true;
 }
 
+static bool apply_duration(const char *name, const char *value,
+                           uint64_t default_unit_ms, uint64_t max_ms,
+                           uint64_t *out_ms, ls_err_t *err) {
+  const char *display = value != nullptr ? value : "<empty>";
+  if (value == nullptr || value[0] == '\0') {
+    return ls_err_set(err,
+                      "Invalid value for %s: %s (use a positive integer, "
+                      "optionally suffixed 's' or 'ms')",
+                      name, display);
+  }
+  errno = 0;
+  char *endptr = nullptr;
+  unsigned long long parsed = strtoull(value, &endptr, 10);
+  if (errno != 0 || endptr == value || parsed == 0) {
+    return ls_err_set(err,
+                      "Invalid value for %s: %s (use a positive integer, "
+                      "optionally suffixed 's' or 'ms')",
+                      name, display);
+  }
+  uint64_t unit_ms = default_unit_ms;
+  if (*endptr != '\0') {
+    if (strcmp(endptr, "s") == 0) {
+      unit_ms = LS_MS_PER_SEC;
+    } else if (strcmp(endptr, "ms") == 0) {
+      unit_ms = 1;
+    } else {
+      return ls_err_set(err,
+                        "Invalid value for %s: %s (use a positive integer, "
+                        "optionally suffixed 's' or 'ms')",
+                        name, display);
+    }
+  }
+  if (parsed > UINT64_MAX / unit_ms) {
+    return ls_err_set(err, "Invalid value for %s: %s (too large)", name,
+                      display);
+  }
+  uint64_t result_ms = (uint64_t)parsed * unit_ms;
+  if (result_ms == 0 || result_ms > max_ms) {
+    return ls_err_set(err, "Invalid value for %s: %s (range 1..%" PRIu64
+                           " ms)",
+                      name, display, max_ms);
+  }
+  *out_ms = result_ms;
+  return true;
+}
+
 static bool apply_log_level(const char *name, const char *value,
                             ls_log_level_t *dest, ls_err_t *err) {
   if (value == nullptr) {
@@ -129,7 +174,7 @@ static bool apply_log_level(const char *name, const char *value,
 
 static void load_defaults(ls_opts_t *opts) {
   *opts = (ls_opts_t){
-      .interval_sec = LS_DEFAULT_INTERVAL_SEC,
+      .interval_ms = LS_DEFAULT_INTERVAL_MS,
       .fail_threshold = LS_DEFAULT_FAIL_THRESHOLD,
       .timeout_ms = LS_DEFAULT_TIMEOUT_MS,
       .poweroff = LS_DEFAULT_POWEROFF,
@@ -183,8 +228,9 @@ static bool load_cli(ls_opts_t *opts, int argc, char **argv,
       }
       break;
     case 'i':
-      if (!apply_positive_int("--interval", optarg, "seconds",
-                              &opts->interval_sec, err)) {
+      if (!apply_duration("--interval", optarg, LS_MS_PER_SEC,
+                          (uint64_t)INT_MAX * LS_MS_PER_SEC,
+                          &opts->interval_ms, err)) {
         return false;
       }
       break;
@@ -195,8 +241,8 @@ static bool load_cli(ls_opts_t *opts, int argc, char **argv,
       }
       break;
     case 'w':
-      if (!apply_positive_int("--timeout", optarg, "milliseconds",
-                              &opts->timeout_ms, err)) {
+      if (!apply_duration("--timeout", optarg, 1, (uint64_t)INT_MAX,
+                          &opts->timeout_ms, err)) {
         return false;
       }
       break;
@@ -241,8 +287,9 @@ static bool load_env(ls_opts_t *opts, const bool cli_seen[256],
   }
   if (!cli_seen[(unsigned char)'i'] &&
       (value = getenv("LINKSTAY_INTERVAL")) != nullptr &&
-      !apply_positive_int("LINKSTAY_INTERVAL", value, "seconds",
-                          &opts->interval_sec, err)) {
+      !apply_duration("LINKSTAY_INTERVAL", value, LS_MS_PER_SEC,
+                      (uint64_t)INT_MAX * LS_MS_PER_SEC, &opts->interval_ms,
+                      err)) {
     return false;
   }
   if (!cli_seen[(unsigned char)'n'] &&
@@ -253,8 +300,8 @@ static bool load_env(ls_opts_t *opts, const bool cli_seen[256],
   }
   if (!cli_seen[(unsigned char)'w'] &&
       (value = getenv("LINKSTAY_TIMEOUT")) != nullptr &&
-      !apply_positive_int("LINKSTAY_TIMEOUT", value, "milliseconds",
-                          &opts->timeout_ms, err)) {
+      !apply_duration("LINKSTAY_TIMEOUT", value, 1, (uint64_t)INT_MAX,
+                      &opts->timeout_ms, err)) {
     return false;
   }
   if (!cli_seen[(unsigned char)'p'] &&
@@ -299,15 +346,12 @@ static bool validate(const ls_opts_t *opts, ls_err_t *err) {
         err, "Target must be a valid IPv4 or IPv6 address (DNS is disabled)");
   }
 
-  /* interval_sec is at most INT_MAX, so multiplying by 1000 cannot overflow
-   * uint64_t. */
-  uint64_t interval_ms = (uint64_t)opts->interval_sec * LS_MS_PER_SEC;
-  if ((uint64_t)opts->timeout_ms >= interval_ms) {
-    return ls_err_set(
-        err,
-        "Timeout (%d ms) must be smaller than interval (%d s = %" PRIu64
-        " ms)",
-        opts->timeout_ms, opts->interval_sec, interval_ms);
+  /* Both durations are already in milliseconds; no overflow possible. */
+  if (opts->timeout_ms >= opts->interval_ms) {
+    return ls_err_set(err,
+                      "Timeout (%" PRIu64 " ms) must be smaller than "
+                      "interval (%" PRIu64 " ms)",
+                      opts->timeout_ms, opts->interval_ms);
   }
 
   if (opts->poweroff && !systemd_runtime_available()) {
@@ -321,21 +365,29 @@ static bool validate(const ls_opts_t *opts, ls_err_t *err) {
 /* ---- Help & version ---- */
 
 static void print_usage(void) {
+  char interval_default[32];
+  char timeout_default[32];
+  ls_format_duration(LS_DEFAULT_INTERVAL_MS, interval_default,
+                     sizeof(interval_default));
+  ls_format_duration(LS_DEFAULT_TIMEOUT_MS, timeout_default,
+                     sizeof(timeout_default));
+
   printf("Usage: %s [options]\n\n", LS_PROGRAM_NAME);
   printf("Network Options:\n");
   printf("  -t, --target <ip>           Target IP literal to monitor (DNS "
          "disabled, default: %s)\n",
          LS_DEFAULT_TARGET);
-  printf("  -i, --interval <sec>        Ping interval in seconds (default: "
-         "%d)\n",
-         LS_DEFAULT_INTERVAL_SEC);
+  printf("  -i, --interval <n[s|ms]>    Probe interval; a plain number means\n");
+  printf("                              seconds, 's'/'ms' suffixes accepted\n");
+  printf("                              (default: %s)\n", interval_default);
   printf("  -n, --threshold <num>       Consecutive failures threshold "
          "(default: %d)\n",
          LS_DEFAULT_FAIL_THRESHOLD);
-  printf("  -w, --timeout <ms>          Ping timeout in milliseconds; must "
-         "be smaller than interval\n");
-  printf("                              (default: %d)\n\n",
-         LS_DEFAULT_TIMEOUT_MS);
+  printf("  -w, --timeout <n[s|ms]>     Reply timeout; a plain number means\n");
+  printf("                              milliseconds, 's'/'ms' suffixes "
+         "accepted;\n");
+  printf("                              must be smaller than interval\n");
+  printf("                              (default: %s)\n\n", timeout_default);
   printf("Shutdown Options:\n");
   printf("  -p[ARG], --poweroff[=ARG]   Actually power the system off when "
          "the threshold is reached\n");
@@ -439,11 +491,15 @@ void ls_opts_dump(const ls_opts_t *restrict opts,
   if (opts == nullptr || log == nullptr) {
     return;
   }
+  char interval_str[32];
+  char timeout_str[32];
+  ls_format_duration(opts->interval_ms, interval_str, sizeof(interval_str));
+  ls_format_duration(opts->timeout_ms, timeout_str, sizeof(timeout_str));
   ls_debug(log, "Configuration:");
   ls_debug(log, "  Target: %s", opts->target);
-  ls_debug(log, "  Interval: %d seconds", opts->interval_sec);
+  ls_debug(log, "  Interval: %s", interval_str);
   ls_debug(log, "  Threshold: %d", opts->fail_threshold);
-  ls_debug(log, "  Timeout: %d ms", opts->timeout_ms);
+  ls_debug(log, "  Timeout: %s", timeout_str);
   ls_debug(log, "  Poweroff: %s", opts->poweroff ? "true" : "false");
   ls_debug(log, "  Log Level: %s", ls_log_level_name(opts->log_level));
   ls_debug(log, "  Timestamp: %s", ls_opts_timestamps(opts) ? "true" : "false");
