@@ -695,6 +695,24 @@ else
     fail "loopback received ICMP replies" "no 'Reply from 127.0.0.1' lines"
   [[ "$hay" == *"Statistics:"* ]] && pass "loopback prints final statistics" || \
     fail "loopback prints final statistics" "no Statistics line"
+  [[ "$hay" == *"poweroff false (dry-run)"* ]] && \
+    pass "startup banner spells out the dry-run mode" || \
+    fail "startup banner spells out the dry-run mode" "no dry-run marker"
+  [[ "$hay" == *"time="*"ms avg="*"ms ok="* ]] && \
+    pass "reply line reports latency and running totals" || \
+    fail "reply line reports latency and running totals" "unexpected reply format"
+  # min <= avg <= max must hold for any set of samples; before the sentinel fix
+  # max stayed at "no sample" and printed 0.000ms.
+  latency="$(grep -o 'latency min [0-9.]*ms, avg [0-9.]*ms, max [0-9.]*ms' <<<"$hay" | tail -1)"
+  if awk -v line="$latency" 'BEGIN{
+        gsub(/[^0-9. ]/, " ", line);
+        n = split(line, v, " ");
+        exit !(n == 3 && v[1] <= v[2] && v[2] <= v[3]);
+      }'; then
+    pass "latency statistics satisfy min <= avg <= max"
+  else
+    fail "latency statistics satisfy min <= avg <= max" "line=[$latency]"
+  fi
   [[ "$hay" == *"ICMP BPF filter active"* ]] && pass "IPv4 BPF filter attached" || \
     fail "IPv4 BPF filter attached" "no BPF debug line"
   [[ "$hay" == *"systemd integration inactive (disabled by configuration)"* ]] && \

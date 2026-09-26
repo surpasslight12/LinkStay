@@ -60,3 +60,42 @@ void ls_format_duration(uint64_t ms, char *buf, size_t size) {
     (void)snprintf(buf, size, "%" PRIu64 "ms", ms);
   }
 }
+
+void ls_format_latency(double ms, char *buf, size_t size) {
+  if (ms < 0.0) {
+    ms = 0.0;
+  }
+  if (ms < 1.0) {
+    (void)snprintf(buf, size, "%.3fms", ms);
+  } else if (ms < 100.0) {
+    (void)snprintf(buf, size, "%.2fms", ms);
+  } else {
+    (void)snprintf(buf, size, "%.1fms", ms);
+  }
+}
+
+void ls_format_uptime(uint64_t seconds, char *buf, size_t size) {
+  /* 25 bytes cover the widest uint64_t value ("<20 digits>d23h59m59s"), so the
+   * appends below can never truncate or underflow the running offset. */
+  char out[48];
+  size_t used = 0;
+  uint64_t days = seconds / UINT64_C(86400);
+  uint64_t hours = seconds / UINT64_C(3600) % 24;
+  uint64_t minutes = seconds / UINT64_C(60) % 60;
+
+  if (days > 0) {
+    used += (size_t)snprintf(out + used, sizeof(out) - used, "%" PRIu64 "d",
+                             days);
+  }
+  if (days > 0 || hours > 0) {
+    used += (size_t)snprintf(out + used, sizeof(out) - used, "%" PRIu64 "h",
+                             hours);
+  }
+  if (days > 0 || hours > 0 || minutes > 0) {
+    used += (size_t)snprintf(out + used, sizeof(out) - used, "%" PRIu64 "m",
+                             minutes);
+  }
+  (void)snprintf(out + used, sizeof(out) - used, "%" PRIu64 "s",
+                 seconds % 60);
+  (void)snprintf(buf, size, "%s", out);
+}

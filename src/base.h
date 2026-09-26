@@ -90,4 +90,13 @@ typedef struct {
  * otherwise "<n>ms". Always NUL-terminates. */
 void ls_format_duration(uint64_t ms, char *buf, size_t size);
 
+/* Formats a latency in milliseconds, keeping sub-millisecond detail instead of
+ * rounding fast links to "0.00ms": "0.032ms", "23.45ms", "150.3ms". Negative
+ * input is clamped to zero. */
+void ls_format_latency(double ms, char *buf, size_t size);
+
+/* Formats an elapsed second count as the shortest exact d/h/m/s form:
+ * "45s", "2m5s", "1h1m40s", "3d2h1m5s". Always NUL-terminates. */
+void ls_format_uptime(uint64_t seconds, char *buf, size_t size);
+
 #endif /* LINKSTAY_BASE_H */

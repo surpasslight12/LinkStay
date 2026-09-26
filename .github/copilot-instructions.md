@@ -45,7 +45,7 @@ where the binary owns the network namespace and can create raw sockets:
 ```bash
 unshare -Urn --map-root-user bash -c \
   'ip link set lo up; LINKSTAY_TEST_LIVE=1 LINKSTAY_TEST_UNREACHABLE_TARGET=203.0.113.1 make test'
-# baseline with live tests enabled: Pass: 204   Fail: 0   Skip: 0
+# baseline with live tests enabled: Pass: 207   Fail: 0   Skip: 0
 ```
 
 `LINKSTAY_TEST_LIVE=1` forces the live section past the `getcap` check;
@@ -119,6 +119,12 @@ private.
   source and value, and state the accepted form, e.g.
   `Invalid value for --timeout: 1m (use a positive integer, optionally suffixed
   's' or 'ms')`.
+- `ls_err_t` carries the *reason*; the caller supplies the action. A module
+  message must not open with "Failed to ..." when its caller already prefixes
+  the operation (that produced "Failed to send ICMP echo: Failed to send
+  packet: Network is unreachable"). Syscall failures pass `strerror(errno)`
+  through verbatim, so `app_fail()` and `main()` read as
+  "<action>: <reason>".
 - Public entry points validate their arguments (`ls_app_init`, `ls_loop_add_fd`,
   `ls_opts_resolve`, ...). Private `static` helpers assume their arguments are
   valid and are not required to re-check pointers for null.
@@ -144,7 +150,10 @@ private.
 - Monotonic time (`CLOCK_MONOTONIC`/`CLOCK_MONOTONIC_COARSE`) for all logic;
   `CLOCK_REALTIME` only for log timestamps in `log.c`.
 - Format user-visible durations with `ls_format_duration()` (whole seconds as
-  `10s`, otherwise `1500ms`).
+  `10s`, otherwise `1500ms`). Latency values use `ls_format_latency()` so
+  sub-millisecond links do not collapse to `0.00ms`, and elapsed times use
+  `ls_format_uptime()` (`1h2m3s`). Do not hand-roll `%.2fms` or raw second
+  counts in log lines.
 
 ### 3.5 Style
 
@@ -274,7 +283,11 @@ documents must be corrected.
   count preserved. `poweroff=true` requires `/usr/bin/systemctl` and
   `/run/systemd/system`, validated in `opts.c`.
 - Statistics (SIGUSR1 and shutdown) report uptime, totals, success rate, and
-  min/avg/max latency from integral microsecond accumulators.
+  min/avg/max latency from integral microsecond accumulators, formatted with
+  `ls_format_uptime()` / `ls_format_latency()`. The accumulators must keep
+  `min <= avg <= max`; the "no sample" sentinel is `UINT64_MAX`, so the max
+  accumulator has to clear it explicitly on the first success (the live suite
+  asserts the ordering).
 
 ### 5.3 Event loop and timers
 

@@ -122,7 +122,7 @@ unshare -Urn --map-root-user bash -c \
 
 优先级规则：CLI 参数 > 环境变量 > 编译期默认值。
 
-时间参数统一说明：`--interval` 与 `--timeout` 均接受可选的 `s`/`ms` 后缀（仅小写，如 `-i 500ms`、`-w 1s`）；不带后缀时保持历史单位——interval 按秒、timeout 按毫秒。两者内部统一以毫秒处理，跨参数约束只有一条：`timeout_ms < interval_ms`。日志、`--help` 与 `--debug` 输出中的时长统一由 `ls_format_duration()` 格式化（整秒显示为 `10s`，否则显示为 `1500ms`）。
+时间参数统一说明：`--interval` 与 `--timeout` 均接受可选的 `s`/`ms` 后缀（仅小写，如 `-i 500ms`、`-w 1s`）；不带后缀时保持历史单位——interval 按秒、timeout 按毫秒。两者内部统一以毫秒处理，跨参数约束只有一条：`timeout_ms < interval_ms`。日志、`--help` 与 `--log-level debug` 输出中的时长统一由 `ls_format_duration()` 格式化（整秒显示为 `10s`，否则显示为 `1500ms`）。
 
 短选项格式说明：
 
@@ -157,6 +157,26 @@ unshare -Urn --map-root-user bash -c \
 - `--systemd=true`：日志进入 journald，linkstay 自动**关闭**前缀时间戳（避免与 journal 时间字段重复）
 - `--systemd=false`：linkstay 自动**开启**时间戳，便于前台运行、重定向文件和手工排障
 
+## 日志输出
+
+每行为 `[时间戳] [级别] 消息`（时间戳是否出现取决于上一节），级别为 `ERROR` / `WARN` / `INFO` / `DEBUG`。常见行：
+
+| 场景 | 级别 | 示例 |
+|------|------|------|
+| 启动横幅 | INFO | `linkstay 1.0 monitoring 1.1.1.1 \| interval 10s, timeout 3s, threshold 5 (detection ~50s), poweroff false (dry-run)` |
+| 探测成功 | DEBUG | `Reply from 1.1.1.1: seq=7 time=12.34ms avg=13.02ms ok=7/7 (100.0%)` |
+| 探测失败 | WARN | `Probe to 1.1.1.1 failed: no reply within 3s (failure 2 of 5)` |
+| 统计信息 | INFO | `Statistics: uptime 1h2m3s \| 42 pings, 42 OK, 0 failed (100.00% success) \| latency min 0.004ms, avg 12.34ms, max 88.10ms` |
+| 阈值动作 | WARN | `Failure threshold reached; poweroff is disabled (dry-run)` 后接 `[DRY-RUN] Would run /usr/bin/systemctl --no-block poweroff` |
+
+显示细节：
+
+- **延迟自适应精度**：小于 1ms 保留三位小数（如 `0.004ms`），1–100ms 两位，超过 100ms 一位；因此 loopback 这类亚毫秒链路不会再显示成 `0.00ms`
+- **运行时长**以 `1h2m3s` / `3d2h1m5s` 形式显示，而不是累计秒数
+- **单复数正确**：`1 ping` / `2 pings`
+- `--poweroff=false` 时启动横幅与 `systemd` 状态里会标注 `(dry-run)`
+- 探测失败原因使用系统错误文本（如 `Network is unreachable`）或超时描述（`no reply within 3s`），不再出现 `failed: Failed to ...` 这类重复措辞
+
 ## 信号处理
 
 | 信号 | 行为 |
@@ -189,7 +209,7 @@ timeout_ms < interval_ms
 ./bin/linkstay --target 1.1.1.1 --interval 5000ms --timeout 3000ms
 ```
 
-### `Operation not permitted (require root or CAP_NET_RAW)`
+### `Operation not permitted (root or CAP_NET_RAW required)`
 
 linkstay 使用 raw socket 发送 ICMP，因此需要 `root` 权限或 `CAP_NET_RAW`：
 

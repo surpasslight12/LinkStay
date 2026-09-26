@@ -65,8 +65,8 @@ bool ls_icmp_open(ls_icmp_t *restrict icmp, int family,
                         proto);
   if (icmp->sockfd < 0) {
     return ls_err_set(err,
-                      "Failed to create socket (family=%d): %s (require root "
-                      "or CAP_NET_RAW)",
+                      "cannot create ICMP socket (family=%d): %s "
+                      "(root or CAP_NET_RAW required)",
                       family, strerror(errno));
   }
 
@@ -197,13 +197,15 @@ ls_icmp_send_status_t ls_icmp_send_echo(
 
   if (sent < 0) {
     int send_errno = errno;
-    (void)ls_err_set(err, "Failed to send packet: %s", strerror(send_errno));
+    /* Reason only: callers prefix the action ("Failed to send ICMP echo: ...",
+     * "Probe to <target> failed: ..."). */
+    (void)ls_err_set(err, "%s", strerror(send_errno));
     return send_error_is_network_condition(send_errno)
                ? LS_ICMP_SEND_UNREACHABLE
                : LS_ICMP_SEND_ERROR;
   }
   if ((size_t)sent != packet_len) {
-    (void)ls_err_set(err, "Short ICMP send: %zd", sent);
+    (void)ls_err_set(err, "short send (%zd of %zu bytes)", sent, packet_len);
     return LS_ICMP_SEND_ERROR;
   }
   return LS_ICMP_SEND_OK;
@@ -279,7 +281,7 @@ ls_icmp_recv_status_t ls_icmp_recv(
     if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
       return LS_ICMP_RECV_NO_MORE;
     }
-    (void)ls_err_set(err, "recvfrom failed: %s", strerror(errno));
+    (void)ls_err_set(err, "%s", strerror(errno));
     return LS_ICMP_RECV_ERROR;
   }
 

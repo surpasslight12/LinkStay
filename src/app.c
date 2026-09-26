@@ -17,6 +17,7 @@
 #include <inttypes.h>
 #include <signal.h>
 #include <spawn.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -71,7 +72,10 @@ static void stats_add_ok(ls_stats_t *stats, double latency_ms) {
   if (latency_us < stats->latency_min_us) {
     stats->latency_min_us = latency_us;
   }
-  if (latency_us > stats->latency_max_us) {
+  /* The "no sample" sentinel is UINT64_MAX, which no sample can exceed, so the
+   * first success has to clear it explicitly. */
+  if (stats->latency_max_us == LS_STATS_NO_SAMPLE ||
+      latency_us > stats->latency_max_us) {
     stats->latency_max_us = latency_us;
   }
 }
@@ -239,15 +243,13 @@ static action_result_t spawn_shutdown_command(const ls_log_t *log) {
 
 static action_result_t run_shutdown_action(bool poweroff,
                                            const ls_log_t *log) {
-  ls_warn(log, "Failure threshold reached, poweroff is %s",
-          poweroff ? "true" : "false");
-
   if (!poweroff) {
-    ls_info(log, "[DRY-RUN] Would power off the system now (no action taken)");
+    ls_warn(log, "Failure threshold reached; poweroff is disabled (dry-run)");
+    ls_info(log, "[DRY-RUN] Would run %s --no-block poweroff",
+            LS_SYSTEMCTL_PATH);
     return LS_ACTION_SIMULATED;
   }
-
-  ls_warn(log, "Triggering system shutdown now");
+  ls_warn(log, "Failure threshold reached; triggering system shutdown now");
   return spawn_shutdown_command(log);
 }
 
@@ -264,21 +266,28 @@ static void app_fail(ls_app_t *app, const char *what, const ls_err_t *err) {
 
 static void log_statistics(ls_app_t *app) {
   const ls_stats_t *s = &app->stats;
-  uint64_t uptime_sec = stats_uptime_sec(s);
+  char uptime_str[32];
+  ls_format_uptime(stats_uptime_sec(s), uptime_str, sizeof(uptime_str));
+  const char *plural = s->total == 1 ? "" : "s";
+
   if (s->ok > 0) {
+    char min_str[32];
+    char avg_str[32];
+    char max_str[32];
+    ls_format_latency(stats_latency_min_ms(s), min_str, sizeof(min_str));
+    ls_format_latency(stats_avg_latency(s), avg_str, sizeof(avg_str));
+    ls_format_latency(stats_latency_max_ms(s), max_str, sizeof(max_str));
     ls_info(&app->log,
-            "Statistics: uptime %" PRIu64 "s | %" PRIu64 " pings, %" PRIu64
-            " OK, %" PRIu64
-            " failed (%.2f%% success) | latency min %.2fms, avg %.2fms, "
-            "max %.2fms",
-            uptime_sec, s->total, s->ok, s->failed, stats_success_rate(s),
-            stats_latency_min_ms(s), stats_avg_latency(s),
-            stats_latency_max_ms(s));
+            "Statistics: uptime %s | %" PRIu64 " ping%s, %" PRIu64
+            " OK, %" PRIu64 " failed (%.2f%% success) | latency min %s, "
+            "avg %s, max %s",
+            uptime_str, s->total, plural, s->ok, s->failed,
+            stats_success_rate(s), min_str, avg_str, max_str);
   } else {
     ls_info(&app->log,
-            "Statistics: uptime %" PRIu64 "s | %" PRIu64
-            " pings, 0 OK, %" PRIu64 " failed (0.00%% success) | latency N/A",
-            uptime_sec, s->total, s->failed);
+            "Statistics: uptime %s | %" PRIu64 " ping%s, 0 OK, %" PRIu64
+            " failed (0.00%% success) | latency N/A",
+            uptime_str, s->total, plural, s->failed);
   }
 }
 
@@ -309,19 +318,26 @@ static void probe_succeeded(ls_app_t *app, uint16_t sequence,
                             double latency_ms) {
   app->consecutive_fails = 0;
   stats_add_ok(&app->stats, latency_ms);
+
+  char latency_str[32];
+  char avg_str[32];
+  char uptime_str[32];
+  ls_format_latency(latency_ms, latency_str, sizeof(latency_str));
+  ls_format_latency(stats_avg_latency(&app->stats), avg_str, sizeof(avg_str));
+  ls_format_uptime(stats_uptime_sec(&app->stats), uptime_str,
+                   sizeof(uptime_str));
+
   ls_debug(&app->log,
-           "Reply from %s: seq=%u time=%.2fms (avg %.2fms, %" PRIu64
-           "/%" PRIu64 " OK, %.1f%% success)",
-           app->opts.target, (unsigned)sequence, latency_ms,
-           stats_avg_latency(&app->stats), app->stats.ok, app->stats.total,
-           stats_success_rate(&app->stats));
-  (void)ls_notify_statusf(
-      &app->notify,
-      "Online: %s up %" PRIu64 "s, last %.2fms, avg %.2fms, %" PRIu64
-      "/%" PRIu64 " OK (%.1f%%)",
-      app->opts.target, stats_uptime_sec(&app->stats), latency_ms,
-      stats_avg_latency(&app->stats), app->stats.ok, app->stats.total,
-      stats_success_rate(&app->stats));
+           "Reply from %s: seq=%u time=%s avg=%s ok=%" PRIu64 "/%" PRIu64
+           " (%.1f%%)",
+           app->opts.target, (unsigned)sequence, latency_str, avg_str,
+           app->stats.ok, app->stats.total, stats_success_rate(&app->stats));
+  (void)ls_notify_statusf(&app->notify,
+                          "Online: %s up %s, last %s, avg %s, %" PRIu64
+                          "/%" PRIu64 " OK (%.1f%%)",
+                          app->opts.target, uptime_str, latency_str, avg_str,
+                          app->stats.ok, app->stats.total,
+                          stats_success_rate(&app->stats));
 }
 
 /* Runs the threshold action once enough consecutive failures accumulate. */
@@ -444,7 +460,11 @@ static void on_reply_timer([[maybe_unused]] ls_loop_t *loop, void *userdata) {
 
   /* Genuine timeout — no matching reply was waiting. */
   probe_reset(app);
-  probe_failed(app, "ICMP reply deadline exceeded");
+  char timeout_str[32];
+  char reason[64];
+  ls_format_duration(app->opts.timeout_ms, timeout_str, sizeof(timeout_str));
+  (void)snprintf(reason, sizeof(reason), "no reply within %s", timeout_str);
+  probe_failed(app, reason);
   check_threshold(app);
 }
 
@@ -495,13 +515,13 @@ static void log_startup(ls_app_t *app) {
           "threshold %d (detection ~%s), poweroff %s",
           LS_VERSION, app->opts.target, interval_str, timeout_str,
           app->opts.fail_threshold, detection_str,
-          app->opts.poweroff ? "true" : "false");
+          app->opts.poweroff ? "true" : "false (dry-run)");
   if (ls_notify_enabled(&app->notify) && !ls_notify_ready(&app->notify)) {
     ls_warn(&app->log, "Failed to send systemd READY notification");
   }
-  (void)ls_notify_statusf(&app->notify, "Monitoring %s every %s (poweroff %s)",
+  (void)ls_notify_statusf(&app->notify, "Monitoring %s every %s; poweroff %s",
                           app->opts.target, interval_str,
-                          app->opts.poweroff ? "true" : "false");
+                          app->opts.poweroff ? "true" : "false (dry-run)");
 }
 
 static void log_shutdown(ls_app_t *app, int exit_code) {
