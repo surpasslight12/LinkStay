@@ -224,6 +224,7 @@ sudo ./bin/linkstay --target 1.1.1.1
 ```
 Makefile                # 构建、release、lint、test、sanitize、clean 入口
 README.md               # 使用说明（面向用户的行为契约）
+.gitignore              # 忽略构建产物、编辑器状态与本地 AI 工具目录
 src/                    # 头文件与实现同目录，flat layout
 ├── base.h / base.c    # 基础层：错误类型、单调时钟、分级日志
 ├── opts.h / opts.c    # 配置解析：默认值 → CLI → 环境变量 → 校验
@@ -238,6 +239,8 @@ tests/
 .github/
 └── copilot-instructions.md  # 工程契约：不变量、模块边界、验证流程
 ```
+
+`bin/`（默认构建）与 `bin-sanitize/`（sanitizer 构建）是 `make` 生成的产物，已被 `.gitignore` 忽略，可随时用 `make clean` 删除。
 
 模块边界保持简单：`base` 零项目依赖，`loop`/`icmp`/`opts` 各自独立，`app` 统一组装。统计、关机动作和 sd_notify 目前只被 `app.c` 使用，因此它们的实现是 `app.c` 的私有细节，不再暴露为公共 API。所有可失败的 init/parse 接口遵循统一约定：返回 `bool` + 调用方持有的 `ls_err_t` 错误缓冲；需要区分多种结果时改用小型状态枚举（如 `ls_icmp_recv_status_t`、`ls_icmp_send_status_t`）。
 

@@ -308,6 +308,7 @@ wrong and say which one you changed.
 ```
 Makefile                        build, release, lint, test, sanitize, install
 README.md                       user-facing behavior (CLI, shutdown, systemd)
+.gitignore                      build outputs, editor state, local AI-tool config
 src/base.h/.c                   foundation: errors, clock, logging, durations
 src/opts.h/.c                   OPT_SPECS table, option resolution, validation
 src/loop.h/.c                   poll(2) loop, fd slots, timers, signalfd
@@ -318,3 +319,7 @@ systemd/linkstay.service        deployable unit example (sandboxed)
 tests/run_tests.sh              black-box CLI/env/live/systemd-notify suite
 .github/copilot-instructions.md this contract
 ```
+
+`bin/` and `bin-sanitize/` are generated build outputs and are gitignored;
+`make clean` removes both. `.vscode/` is a local editor directory and is
+gitignored on purpose — do not commit IDE settings.
