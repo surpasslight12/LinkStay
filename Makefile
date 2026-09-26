@@ -1,3 +1,6 @@
+# linkstay build entry points: build, release, lint, test, check, sanitize and
+# install. The engineering contract for changes lives in
+# .github/copilot-instructions.md.
 CC ?= gcc
 BIN_DIR ?= bin
 SRC_DIR ?= src
@@ -86,10 +89,10 @@ test: $(TARGET)
 # .github/copilot-instructions.md).
 check: test lint sanitize-test
 
-# Debug-optimized build with ASan/UBSan instrumentation in a separate output
-# directory (bin-sanitize/), so it never mixes object files with the normal
-# optimized build. Override SAN to select sanitizers, e.g. `make sanitize
-# SAN=address,undefined,leak`.
+# Sanitizer build: -O1 with debug info plus ASan/UBSan instrumentation, in a
+# separate output directory (bin-sanitize/) so it never mixes object files with
+# the normal optimized build. Override SAN to select sanitizers, e.g.
+# `make sanitize SAN=address,undefined,leak`.
 sanitize:
 	$(MAKE) BIN_DIR=$(SANITIZE_BIN_DIR) \
 		CFLAGS="$(WARN_CFLAGS) -O1 -g -fno-omit-frame-pointer $(CODEGEN_CFLAGS) -fsanitize=$(SAN) -fno-sanitize-recover=all -MMD -MP" \

@@ -45,8 +45,8 @@ typedef struct {
   int bpf_errno; /* non-fatal: filter attach failure reason */
 
   /* Reused packet buffers (zero-alloc model). Send buffer aligned to 4 so
-   * casts to struct icmphdr / icmp6_hdr are well-defined; receive buffer
-   * sized for a full Ethernet-MTU reply and aligned to 16 for natural
+   * casts to struct icmphdr / struct icmp6_hdr are well-defined; receive
+   * buffer sized for a full Ethernet-MTU reply and aligned to 16 for natural
    * IP/ICMP header access. */
   alignas(4) uint8_t send_buf[LS_ICMP_SEND_BUFFER_SIZE];
   alignas(16) uint8_t recv_buf[LS_ICMP_RECV_BUFFER_SIZE];
@@ -64,10 +64,11 @@ void ls_icmp_close(ls_icmp_t *restrict icmp);
 /* Sends one echo request; advances icmp->sequence (1..65535, never 0).
  *
  * LS_ICMP_SEND_UNREACHABLE covers transient routing/link/buffer errors
- * (ENETUNREACH, EHOSTUNREACH, ENETDOWN, ENOBUFS, EAGAIN): the probe did not
- * get out, but the socket is fine, so callers count it as a failed probe.
- * LS_ICMP_SEND_ERROR covers socket misuse and every other syscall failure and
- * is fatal. `err` carries the detail for both failure statuses. */
+ * (ENETUNREACH, EHOSTUNREACH, ENETDOWN, EHOSTDOWN, ENETRESET, ENOBUFS,
+ * EAGAIN): the probe did not get out, but the socket is fine, so callers count
+ * it as a failed probe. LS_ICMP_SEND_ERROR covers socket misuse and every
+ * other syscall failure and is fatal. `err` carries the detail for both
+ * failure statuses. */
 [[nodiscard]] ls_icmp_send_status_t ls_icmp_send_echo(
     ls_icmp_t *restrict icmp, const struct sockaddr_storage *restrict dest,
     socklen_t dest_len, uint16_t identifier, size_t packet_len,
@@ -75,7 +76,7 @@ void ls_icmp_close(ls_icmp_t *restrict icmp);
 
 /* Receives one packet and matches it against the expected reply.
  * Latency measurement is the caller's concern (see app.c). */
-ls_icmp_recv_status_t ls_icmp_recv(
+[[nodiscard]] ls_icmp_recv_status_t ls_icmp_recv(
     ls_icmp_t *restrict icmp, const struct sockaddr_storage *restrict dest,
     uint16_t identifier, uint16_t expected_sequence, ls_err_t *restrict err);
 

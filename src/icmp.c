@@ -31,14 +31,14 @@ static int attach_bpf_filter(int sockfd, struct sock_filter *filter,
 static int attach_family_filter(int sockfd, int family) {
   if (family == AF_INET) {
     struct sock_filter filter[] = {
-        BPF_STMT(BPF_LD | BPF_B | BPF_ABS, 0), /* A = ip[0] (ver+IHL)     */
-        BPF_STMT(BPF_ALU | BPF_AND | BPF_K, 0x0f), /* A &= 0x0f (IHL)     */
-        BPF_STMT(BPF_ALU | BPF_MUL | BPF_K, 4),    /* A *= 4 (hdr bytes)  */
-        BPF_STMT(BPF_MISC | BPF_TAX, 0),           /* X = A               */
-        BPF_STMT(BPF_LD | BPF_B | BPF_IND, 0),     /* A = ip[X] (type)    */
+        BPF_STMT(BPF_LD | BPF_B | BPF_ABS, 0),     /* A = ip[0] (ver+IHL) */
+        BPF_STMT(BPF_ALU | BPF_AND | BPF_K, 0x0f), /* A &= 0x0f (IHL) */
+        BPF_STMT(BPF_ALU | BPF_MUL | BPF_K, 4),    /* A *= 4 (hdr bytes) */
+        BPF_STMT(BPF_MISC | BPF_TAX, 0),           /* X = A */
+        BPF_STMT(BPF_LD | BPF_B | BPF_IND, 0),     /* A = ip[X] (type) */
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, ICMP_ECHOREPLY, 0, 1),
-        BPF_STMT(BPF_RET | BPF_K, 0xffff), /* accept full packet          */
-        BPF_STMT(BPF_RET | BPF_K, 0),      /* drop                        */
+        BPF_STMT(BPF_RET | BPF_K, 0xffff), /* accept full packet */
+        BPF_STMT(BPF_RET | BPF_K, 0),      /* drop */
     };
     return attach_bpf_filter(sockfd, filter, LS_ARRAY_LEN(filter));
   }
@@ -46,7 +46,7 @@ static int attach_family_filter(int sockfd, int family) {
       BPF_STMT(BPF_LD | BPF_B | BPF_ABS, 0), /* A = icmp6[0] (type) */
       BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, ICMP6_ECHO_REPLY, 0, 1),
       BPF_STMT(BPF_RET | BPF_K, 0xffff), /* accept full packet */
-      BPF_STMT(BPF_RET | BPF_K, 0),      /* drop               */
+      BPF_STMT(BPF_RET | BPF_K, 0),      /* drop */
   };
   return attach_bpf_filter(sockfd, filter, LS_ARRAY_LEN(filter));
 }

@@ -26,7 +26,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <time.h>
 
 #define LS_VERSION "1.0"
 #define LS_PROGRAM_NAME "linkstay"
@@ -40,15 +39,18 @@
 #define LS_NS_PER_MS UINT64_C(1000000) /* nanoseconds per millisecond */
 #define LS_US_PER_MS UINT64_C(1000)    /* microseconds per millisecond */
 #define LS_MS_PER_SEC UINT64_C(1000)   /* milliseconds per second */
+
+/* Process exit codes: everything fatal maps to LS_EXIT_FAILURE. */
 #define LS_EXIT_SUCCESS 0
 #define LS_EXIT_FAILURE 1
 
 #define LS_ARRAY_LEN(arr) (sizeof(arr) / sizeof((arr)[0]))
 
-/* The only compiler extensions this project uses are branch hints; a compiler
+/* Branch hints are the only extension that needs a fallback: a compiler
  * without __builtin_expect still gets correct (unhinted) code. Vendor
- * attributes such as [[gnu::cold]] and [[gnu::format]] need no guard: they are
- * standard C23 attribute syntax with an implementation-defined namespace. */
+ * attributes such as [[gnu::cold]] and [[gnu::format]] need no guard because
+ * they are standard C23 attribute syntax with an implementation-defined
+ * namespace. */
 #if defined(__GNUC__)
 #define LS_UNLIKELY(x) __builtin_expect(!!(x), 0)
 #define LS_LIKELY(x) __builtin_expect(!!(x), 1)

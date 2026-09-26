@@ -44,8 +44,8 @@ scrub_env() {
 }
 
 # Run "$@" capturing stdout/stderr/exit into RC/STDOUT/STDERR.
-# Honors any extra LINKSTAY_*/NOTIFY_* env supplied via env_<X>=Y prefix list
-# passed in the call wrapper.
+# Extra LINKSTAY_*/NOTIFY_* variables are supplied by callers as
+# `env VAR=value "$BIN" ...`.
 run_capture() {
   : >"$TMP/out"
   : >"$TMP/err"
@@ -368,7 +368,8 @@ expect_accept "--timeout INT_MAX accepted with matching interval" \
 expect_reject "--timeout INT_MAX+1 rejected" "Invalid value for --timeout" \
   "$BIN" -t 1.1.1.1 -i 2147484 -w 2147483648
 
-# strtoll permits a leading sign; document that behavior with acceptance tests
+# A leading '+' and leading zeros stay accepted (historical parser behavior);
+# leading whitespace and '-' are rejected by the shape check.
 expect_accept "leading + on interval accepted" \
   "$BIN" -t 1.1.1.1 -i +5 -w 1000 -sfalse -l silent
 expect_accept "leading zeros accepted" \

@@ -20,6 +20,10 @@ program does, and this file about how the code must be built and changed.
   contract. Per-machine overrides belong in
   `.github/copilot-instructions.local.md`, which is gitignored.
 - Do not add a `LICENSE` file or license badge; their absence is deliberate.
+- Do not commit formatting or analyzer configuration (`.clang-format`,
+  `.clang-tidy`, `.editorconfig` — all gitignored). The style contract in
+  section 3.5 is the source of truth; `make lint` supplies its checks on the
+  command line.
 
 ## 2. Definition of done
 
@@ -94,7 +98,7 @@ a pass.
 | Public type | `ls_*_t` | `ls_opts_t`, `ls_icmp_recv_status_t` |
 | `static` function in a `.c` file | plain verb-noun, no prefix | `probe_failed`, `reply_matches`, `notify_status` |
 | Preprocessor macro | `LS_` prefix, also when file-private | `LS_PACKET_SIZE`, `LS_DEFAULT_TARGET` |
-| `static const` data | `UPPER_SNAKE`, no prefix | `OPT_SPECS`, `BOOL_NAMES`, `SHUTDOWN_ARGV` |
+| `static const` data | `UPPER_SNAKE`, no prefix | `OPT_SPECS`, `SHUTDOWN_ARGV`, `WATCHED_SIGNALS` |
 | Environment variable | `LINKSTAY_` + upper snake | `LINKSTAY_POWEROFF` |
 
 The `ls_` prefix must mean "reachable from another translation unit". A helper
@@ -146,10 +150,10 @@ private.
 
 - Two-space indent, roughly 80 columns, no tabs, no trailing whitespace.
 - `/* ... */` comments only; `//` is not used.
-- Every file carries a file header comment: `/*` alone on its own line, a
-  ` * name — one-line boundary description.` line, optional further ` *` detail
-  lines, and ` */` alone. `.c` files open with it; headers place it directly
-  after the include guard and feature-test macros.
+- Every `.h` and `.c` file carries a file header comment: `/*` alone on its own
+  line, a ` * name — one-line boundary description.` line, optional further ` *`
+  detail lines, and ` */` alone. `.c` files open with it; headers place it
+  directly after the include guard and feature-test macros.
 - Section markers are single-line `/* ---- Name ---- */`. Other multi-line
   comments open on the `/*` line and close inline on the last text line; do not
   use `=`-rule separators or a `*/`-alone closer.
@@ -169,15 +173,17 @@ private.
 
 ## 4. Module map and boundaries
 
-Dependency direction is strictly one-way; each module may include only the
-headers to its left:
+Dependency direction is strictly one-way; a module may include only headers
+from the layers above it:
 
 ```
-base ──┬── log ──┬── opts ──┐
-       ├── addr ─┤          │
-       │         ├── loop ──┼── app ── main
-       ├── notify ──────────┘
-       └── (icmp ← addr)
+layer 0  base                                    (no project dependencies)
+layer 1  log, addr, notify                       (base only)
+layer 2  opts   (base, log, addr)
+         loop   (base, log)
+         icmp   (base, addr)
+layer 3  app                                     (all of the above)
+layer 4  main                                    (opts, app, log)
 ```
 
 | File | Owns | Must not know about |

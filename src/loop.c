@@ -47,8 +47,8 @@ void ls_loop_destroy(ls_loop_t *restrict loop) {
 
 /* ---- Registration ---- */
 
-static void dispatch_signal_fd(ls_loop_t *loop, int fd, void *userdata) {
-  (void)userdata;
+static void dispatch_signal_fd(ls_loop_t *loop, int fd,
+                               [[maybe_unused]] void *userdata) {
   struct signalfd_siginfo info;
   if (read(fd, &info, sizeof(info)) != (ssize_t)sizeof(info)) {
     return;
@@ -198,7 +198,8 @@ static void dispatch_fds(ls_loop_t *loop) {
         ls_loop_stop(loop, LS_EXIT_FAILURE);
         return;
       }
-      ls_warn(loop->log, "Non-critical fd %d entered error state (revents=0x%x), "
+      ls_warn(loop->log,
+              "Non-critical fd %d entered error state (revents=0x%x), "
               "continuing",
               loop->fds[i].fd, (unsigned)revents);
       continue;

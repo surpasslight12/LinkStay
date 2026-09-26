@@ -1,4 +1,4 @@
-# linkstay - 高性能网络监控工具
+# linkstay — 高性能网络监控工具
 
 [![C23](https://img.shields.io/badge/C-23-blue.svg)](https://en.wikipedia.org/wiki/C23_(C_standard_revision))
 [![systemd](https://img.shields.io/badge/systemd-integrated-green.svg)](https://systemd.io/)
@@ -11,7 +11,7 @@
 - **可选的真实关机**：通过布尔开关 `--poweroff` 决定是否正式关机；`false` 仅模拟，`true` 达到阈值后立即执行关机
 - **systemd 深度集成**：支持 `sd_notify`、watchdog、状态通知；watchdog 随 systemd 自动启用
 - **高性能**：单一二进制文件 ≈ 46 KiB（strip 后），内存占用 < 5 MB，CPU 占用 < 1%
-- **安全加固**：编译期 Full RELRO、PIE、Stack Canary、NX、FORTIFY\_SOURCE；运行期 systemd 沙箱
+- **安全加固**：编译期 Full RELRO、PIE、Stack Canary、NX、FORTIFY_SOURCE；运行期 systemd 沙箱
 
 ## 快速开始
 
@@ -34,7 +34,7 @@ make sanitize-test # ASan/UBSan 构建并运行同一套测试
 sudo ./bin/linkstay --target 1.1.1.1 --interval 10 --timeout 3000 \
      --threshold 3 --log-level debug
 
-# 短选项示例：必选参数既可写成 "-i 5"，也可写成 "-i5"
+# 短选项示例：必选参数既可写成 “-i 5”，也可写成 “-i5”
 # 带可选参数的 -p / -s 建议写成 -pfalse/-sfalse，或使用 --poweroff=false/--systemd=false
 sudo ./bin/linkstay -t 1.1.1.1 -i 5 -w 1000 -n 3 -l debug -sfalse
 ```
@@ -104,7 +104,7 @@ unshare -Urn --map-root-user bash -c \
   'ip link set lo up; LINKSTAY_TEST_LIVE=1 LINKSTAY_TEST_UNREACHABLE_TARGET=203.0.113.1 make test'
 ```
 
-`LINKSTAY_TEST_LIVE=1` 强制启用实网用例；`LINKSTAY_TEST_UNREACHABLE_TARGET` 指定"不可达目标"用例的目标地址——裸网络命名空间没有默认路由，指向不可路由地址即可覆盖 `ENETUNREACH` 发送失败路径。
+`LINKSTAY_TEST_LIVE=1` 强制启用实网用例；`LINKSTAY_TEST_UNREACHABLE_TARGET` 指定“不可达目标”用例的目标地址——裸网络命名空间没有默认路由，指向不可路由地址即可覆盖 `ENETUNREACH` 发送失败路径。
 
 ## 参数一览
 
@@ -113,7 +113,7 @@ unshare -Urn --map-root-user bash -c \
 | 监控目标 | `-t, --target` | `LINKSTAY_TARGET` | `1.1.1.1` | 目标 IP 字面量（仅支持 IPv4/IPv6，不解析域名） |
 | 检测间隔 | `-i, --interval` | `LINKSTAY_INTERVAL` | `10s` | 两次 ping 之间的间隔；纯数字按秒，支持 `s`/`ms` 后缀 |
 | 失败阈值 | `-n, --threshold` | `LINKSTAY_THRESHOLD` | `5` | 连续失败次数触发关机 |
-| 超时时间 | `-w, --timeout` | `LINKSTAY_TIMEOUT` | `3000ms` | 单次 ping 等待回包的超时；纯数字按毫秒，支持 `s`/`ms` 后缀；必须小于 interval |
+| 超时时间 | `-w, --timeout` | `LINKSTAY_TIMEOUT` | `3000ms` | 单次 ping 等待回包的超时；纯数字按毫秒，支持 `s`/`ms` 后缀；必须小于 `--interval` |
 | 是否关机 | `-p, --poweroff` | `LINKSTAY_POWEROFF` | `false` | `true` 实际执行关机，`false` 仅模拟；接受 `true`/`false`（大小写不敏感） |
 | 日志级别 | `-l, --log-level` | `LINKSTAY_LOG_LEVEL` | `info` | 取值为 `silent` / `error` / `warn` / `info` / `debug` |
 | systemd 集成 | `-s, --systemd` | `LINKSTAY_SYSTEMD` | `true` | 启用 `sd_notify`、watchdog 与状态通知；接受 `true`/`false`（大小写不敏感）；省略参数时等价于启用，禁用建议写 `--systemd=false` 或 `-sfalse` |
@@ -227,15 +227,15 @@ Makefile                # 构建、release、lint、test、check、sanitize、cl
 README.md               # 使用说明（面向用户的行为契约）
 .gitignore              # 忽略构建产物、编辑器状态与本地 AI 工具目录
 src/                    # 头文件与实现同目录，flat layout
-├── base.h / base.c    # 无状态基础层：错误类型、单调时钟、饱和运算、时长格式化
-├── log.h / log.c      # 分级日志：项目内唯一的 stderr 输出点
-├── addr.h / addr.c    # IPv4/IPv6 字面量解析（配置校验与传输层共用同一实现）
-├── opts.h / opts.c    # 配置解析：默认值 → CLI → 环境变量 → 校验
-├── loop.h / loop.c    # poll(2) 事件循环、绝对 deadline 定时器、signalfd
-├── icmp.h / icmp.c    # ICMP raw socket、BPF 过滤、校验和、回包匹配
+├── base.h / base.c     # 无状态基础层：错误类型、单调时钟、饱和运算、时长格式化
+├── log.h / log.c       # 分级日志：项目内唯一的 stderr 输出点
+├── addr.h / addr.c     # IPv4/IPv6 字面量解析（配置校验与传输层共用同一实现）
+├── opts.h / opts.c     # 配置解析：默认值 → CLI → 环境变量 → 校验
+├── loop.h / loop.c     # poll(2) 事件循环、绝对 deadline 定时器、signalfd
+├── icmp.h / icmp.c     # ICMP raw socket、BPF 过滤、校验和、回包匹配
 ├── notify.h / notify.c # systemd sd_notify 后端：READY/STATUS/WATCHDOG/STOPPING
-├── app.h / app.c      # 组装层：probe 状态机、统计、关机动作、启动/退出横幅
-└── main.c             # 薄入口：opts → app → loop
+├── app.h / app.c       # 组装层：probe 状态机、统计、关机动作、启动/退出横幅
+└── main.c              # 薄入口：opts → app → loop
 systemd/
 └── linkstay.service  # systemd unit 示例文件
 tests/

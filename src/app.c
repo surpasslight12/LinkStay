@@ -210,7 +210,7 @@ static action_result_t spawn_shutdown_command(const ls_log_t *log) {
   posix_spawn_file_actions_t actions;
   int rc = posix_spawn_file_actions_init(&actions);
   if (rc != 0) {
-    ls_error(log, "posix_spawn_file_actions_init failed: %s", strerror(rc));
+    ls_error(log, "posix_spawn_file_actions_init() failed: %s", strerror(rc));
     return LS_ACTION_FAILED;
   }
   if ((rc = posix_spawn_file_actions_addopen(&actions, STDIN_FILENO,
@@ -231,7 +231,7 @@ static action_result_t spawn_shutdown_command(const ls_log_t *log) {
                               SHUTDOWN_ARGV, SHUTDOWN_ENVP);
   posix_spawn_file_actions_destroy(&actions);
   if (spawn_err != 0) {
-    ls_error(log, "posix_spawn failed: %s", strerror(spawn_err));
+    ls_error(log, "posix_spawn() failed: %s", strerror(spawn_err));
     return LS_ACTION_FAILED;
   }
   return observe_startup(child_pid, log);
@@ -352,7 +352,7 @@ static void check_threshold(ls_app_t *app) {
  * is exhausted without a match.
  *
  * On receive errors this calls app_fail (which stops the loop), so the caller
- * must check app->loop.stopping after a false return. */
+ * must check ls_loop_stopping() after a false return. */
 static bool drain_and_match_reply(ls_app_t *app) {
   ls_err_t err = {};
   for (size_t i = 0; i < LS_MAX_REPLY_DRAIN_PER_WAKEUP; i++) {

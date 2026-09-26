@@ -16,7 +16,7 @@
 
 typedef struct {
   /* Network */
-  char target[64]; /* IPv4/IPv6 literal only; DNS intentionally rejected */
+  char target[64];      /* IPv4/IPv6 literal only; DNS intentionally rejected */
   uint64_t interval_ms; /* probe interval in milliseconds */
   int fail_threshold;   /* consecutive failures before shutdown */
   uint64_t timeout_ms;  /* per-probe reply timeout in milliseconds */

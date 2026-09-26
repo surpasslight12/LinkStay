@@ -94,8 +94,8 @@ void ls_loop_destroy(ls_loop_t *restrict loop);
 
 void ls_loop_stop(ls_loop_t *restrict loop, int exit_code);
 
-/* True once ls_loop_stop() was called (including from a callback), so callers
- * can tell a resolved callback from a failed one. */
+/* True once ls_loop_stop() was called, including from inside a callback, so a
+ * callback can detect that a fatal error already stopped the loop. */
 [[nodiscard]] static inline bool ls_loop_stopping(const ls_loop_t *loop) {
   return loop->stopping;
 }

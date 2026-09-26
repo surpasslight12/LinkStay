@@ -246,8 +246,8 @@ typedef enum {
   ARG_OPTIONAL, /* -p[<bool>], --poweroff[=<bool>] */
 } arg_kind_t;
 
-/* Field order keeps the table compact: one pointer trio, then the two small
- * scalars (the compiler would otherwise insert 11 bytes of padding). */
+/* Field order keeps the table compact: the pointer trio first, then the two
+ * small scalars, so the compiler inserts no padding between them. */
 typedef struct {
   const char *long_name; /* without the leading "--" */
   const char *env_name;  /* NULL for CLI-only options */
@@ -444,16 +444,17 @@ static void print_usage(void) {
   printf("  -t, --target <ip>           Target IP literal to monitor (DNS "
          "disabled, default: %s)\n",
          LS_DEFAULT_TARGET);
-  printf("  -i, --interval <n[s|ms]>    Probe interval; a plain number means\n");
-  printf("                              seconds, 's'/'ms' suffixes accepted\n");
+  printf("  -i, --interval <n[s|ms]>    Probe interval; a plain number\n");
+  printf("                              means seconds, 's'/'ms' suffixes "
+         "accepted\n");
   printf("                              (default: %s)\n", interval_default);
-  printf("  -n, --threshold <num>       Consecutive failures threshold "
+  printf("  -n, --threshold <num>       Consecutive failures before shutdown "
          "(default: %d)\n",
          LS_DEFAULT_FAIL_THRESHOLD);
   printf("  -w, --timeout <n[s|ms]>     Reply timeout; a plain number means\n");
   printf("                              milliseconds, 's'/'ms' suffixes "
          "accepted;\n");
-  printf("                              must be smaller than interval\n");
+  printf("                              must be smaller than --interval\n");
   printf("                              (default: %s)\n\n", timeout_default);
   printf("Shutdown Options:\n");
   printf("  -p[ARG], --poweroff[=ARG]   Actually power the system off when "
@@ -570,7 +571,8 @@ void ls_opts_dump(const ls_opts_t *restrict opts,
   ls_debug(log, "  Timeout: %s", timeout_str);
   ls_debug(log, "  Poweroff: %s", opts->poweroff ? "true" : "false");
   ls_debug(log, "  Log Level: %s", ls_log_level_name(opts->log_level));
-  ls_debug(log, "  Timestamp: %s", ls_opts_timestamps(opts) ? "true" : "false");
+  ls_debug(log, "  Timestamp: %s",
+           ls_opts_timestamps(opts) ? "true" : "false");
   ls_debug(log, "  Systemd: %s", opts->systemd ? "true" : "false");
 }
 

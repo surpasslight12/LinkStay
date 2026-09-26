@@ -29,9 +29,8 @@ typedef struct {
   bool timestamps;
 } ls_log_t;
 
-/* Error and warning sites are cold: keep them out of the hot instruction
- * path. Guarded because LS_COLD is the only attribute this project needs to
- * degrade on a non-GNU compiler. */
+/* Cold-path marker for the error and warning loggers; expands to nothing when
+ * the compiler does not know the attribute. */
 #if defined(__GNUC__)
 #define LS_COLD [[gnu::cold]]
 #else
@@ -46,10 +45,10 @@ const char *ls_log_level_name(ls_log_level_t level);
 
 #define LS_DEFINE_LOGGER(name, lvl, attrs)                                     \
   [[gnu::format(printf, 2, 3)]] attrs                                          \
-  static inline void name(const ls_log_t *restrict log,                       \
+  static inline void name(const ls_log_t *restrict log,                        \
                           const char *restrict fmt, ...);                      \
   [[gnu::format(printf, 2, 3)]] attrs                                          \
-  static inline void name(const ls_log_t *restrict log,                       \
+  static inline void name(const ls_log_t *restrict log,                        \
                           const char *restrict fmt, ...) {                     \
     if (LS_LIKELY(log != nullptr) && log->level >= (lvl)) {                    \
       va_list args;                                                            \
