@@ -9,14 +9,21 @@
 #define _DEFAULT_SOURCE
 #endif
 
+/* C23 is a hard requirement: the code relies on bool/nullptr/static_assert/
+ * alignas being keywords, on [[maybe_unused]], and on <stdckdint.h>. GCC 14
+ * reports 202000L for -std=c23 and GCC 15 reports 202311L, so the test is
+ * "newer than C17" rather than an exact revision. */
+#if !defined(__STDC_VERSION__) || __STDC_VERSION__ <= 201710L
+#error "linkstay requires C23; build with -std=c23 (see the Makefile)"
+#endif
+
 /*
- * base.h — dependency-free foundation.
- *
- * Project identity, shared macros, the unified error type, monotonic clock,
- * and leveled logging. Every other module includes this header.
+ * base.h — dependency-free foundation: program identity, exit codes, the
+ * unified error type, monotonic clock, saturating math, and duration
+ * formatting. Everything here is stateless; leveled logging lives in log.h and
+ * IP literal parsing in addr.h.
  */
 
-#include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <time.h>
@@ -38,9 +45,17 @@
 
 #define LS_ARRAY_LEN(arr) (sizeof(arr) / sizeof((arr)[0]))
 
+/* The only compiler extensions this project uses are branch hints; a compiler
+ * without __builtin_expect still gets correct (unhinted) code. Vendor
+ * attributes such as [[gnu::cold]] and [[gnu::format]] need no guard: they are
+ * standard C23 attribute syntax with an implementation-defined namespace. */
+#if defined(__GNUC__)
 #define LS_UNLIKELY(x) __builtin_expect(!!(x), 0)
 #define LS_LIKELY(x) __builtin_expect(!!(x), 1)
-#define LS_COLD [[gnu::cold]]
+#else
+#define LS_UNLIKELY(x) (!!(x))
+#define LS_LIKELY(x) (!!(x))
+#endif
 
 static_assert(sizeof(uint64_t) == 8, "uint64_t must be 8 bytes");
 
@@ -72,48 +87,5 @@ typedef struct {
 /* Formats a millisecond duration compactly: whole seconds as "<n>s",
  * otherwise "<n>ms". Always NUL-terminates. */
 void ls_format_duration(uint64_t ms, char *buf, size_t size);
-
-/* ---- Leveled logging ---- */
-
-#define LS_LOG_BUFFER_SIZE 2048U
-
-typedef enum {
-  LS_LOG_SILENT = -1,
-  LS_LOG_ERROR = 0,
-  LS_LOG_WARN = 1,
-  LS_LOG_INFO = 2,
-  LS_LOG_DEBUG = 3,
-} ls_log_level_t;
-
-typedef struct {
-  ls_log_level_t level;
-  bool timestamps;
-} ls_log_t;
-
-void ls_log_init(ls_log_t *restrict log, ls_log_level_t level,
-                 bool timestamps);
-void ls_log_va(const ls_log_t *restrict log, ls_log_level_t level,
-               const char *restrict fmt, va_list ap);
-const char *ls_log_level_name(ls_log_level_t level);
-
-#define LS_DEFINE_LOGGER(name, lvl, attrs)                                     \
-  [[gnu::format(printf, 2, 3)]] attrs                                          \
-  static inline void name(const ls_log_t *restrict log,                       \
-                          const char *restrict fmt, ...);                      \
-  [[gnu::format(printf, 2, 3)]] attrs                                          \
-  static inline void name(const ls_log_t *restrict log,                       \
-                          const char *restrict fmt, ...) {                     \
-    if (LS_LIKELY(log != nullptr) && log->level >= (lvl)) {                    \
-      va_list args;                                                            \
-      va_start(args, fmt);                                                     \
-      ls_log_va(log, (lvl), fmt, args);                                        \
-      va_end(args);                                                            \
-    }                                                                          \
-  }
-
-LS_DEFINE_LOGGER(ls_error, LS_LOG_ERROR, LS_COLD)
-LS_DEFINE_LOGGER(ls_warn, LS_LOG_WARN, LS_COLD)
-LS_DEFINE_LOGGER(ls_info, LS_LOG_INFO, )
-LS_DEFINE_LOGGER(ls_debug, LS_LOG_DEBUG, )
 
 #endif /* LINKSTAY_BASE_H */

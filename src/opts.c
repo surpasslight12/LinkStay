@@ -7,11 +7,13 @@
 
 #include "opts.h"
 
-#include <arpa/inet.h>
+#include "addr.h"
+
 #include <errno.h>
 #include <getopt.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <stdckdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -134,24 +136,26 @@ static bool apply_bool(const char *name, const char *value, bool *dest,
   return invalid_value(name, value, LS_BOOL_VALUES, err);
 }
 
+static bool invalid_duration(const char *name, const char *display,
+                             ls_err_t *err) {
+  return ls_err_set(err,
+                    "Invalid value for %s: %s (use a positive integer, "
+                    "optionally suffixed 's' or 'ms')",
+                    name, display);
+}
+
 static bool apply_duration(const char *name, const char *value,
                            uint64_t default_unit_ms, uint64_t max_ms,
                            uint64_t *out_ms, ls_err_t *err) {
   const char *display = value != nullptr ? value : "<empty>";
   if (!has_unsigned_shape(value)) {
-    return ls_err_set(err,
-                      "Invalid value for %s: %s (use a positive integer, "
-                      "optionally suffixed 's' or 'ms')",
-                      name, display);
+    return invalid_duration(name, display, err);
   }
   errno = 0;
   char *endptr = nullptr;
   unsigned long long parsed = strtoull(value, &endptr, 10);
   if (errno != 0 || parsed == 0) {
-    return ls_err_set(err,
-                      "Invalid value for %s: %s (use a positive integer, "
-                      "optionally suffixed 's' or 'ms')",
-                      name, display);
+    return invalid_duration(name, display, err);
   }
   uint64_t unit_ms = default_unit_ms;
   if (*endptr != '\0') {
@@ -160,17 +164,14 @@ static bool apply_duration(const char *name, const char *value,
     } else if (strcmp(endptr, "ms") == 0) {
       unit_ms = 1;
     } else {
-      return ls_err_set(err,
-                        "Invalid value for %s: %s (use a positive integer, "
-                        "optionally suffixed 's' or 'ms')",
-                        name, display);
+      return invalid_duration(name, display, err);
     }
   }
-  if (parsed > UINT64_MAX / unit_ms) {
+  uint64_t result_ms = 0;
+  if (ckd_mul(&result_ms, (uint64_t)parsed, unit_ms)) {
     return ls_err_set(err, "Invalid value for %s: %s (too large)", name,
                       display);
   }
-  uint64_t result_ms = (uint64_t)parsed * unit_ms;
   if (result_ms == 0 || result_ms > max_ms) {
     return ls_err_set(err, "Invalid value for %s: %s (range 1..%" PRIu64
                            " ms)",
@@ -392,12 +393,6 @@ static bool load_env(ls_opts_t *opts,
 
 /* ---- Cross-field validation ---- */
 
-static bool is_ip_literal(const char *target) {
-  unsigned char addr_buffer[sizeof(struct in6_addr)];
-  return inet_pton(AF_INET, target, addr_buffer) == 1 ||
-         inet_pton(AF_INET6, target, addr_buffer) == 1;
-}
-
 static bool systemd_runtime_available(void) {
   struct stat runtime_dir_stat;
   return access(LS_SYSTEMCTL_PATH, X_OK) == 0 &&
@@ -409,7 +404,9 @@ static bool validate(const ls_opts_t *opts, ls_err_t *err) {
   if (opts->target[0] == '\0') {
     return ls_err_set(err, "Target host cannot be empty");
   }
-  if (!is_ip_literal(opts->target)) {
+  /* Literal syntax is owned by addr.c; the failure message stays here because
+   * this is the layer that documents the DNS-disabled contract. */
+  if (!ls_addr_is_literal(opts->target)) {
     return ls_err_set(
         err, "Target must be a valid IPv4 or IPv6 address (DNS is disabled)");
   }

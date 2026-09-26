@@ -5,6 +5,8 @@
 
 #include "app.h"
 
+#include "log.h"
+
 /* ---- Fatal-error logging ----
  *
  * Logs a fatal startup error. Before options resolve only the error level

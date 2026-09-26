@@ -77,6 +77,7 @@ journalctl -fu linkstay
 | `make release` | 构建后 strip |
 | `make test` | 运行 `tests/run_tests.sh` |
 | `make lint` | cppcheck + clang-tidy，基线为零告警 |
+| `make check` | 依次执行 `test` + `lint` + `sanitize-test`（提交前的最小验证集） |
 | `make sanitize` | 以 ASan/UBSan 构建到 `bin-sanitize/`（可用 `SAN=` 覆盖） |
 | `make sanitize-test` | sanitizer 构建并运行同一套测试 |
 | `make install` | 安装二进制到 `$(PREFIX)/bin/linkstay`，默认 `PREFIX=/usr/local` |
@@ -222,15 +223,18 @@ sudo ./bin/linkstay --target 1.1.1.1
 ## 项目结构
 
 ```
-Makefile                # 构建、release、lint、test、sanitize、clean 入口
+Makefile                # 构建、release、lint、test、check、sanitize、clean 入口
 README.md               # 使用说明（面向用户的行为契约）
 .gitignore              # 忽略构建产物、编辑器状态与本地 AI 工具目录
 src/                    # 头文件与实现同目录，flat layout
-├── base.h / base.c    # 基础层：错误类型、单调时钟、分级日志
+├── base.h / base.c    # 无状态基础层：错误类型、单调时钟、饱和运算、时长格式化
+├── log.h / log.c      # 分级日志：项目内唯一的 stderr 输出点
+├── addr.h / addr.c    # IPv4/IPv6 字面量解析（配置校验与传输层共用同一实现）
 ├── opts.h / opts.c    # 配置解析：默认值 → CLI → 环境变量 → 校验
 ├── loop.h / loop.c    # poll(2) 事件循环、绝对 deadline 定时器、signalfd
 ├── icmp.h / icmp.c    # ICMP raw socket、BPF 过滤、校验和、回包匹配
-├── app.h / app.c      # 组装层：probe 状态机、统计、关机动作、sd_notify
+├── notify.h / notify.c # systemd sd_notify 后端：READY/STATUS/WATCHDOG/STOPPING
+├── app.h / app.c      # 组装层：probe 状态机、统计、关机动作、启动/退出横幅
 └── main.c             # 薄入口：opts → app → loop
 systemd/
 └── linkstay.service  # systemd unit 示例文件
@@ -242,6 +246,8 @@ tests/
 
 `bin/`（默认构建）与 `bin-sanitize/`（sanitizer 构建）是 `make` 生成的产物，已被 `.gitignore` 忽略，可随时用 `make clean` 删除。
 
-模块边界保持简单：`base` 零项目依赖，`loop`/`icmp`/`opts` 各自独立，`app` 统一组装。统计、关机动作和 sd_notify 目前只被 `app.c` 使用，因此它们的实现是 `app.c` 的私有细节，不再暴露为公共 API。所有可失败的 init/parse 接口遵循统一约定：返回 `bool` + 调用方持有的 `ls_err_t` 错误缓冲；需要区分多种结果时改用小型状态枚举（如 `ls_icmp_recv_status_t`、`ls_icmp_send_status_t`）。
+模块依赖是单向的：`base` 零项目依赖，`log`/`addr` 只依赖 `base`，`opts`/`loop`/`icmp`/`notify` 依赖这三个基础模块中的若干个，`app` 统一组装，`main` 只调用 `app`/`opts`。各模块职责：地址字面量规则由 `addr` 独占（`opts` 校验与 `icmp` 传输不再各写一份），日志输出由 `log` 独占，systemd 集成由 `notify` 独占（只负责通道与协议，何时发送由 `app` 决定），统计与关机动作是 `app.c` 的私有实现。所有可失败的 init/parse 接口遵循统一约定：返回 `bool` + 调用方持有的 `ls_err_t` 错误缓冲；需要区分多种结果时改用小型状态枚举（如 `ls_icmp_recv_status_t`、`ls_notify_state_t`）。
+
+代码以 `-std=c23 -pedantic-errors` 构建，`base.h` 中有 `__STDC_VERSION__` 守卫，使用 C17 及更早标准会直接编译失败。
 
 工程约定（不变量、命名边界、模块依赖方向、测试与 lint 基线）集中记录在 `.github/copilot-instructions.md`，修改代码前请先阅读该文件。

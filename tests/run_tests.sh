@@ -696,9 +696,33 @@ else
     fail "loopback prints final statistics" "no Statistics line"
   [[ "$hay" == *"ICMP BPF filter active"* ]] && pass "IPv4 BPF filter attached" || \
     fail "IPv4 BPF filter attached" "no BPF debug line"
-  [[ "$hay" == *"systemd integration inactive"* ]] && \
-    pass "systemd integration inactive without NOTIFY_SOCKET" || \
-    fail "systemd integration inactive without NOTIFY_SOCKET" "no inactive debug line"
+  [[ "$hay" == *"systemd integration inactive (disabled by configuration)"* ]] && \
+    pass "systemd integration reports the configured disable" || \
+    fail "systemd integration reports the configured disable" "no inactive debug line"
+
+  # 1b) systemd integration on but NOTIFY_SOCKET unset: inactive, not an error
+  spawn "$BIN" -t 127.0.0.1 -i 1 -w 500 -l debug
+  sleep 1.2
+  kill -TERM "$PID" 2>/dev/null || true
+  await 3
+  hay="${STDOUT}${STDERR}"
+  [[ "$hay" == *"systemd integration inactive (NOTIFY_SOCKET not set)"* ]] && \
+    pass "unset NOTIFY_SOCKET reported as inactive" || \
+    fail "unset NOTIFY_SOCKET reported as inactive" "hay tail=${hay: -300}"
+
+  # 1c) NOTIFY_SOCKET set but unusable: warn once, keep monitoring
+  spawn env NOTIFY_SOCKET="$TMP/absent-notify.sock" \
+    "$BIN" -t 127.0.0.1 -i 1 -w 500 -l debug
+  sleep 1.5
+  kill -TERM "$PID" 2>/dev/null || true
+  await 3
+  hay="${STDOUT}${STDERR}"
+  [[ "$hay" == *"systemd integration unavailable"* ]] && \
+    pass "unusable NOTIFY_SOCKET warns instead of failing" || \
+    fail "unusable NOTIFY_SOCKET warns instead of failing" "hay tail=${hay: -300}"
+  [[ "$hay" == *"Reply from 127.0.0.1"* ]] && \
+    pass "monitoring continues without a notify channel" || \
+    fail "monitoring continues without a notify channel" "no reply line"
 
   # 2) SIGINT is treated like SIGTERM
   spawn "$BIN" -t 127.0.0.1 -i 1 -w 500 -l info -sfalse

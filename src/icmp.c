@@ -1,7 +1,7 @@
 /*
  * icmp.c — raw-socket ICMP transport: socket setup, best-effort BPF filter,
  * echo request construction, and reply matching. Transport only: it owns no
- * timers, statistics, or configuration.
+ * timers, statistics, configuration, or address parsing.
  */
 
 #include "icmp.h"
@@ -9,44 +9,10 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <linux/filter.h>
+#include <netinet/icmp6.h>
 #include <netinet/ip.h>
 #include <string.h>
 #include <unistd.h>
-
-/* ---- Target resolution ---- */
-
-bool ls_icmp_resolve(const char *restrict target,
-                     struct sockaddr_storage *restrict addr,
-                     socklen_t *restrict addr_len, ls_err_t *restrict err) {
-  if (target == nullptr || addr == nullptr || addr_len == nullptr) {
-    return ls_err_set(err, "Invalid ICMP resolve arguments");
-  }
-
-  memset(addr, 0, sizeof(*addr));
-
-  struct sockaddr_in *addr4 = (struct sockaddr_in *)addr;
-  if (inet_pton(AF_INET, target, &addr4->sin_addr) == 1) {
-    addr4->sin_family = AF_INET;
-    *addr_len = sizeof(*addr4);
-    return true;
-  }
-
-  struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)addr;
-  if (inet_pton(AF_INET6, target, &addr6->sin6_addr) == 1) {
-    addr6->sin6_family = AF_INET6;
-    *addr_len = sizeof(*addr6);
-    return true;
-  }
-
-  const char *hint = "";
-  if (strchr(target, ':') != nullptr) {
-    hint = " (looks like an IPv6 literal but parsing failed)";
-  } else if (strchr(target, '.') != nullptr) {
-    hint = " (looks like an IPv4 literal but parsing failed)";
-  }
-  return ls_err_set(err, "Invalid IPv4/IPv6 address (DNS disabled): %s%s",
-                    target, hint);
-}
 
 /* ---- Socket setup ---- */
 

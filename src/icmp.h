@@ -2,16 +2,16 @@
 #define LINKSTAY_ICMP_H
 
 /*
- * icmp.h — raw-socket ICMP echo transport.
+ * icmp.h — raw-socket ICMP transport.
  *
  * Owns echo request construction, reply matching, and the optional kernel
  * BPF filter. Zero-allocation model: send/receive buffers live inside
- * ls_icmp_t and are reused across the hot path.
+ * ls_icmp_t and are reused across the hot path. Address literal parsing is not
+ * a transport concern and lives in addr.h.
  */
 
 #include "base.h"
 
-#include <netinet/icmp6.h>
 #include <netinet/ip_icmp.h>
 #include <sys/socket.h>
 
@@ -54,12 +54,6 @@ typedef struct {
 
 static_assert(sizeof(struct icmphdr) >= 8,
               "ICMP header must be at least 8 bytes");
-
-/* Parses an IPv4/IPv6 literal into a socket address. DNS is rejected. */
-[[nodiscard]] bool ls_icmp_resolve(const char *restrict target,
-                                   struct sockaddr_storage *restrict addr,
-                                   socklen_t *restrict addr_len,
-                                   ls_err_t *restrict err);
 
 /* Opens the raw socket (requires root or CAP_NET_RAW) and attempts to
  * attach the family-specific BPF filter (non-fatal on failure). */

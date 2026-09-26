@@ -1,27 +1,26 @@
 /*
  * app.c — application assembly: probe state machine, statistics, threshold
- * action, and systemd notification.
+ * action, and startup/shutdown banners.
  *
  * Sections are ordered so every helper is defined before its first use: no
  * forward declarations are needed. Everything here is private except the three
- * ls_app_* entry points declared in app.h; the state types they operate on
- * (statistics, notifier) are exposed there only because ls_app_t embeds them.
+ * ls_app_* entry points declared in app.h. Mechanisms live in their own
+ * modules (addr/log/notify/icmp/loop); this file owns policy and orchestration.
  */
 
 #include "app.h"
+
+#include "addr.h"
 
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
 #include <signal.h>
 #include <spawn.h>
-#include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <sys/un.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #define LS_PACKET_SIZE 64U
@@ -40,14 +39,12 @@
 #define LS_STATS_NO_SAMPLE UINT64_MAX
 #define LS_STARTUP_GRACE_MS UINT64_C(1000)
 #define LS_POLL_INTERVAL_MS 50U
-#define LS_NOTIFY_MESSAGE_SIZE 256U
-#define LS_NOTIFY_DEDUP_WINDOW_MS UINT64_C(2000)
 
 typedef enum {
   LS_ACTION_SIMULATED = 0,
   LS_ACTION_TRIGGERED = 1,
   LS_ACTION_FAILED = 2,
-} ls_action_result_t;
+} action_result_t;
 
 /* ---- Statistics accumulators ---- */
 
@@ -125,195 +122,6 @@ static uint64_t stats_uptime_sec(const ls_stats_t *stats) {
   return (now_ms - stats->started_at_ms) / LS_MS_PER_SEC;
 }
 
-/* ---- systemd notify integration ----
- *
- * Every helper degrades to a no-op when the notifier is disabled, so callers
- * never need to branch on NOTIFY_SOCKET. */
-
-static bool parse_uint64(const char *value, uint64_t *out_value) {
-  if (value == nullptr) {
-    return false;
-  }
-  errno = 0;
-  char *endptr = nullptr;
-  unsigned long long parsed = strtoull(value, &endptr, 10);
-  if (errno != 0 || endptr == value || *endptr != '\0') {
-    return false;
-  }
-  uint64_t converted = (uint64_t)parsed;
-  if (converted != parsed) {
-    return false;
-  }
-  *out_value = converted;
-  return true;
-}
-
-static bool watchdog_pid_matches_self(void) {
-  const char *pid_str = getenv("WATCHDOG_PID");
-  if (pid_str == nullptr || pid_str[0] == '\0') {
-    return true;
-  }
-  errno = 0;
-  char *endptr = nullptr;
-  long parsed = strtol(pid_str, &endptr, 10);
-  if (errno != 0 || endptr == pid_str || *endptr != '\0' || parsed <= 0) {
-    return false;
-  }
-  return (pid_t)parsed == getpid();
-}
-
-static bool build_socket_addr(const char *path, struct sockaddr_un *addr,
-                              socklen_t *addr_len) {
-  memset(addr, 0, sizeof(*addr));
-  addr->sun_family = AF_UNIX;
-
-  if (path[0] == '@') {
-    size_t name_len = strlen(path + 1);
-    if (name_len == 0 || name_len > sizeof(addr->sun_path) - 1) {
-      return false;
-    }
-    addr->sun_path[0] = '\0';
-    memcpy(addr->sun_path + 1, path + 1, name_len);
-    *addr_len =
-        (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + name_len);
-    return true;
-  }
-
-  size_t path_len = strlen(path);
-  if (path_len == 0 || path_len >= sizeof(addr->sun_path)) {
-    return false;
-  }
-  memcpy(addr->sun_path, path, path_len + 1);
-  *addr_len = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + path_len +
-                          1);
-  return true;
-}
-
-static bool notify_send(ls_notify_t *notify, const char *message) {
-  if (LS_UNLIKELY(!notify->enabled)) {
-    return false;
-  }
-
-  ssize_t sent;
-  do {
-    sent = send(notify->sockfd, message, strlen(message), MSG_NOSIGNAL);
-  } while (sent < 0 && errno == EINTR);
-  return sent >= 0;
-}
-
-/* STATUS= updates are deduplicated: an unchanged status within the window is
- * treated as already delivered. */
-static bool notify_status(ls_notify_t *notify, const char *status) {
-  if (!notify->enabled) {
-    return false;
-  }
-
-  uint64_t now_ms = ls_now_ms();
-  bool same = strcmp(notify->last_status, status) == 0;
-  if (same && notify->last_status_ms != 0 && now_ms != UINT64_MAX &&
-      now_ms - notify->last_status_ms < LS_NOTIFY_DEDUP_WINDOW_MS) {
-    return true;
-  }
-
-  char message[LS_NOTIFY_MESSAGE_SIZE];
-  (void)snprintf(message, sizeof(message), "STATUS=%.*s",
-                 (int)LS_NOTIFY_STATUS_SIZE - 1, status);
-  bool ok = notify_send(notify, message);
-  if (ok) {
-    (void)snprintf(notify->last_status, sizeof(notify->last_status), "%s",
-                   status);
-    notify->last_status_ms = (now_ms == UINT64_MAX) ? 0 : now_ms;
-  }
-  return ok;
-}
-
-static void notify_init(ls_notify_t *notify) {
-  *notify = (ls_notify_t){.sockfd = -1};
-
-  const char *socket_path = getenv("NOTIFY_SOCKET");
-  if (socket_path == nullptr) {
-    return;
-  }
-
-  int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
-  if (fd < 0) {
-    return;
-  }
-
-  struct sockaddr_un addr;
-  socklen_t addr_len;
-  if (!build_socket_addr(socket_path, &addr, &addr_len)) {
-    close(fd);
-    return;
-  }
-
-  if (connect(fd, (const struct sockaddr *)&addr, addr_len) != 0) {
-    close(fd);
-    return;
-  }
-
-  notify->sockfd = fd;
-  notify->enabled = true;
-
-  const char *watchdog_str = getenv("WATCHDOG_USEC");
-  if (watchdog_str != nullptr && watchdog_pid_matches_self()) {
-    uint64_t usec = 0;
-    if (parse_uint64(watchdog_str, &usec)) {
-      notify->watchdog_usec = usec;
-    }
-  }
-}
-
-static void notify_destroy(ls_notify_t *notify) {
-  if (notify->sockfd >= 0) {
-    close(notify->sockfd);
-    notify->sockfd = -1;
-  }
-  notify->enabled = false;
-}
-
-static bool notify_enabled(const ls_notify_t *notify) {
-  return notify->enabled;
-}
-
-static bool notify_ready(ls_notify_t *notify) {
-  return notify_send(notify, "READY=1");
-}
-
-[[gnu::format(printf, 2, 3)]] static bool notify_statusf(ls_notify_t *notify,
-                                                         const char *fmt, ...) {
-  if (!notify->enabled) {
-    return false;
-  }
-  char status[LS_NOTIFY_STATUS_SIZE];
-  va_list args;
-  va_start(args, fmt);
-  (void)vsnprintf(status, sizeof(status), fmt, args);
-  va_end(args);
-  return notify_status(notify, status);
-}
-
-static bool notify_stopping(ls_notify_t *notify) {
-  return notify_send(notify, "STOPPING=1");
-}
-
-static bool notify_watchdog(ls_notify_t *notify) {
-  if (LS_UNLIKELY(!notify->enabled || notify->watchdog_usec == 0)) {
-    return false;
-  }
-  return notify_send(notify, "WATCHDOG=1");
-}
-
-/* systemd convention: beat at half the watchdog deadline so a missed beat
- * still has room to recover. WATCHDOG_USEC is in microseconds. */
-static uint64_t notify_watchdog_interval_ms(const ls_notify_t *notify) {
-  if (!notify->enabled || notify->watchdog_usec == 0) {
-    return 0;
-  }
-  uint64_t interval_ms = notify->watchdog_usec / (LS_MS_PER_SEC * 2);
-  return interval_ms == 0 ? 1 : interval_ms;
-}
-
 /* ---- Shutdown action (systemctl poweroff) ---- */
 
 static char *const SHUTDOWN_ENVP[] = {
@@ -335,8 +143,7 @@ static bool sleep_retry_window(void) {
   return true;
 }
 
-static ls_action_result_t consume_child_status(int status,
-                                               const ls_log_t *log) {
+static action_result_t consume_child_status(int status, const ls_log_t *log) {
   if (WIFEXITED(status)) {
     int code = WEXITSTATUS(status);
     if (code == 0) {
@@ -357,8 +164,7 @@ static ls_action_result_t consume_child_status(int status,
 
 /* systemctl --no-block should exit quickly; if it does not, assume the request
  * was handed off rather than blocking the monitor indefinitely. */
-static ls_action_result_t observe_startup(pid_t child_pid,
-                                          const ls_log_t *log) {
+static action_result_t observe_startup(pid_t child_pid, const ls_log_t *log) {
   uint64_t start_ms = ls_now_ms();
   if (start_ms == UINT64_MAX) {
     ls_error(log, "Unable to confirm shutdown command result: monotonic "
@@ -400,7 +206,7 @@ static ls_action_result_t observe_startup(pid_t child_pid,
   }
 }
 
-static ls_action_result_t spawn_shutdown_command(const ls_log_t *log) {
+static action_result_t spawn_shutdown_command(const ls_log_t *log) {
   posix_spawn_file_actions_t actions;
   int rc = posix_spawn_file_actions_init(&actions);
   if (rc != 0) {
@@ -421,8 +227,8 @@ static ls_action_result_t spawn_shutdown_command(const ls_log_t *log) {
   }
 
   pid_t child_pid = -1;
-  int spawn_err = posix_spawn(&child_pid, SHUTDOWN_ARGV[0], &actions,
-                              nullptr, SHUTDOWN_ARGV, SHUTDOWN_ENVP);
+  int spawn_err = posix_spawn(&child_pid, SHUTDOWN_ARGV[0], &actions, nullptr,
+                              SHUTDOWN_ARGV, SHUTDOWN_ENVP);
   posix_spawn_file_actions_destroy(&actions);
   if (spawn_err != 0) {
     ls_error(log, "posix_spawn failed: %s", strerror(spawn_err));
@@ -431,8 +237,8 @@ static ls_action_result_t spawn_shutdown_command(const ls_log_t *log) {
   return observe_startup(child_pid, log);
 }
 
-static ls_action_result_t run_shutdown_action(bool poweroff,
-                                              const ls_log_t *log) {
+static action_result_t run_shutdown_action(bool poweroff,
+                                           const ls_log_t *log) {
   ls_warn(log, "Failure threshold reached, poweroff is %s",
           poweroff ? "true" : "false");
 
@@ -450,7 +256,7 @@ static ls_action_result_t run_shutdown_action(bool poweroff,
 /* Logs, mirrors the message to the systemd status, and stops the loop. */
 static void app_fail(ls_app_t *app, const char *what, const ls_err_t *err) {
   ls_error(&app->log, "%s: %s", what, err->msg);
-  notify_statusf(&app->notify, "Error: %s: %s", what, err->msg);
+  (void)ls_notify_statusf(&app->notify, "Error: %s: %s", what, err->msg);
   ls_loop_stop(&app->loop, LS_EXIT_FAILURE);
 }
 
@@ -493,9 +299,10 @@ static void probe_failed(ls_app_t *app, const char *reason) {
   ls_warn(&app->log, "Probe to %s failed: %s (failure %d of %d)",
           app->opts.target, reason, app->consecutive_fails,
           app->opts.fail_threshold);
-  notify_statusf(&app->notify, "Unreachable: %s, %d/%d consecutive failures",
-                 app->opts.target, app->consecutive_fails,
-                 app->opts.fail_threshold);
+  (void)ls_notify_statusf(&app->notify,
+                          "Unreachable: %s, %d/%d consecutive failures",
+                          app->opts.target, app->consecutive_fails,
+                          app->opts.fail_threshold);
 }
 
 static void probe_succeeded(ls_app_t *app, uint16_t sequence,
@@ -508,12 +315,13 @@ static void probe_succeeded(ls_app_t *app, uint16_t sequence,
            app->opts.target, (unsigned)sequence, latency_ms,
            stats_avg_latency(&app->stats), app->stats.ok, app->stats.total,
            stats_success_rate(&app->stats));
-  notify_statusf(&app->notify,
-                 "Online: %s up %" PRIu64 "s, last %.2fms, avg %.2fms, "
-                 "%" PRIu64 "/%" PRIu64 " OK (%.1f%%)",
-                 app->opts.target, stats_uptime_sec(&app->stats), latency_ms,
-                 stats_avg_latency(&app->stats), app->stats.ok,
-                 app->stats.total, stats_success_rate(&app->stats));
+  (void)ls_notify_statusf(
+      &app->notify,
+      "Online: %s up %" PRIu64 "s, last %.2fms, avg %.2fms, %" PRIu64
+      "/%" PRIu64 " OK (%.1f%%)",
+      app->opts.target, stats_uptime_sec(&app->stats), latency_ms,
+      stats_avg_latency(&app->stats), app->stats.ok, app->stats.total,
+      stats_success_rate(&app->stats));
 }
 
 /* Runs the threshold action once enough consecutive failures accumulate. */
@@ -522,8 +330,7 @@ static void check_threshold(ls_app_t *app) {
     return;
   }
 
-  ls_action_result_t result = run_shutdown_action(app->opts.poweroff,
-                                                  &app->log);
+  action_result_t result = run_shutdown_action(app->opts.poweroff, &app->log);
   if (!app->opts.poweroff) {
     ls_info(&app->log, "Dry-run complete: simulated shutdown reached, "
                        "exiting monitor loop");
@@ -616,8 +423,7 @@ static void on_ping_timer(ls_loop_t *loop, void *userdata) {
   ls_timer_arm_after(app->reply_timer, now_ms, app->opts.timeout_ms);
 }
 
-static void on_reply_timer(ls_loop_t *loop, void *userdata) {
-  (void)loop;
+static void on_reply_timer([[maybe_unused]] ls_loop_t *loop, void *userdata) {
   ls_app_t *app = userdata;
 
   /* Defensive: bail if the probe was already resolved by another path
@@ -632,7 +438,7 @@ static void on_reply_timer(ls_loop_t *loop, void *userdata) {
   if (drain_and_match_reply(app)) {
     return; /* Reply arrived just in time — success already recorded */
   }
-  if (app->loop.stopping) {
+  if (ls_loop_stopping(&app->loop)) {
     return; /* drain_and_match_reply triggered a fatal error */
   }
 
@@ -644,7 +450,7 @@ static void on_reply_timer(ls_loop_t *loop, void *userdata) {
 
 static void on_watchdog_timer(ls_loop_t *loop, void *userdata) {
   ls_app_t *app = userdata;
-  bool sent = notify_watchdog(&app->notify);
+  bool sent = ls_notify_watchdog(&app->notify);
   ls_timer_step(app->watchdog_timer, app->watchdog_interval_ms,
                 ls_loop_now(loop));
   /* Log only on the failure/recovery edge so a persistently broken notify
@@ -657,9 +463,8 @@ static void on_watchdog_timer(ls_loop_t *loop, void *userdata) {
   app->watchdog_last_failed = !sent;
 }
 
-static void on_icmp_readable(ls_loop_t *loop, int fd, void *userdata) {
-  (void)loop;
-  (void)fd;
+static void on_icmp_readable([[maybe_unused]] ls_loop_t *loop,
+                             [[maybe_unused]] int fd, void *userdata) {
   ls_app_t *app = userdata;
   (void)drain_and_match_reply(app);
 }
@@ -691,12 +496,12 @@ static void log_startup(ls_app_t *app) {
           LS_VERSION, app->opts.target, interval_str, timeout_str,
           app->opts.fail_threshold, detection_str,
           app->opts.poweroff ? "true" : "false");
-  if (notify_enabled(&app->notify) && !notify_ready(&app->notify)) {
+  if (ls_notify_enabled(&app->notify) && !ls_notify_ready(&app->notify)) {
     ls_warn(&app->log, "Failed to send systemd READY notification");
   }
-  (void)notify_statusf(&app->notify, "Monitoring %s every %s (poweroff %s)",
-                       app->opts.target, interval_str,
-                       app->opts.poweroff ? "true" : "false");
+  (void)ls_notify_statusf(&app->notify, "Monitoring %s every %s (poweroff %s)",
+                          app->opts.target, interval_str,
+                          app->opts.poweroff ? "true" : "false");
 }
 
 static void log_shutdown(ls_app_t *app, int exit_code) {
@@ -706,8 +511,8 @@ static void log_shutdown(ls_app_t *app, int exit_code) {
   /* Notify systemd we are stopping on every exit path (signal, threshold
    * dry-run, or real poweroff) so the service manager always sees a clean
    * transition. */
-  if (notify_enabled(&app->notify)) {
-    (void)notify_stopping(&app->notify);
+  if (ls_notify_enabled(&app->notify)) {
+    (void)ls_notify_stopping(&app->notify);
   }
   log_statistics(app);
   if (exit_code == LS_EXIT_SUCCESS) {
@@ -740,7 +545,7 @@ bool ls_app_init(ls_app_t *restrict app, const ls_opts_t *restrict opts,
   }
 
   app->dest_len = sizeof(app->dest);
-  if (!ls_icmp_resolve(app->opts.target, &app->dest, &app->dest_len, err)) {
+  if (!ls_addr_parse(app->opts.target, &app->dest, &app->dest_len, err)) {
     return false;
   }
 
@@ -761,19 +566,27 @@ bool ls_app_init(ls_app_t *restrict app, const ls_opts_t *restrict opts,
 
   stats_init(&app->stats);
 
-  if (app->opts.systemd) {
-    notify_init(&app->notify);
-  }
-  app->watchdog_interval_ms = notify_watchdog_interval_ms(&app->notify);
-
-  if (!notify_enabled(&app->notify)) {
-    ls_debug(&app->log, "systemd integration inactive (NOTIFY_SOCKET not set)");
-  } else if (app->watchdog_interval_ms > 0) {
+  if (!app->opts.systemd) {
     ls_debug(&app->log,
-             "systemd integration active, watchdog ping every %" PRIu64 "ms",
-             app->watchdog_interval_ms);
+             "systemd integration inactive (disabled by configuration)");
   } else {
-    ls_debug(&app->log, "systemd integration active, watchdog disabled");
+    ls_notify_state_t state = ls_notify_init(&app->notify, err);
+    if (state == LS_NOTIFY_FAILED) {
+      ls_warn(&app->log, "systemd integration unavailable: %s", err->msg);
+    } else if (state == LS_NOTIFY_INACTIVE) {
+      ls_debug(&app->log,
+               "systemd integration inactive (NOTIFY_SOCKET not set)");
+    }
+  }
+  app->watchdog_interval_ms = ls_notify_watchdog_interval_ms(&app->notify);
+  if (ls_notify_enabled(&app->notify)) {
+    if (app->watchdog_interval_ms > 0) {
+      ls_debug(&app->log,
+               "systemd integration active, watchdog ping every %" PRIu64 "ms",
+               app->watchdog_interval_ms);
+    } else {
+      ls_debug(&app->log, "systemd integration active, watchdog disabled");
+    }
   }
 
   /* ---- Parameter safety warnings ---- */
@@ -793,7 +606,7 @@ void ls_app_destroy(ls_app_t *restrict app) {
   if (app == nullptr) {
     return;
   }
-  notify_destroy(&app->notify);
+  ls_notify_destroy(&app->notify);
   ls_icmp_close(&app->icmp);
   *app = (ls_app_t){};
 }
@@ -812,8 +625,8 @@ int ls_app_run(ls_app_t *restrict app) {
   static const int WATCHED_SIGNALS[] = {SIGINT, SIGTERM, SIGUSR1};
   bool wired =
       ls_loop_watch_signals(&app->loop, WATCHED_SIGNALS,
-                            LS_ARRAY_LEN(WATCHED_SIGNALS),
-                            on_signal, app, &err) &&
+                            LS_ARRAY_LEN(WATCHED_SIGNALS), on_signal, app,
+                            &err) &&
       ls_loop_add_fd(&app->loop, app->icmp.sockfd, on_icmp_readable, app,
                      false, &err);
   /* Registration order defines firing priority: watchdog heartbeat first,

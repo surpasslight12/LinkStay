@@ -24,7 +24,11 @@ CODEGEN_CFLAGS := -ffunction-sections -fdata-sections -fno-plt
 
 CFLAGS ?= $(WARN_CFLAGS) $(OPT_CFLAGS) $(CODEGEN_CFLAGS)
 
-REQUIRED_CFLAGS := -std=c23 -fstack-protector-strong -fPIE \
+# -pedantic-errors keeps the sources strictly C23: the only tolerated vendor
+# extensions are [[gnu::...]] attributes (valid C23 attribute syntax) and
+# __builtin_expect, which base.h guards with a portable fallback. The C23
+# requirement itself is enforced by an #error in base.h.
+REQUIRED_CFLAGS := -std=c23 -pedantic-errors -fstack-protector-strong -fPIE \
                    -D_FORTIFY_SOURCE=3 \
                    -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
                    -I$(INC_DIR)
@@ -48,7 +52,7 @@ DEPS := $(OBJS:.o=.d)
 SAN ?= address,undefined
 SANITIZE_BIN_DIR ?= bin-sanitize
 
-.PHONY: all clean release lint test sanitize sanitize-test install install-systemd uninstall
+.PHONY: all clean release lint test check sanitize sanitize-test install install-systemd uninstall
 
 all: $(TARGET)
 
@@ -77,6 +81,10 @@ lint:
 
 test: $(TARGET)
 	BIN="$(BIN)" bash tests/run_tests.sh
+
+# Everything a change must pass before it is considered done (see
+# .github/copilot-instructions.md).
+check: test lint sanitize-test
 
 # Debug-optimized build with ASan/UBSan instrumentation in a separate output
 # directory (bin-sanitize/), so it never mixes object files with the normal

@@ -31,6 +31,7 @@ make                 # must produce zero compiler warnings
 make test            # full suite; baseline: 179 pass, 1 skip (no CAP_NET_RAW)
 make lint            # cppcheck + clang-tidy: zero findings
 make sanitize-test   # ASan+UBSan build, same suite; required for loop/icmp/app changes
+make check           # runs test + lint + sanitize-test in one go
 ```
 
 Live ICMP tests are skipped when the binary lacks `CAP_NET_RAW`. Without root
@@ -40,7 +41,7 @@ where the binary owns the network namespace and can create raw sockets:
 ```bash
 unshare -Urn --map-root-user bash -c \
   'ip link set lo up; LINKSTAY_TEST_LIVE=1 LINKSTAY_TEST_UNREACHABLE_TARGET=203.0.113.1 make test'
-# baseline with live tests enabled: Pass: 199   Fail: 0   Skip: 0
+# baseline with live tests enabled: Pass: 202   Fail: 0   Skip: 0
 ```
 
 `LINKSTAY_TEST_LIVE=1` forces the live section past the `getcap` check;
@@ -68,6 +69,18 @@ a pass.
   code generation, no build system beyond the `Makefile`. Feature-test macros
   (`_POSIX_C_SOURCE=200809L`, `_DEFAULT_SOURCE`) are defined in the Makefile and
   fall back to the same values in `base.h`; keep both.
+- **C23 is enforced, not assumed.** The Makefile compiles with
+  `-std=c23 -pedantic-errors`, and `base.h` has a `__STDC_VERSION__` guard that
+  fails the build under an older standard. Vendor extensions are limited to an
+  explicit allow-list: `[[gnu::...]]` attributes (valid C23 attribute syntax
+  with an implementation-defined namespace) and `__builtin_expect` behind the
+  guarded `LS_LIKELY`/`LS_UNLIKELY` macros. Adding another compiler extension,
+  or a C11/C17 compatibility shim, is a design change.
+- **Prefer the standard facility.** `<stdckdint.h>` (`ckd_mul`) is used for
+  overflow-checked arithmetic, `nullptr`/`bool`/`static_assert`/`alignas` are
+  keywords, and unused parameters use `[[maybe_unused]]` instead of `(void)`
+  casts. `(void)expr` remains correct for deliberately discarding a return
+  value.
 - **Warnings are errors in spirit.** The build must stay warning-free under the
   Makefile's `WARN_CFLAGS` (`-Wconversion -Wsign-conversion -Wshadow
   -Wpedantic ...`), and `make lint` must stay at zero findings.
@@ -96,7 +109,8 @@ private.
   `ls_err_t` via `ls_err_set()`. Never invent `(char *buf, size_t len)` error
   out-parameters, and never return `-errno` as the only signal.
 - Results with more than two meaningful states use a small enum, not a bool:
-  `ls_icmp_recv_status_t`, `ls_icmp_send_status_t`. Do not overload `errno`.
+  `ls_icmp_recv_status_t`, `ls_icmp_send_status_t`, `ls_notify_state_t`. Do not
+  overload `errno`.
 - Messages are complete sentences without a trailing period, name the offending
   source and value, and state the accepted form, e.g.
   `Invalid value for --timeout: 1m (use a positive integer, optionally suffixed
@@ -104,9 +118,9 @@ private.
 - Public entry points validate their arguments (`ls_app_init`, `ls_loop_add_fd`,
   `ls_opts_resolve`, ...). Private `static` helpers assume their arguments are
   valid and are not required to re-check pointers for null.
-- Modules never write to stdio. `base.c` owns logging (`fprintf` to stderr) and
-  `opts.c` owns `--help`/`--version` printing; everything else reports through
-  an `ls_log_t` or an `ls_err_t`.
+- Modules never write to stdio. `log.c` owns log output (`fprintf` to stderr)
+  and `opts.c` owns `--help`/`--version` printing; everything else reports
+  through an `ls_log_t` or an `ls_err_t`.
 - `restrict` appears only on public declarations and the definitions that
   implement them. Private helpers never use it.
 
@@ -124,7 +138,7 @@ private.
   result is always stored in milliseconds. Only one cross-field rule exists:
   `timeout_ms < interval_ms`.
 - Monotonic time (`CLOCK_MONOTONIC`/`CLOCK_MONOTONIC_COARSE`) for all logic;
-  `CLOCK_REALTIME` only for log timestamps in `base.c`.
+  `CLOCK_REALTIME` only for log timestamps in `log.c`.
 - Format user-visible durations with `ls_format_duration()` (whole seconds as
   `10s`, otherwise `1500ms`).
 
@@ -155,20 +169,28 @@ private.
 
 ## 4. Module map and boundaries
 
-Dependency direction is strictly one-way:
+Dependency direction is strictly one-way; each module may include only the
+headers to its left:
 
 ```
-base.h/.c  ←  { loop, icmp, opts }  ←  app.h/.c  ←  main.c
+base ──┬── log ──┬── opts ──┐
+       ├── addr ─┤          │
+       │         ├── loop ──┼── app ── main
+       ├── notify ──────────┘
+       └── (icmp ← addr)
 ```
 
 | File | Owns | Must not know about |
 |------|------|---------------------|
-| `src/base.h` `.c` | program identity, exit codes, error type, monotonic clock, saturating math, duration formatting, leveled logging | any other linkstay module |
-| `src/opts.h` `.c` | `ls_opts_t`, the `OPT_SPECS` table, defaults/CLI/env resolution, cross-field validation | sockets, ICMP, timers, the event loop |
-| `src/loop.h` `.c` | `poll(2)` loop, fixed fd slots, absolute-deadline timer slots, signalfd channel | probes, ICMP, configuration, statistics |
-| `src/icmp.h` `.c` | target literal parsing, raw socket, best-effort BPF filter, echo construction, reply matching | timers, configuration, log policy |
-| `src/app.h` `.c` | probe state machine, statistics, threshold action, systemd notifier, startup/shutdown banners | nothing above it; it is the top of the stack |
-| `src/main.c` | entry point: resolve options, run the app, report a fatal startup error, map result to exit code | `loop`, `icmp`, and every app-internal type; it uses only the `opts`/`app` entry points plus base logging |
+| `src/base.h` `.c` | program identity, exit codes, error type, monotonic clock, saturating math, duration formatting | every other module; it is stateless and has no I/O beyond the clock |
+| `src/log.h` `.c` | `ls_log_t`, level filtering, timestamp formatting, the project's only stderr writer | any domain concept (probes, addresses, config) |
+| `src/addr.h` `.c` | IPv4/IPv6 literal classification and conversion, the "DNS disabled" rule | sockets, configuration, timers |
+| `src/opts.h` `.c` | `ls_opts_t`, the `OPT_SPECS` table, defaults/CLI/env resolution, cross-field validation | raw sockets, timers, the event loop, ICMP details |
+| `src/loop.h` `.c` | `poll(2)` loop, fixed fd slots, absolute-deadline timer slots, signalfd channel | probes, ICMP, addresses, configuration |
+| `src/icmp.h` `.c` | raw socket, best-effort BPF filter, echo construction, reply matching, send/receive status | address syntax, timers, configuration, log policy |
+| `src/notify.h` `.c` | the `sd_notify` channel and protocol (READY/STATUS/WATCHDOG/STOPPING), NOTIFY_SOCKET/WATCHDOG_USEC/WATCHDOG_PID | when a message is appropriate (that is app policy) |
+| `src/app.h` `.c` | probe state machine, statistics, threshold action, startup/shutdown banners, message policy | nothing above it; it is the top of the stack |
+| `src/main.c` | entry point: resolve options, run the app, report a fatal startup error, map the result to an exit code | `loop`, `icmp`, `notify`, and every app-internal type; it uses only `opts`/`app` entry points plus `log` |
 
 Rules:
 
@@ -176,6 +198,9 @@ Rules:
   (e.g. `icmp.c` must not call into `app.c`).
 - Shared enums/constants/structs live in the header of the module that owns
   them. Private helper types stay in the `.c` file.
+- A rule that two modules would otherwise re-implement gets one owner: address
+  literals in `addr`, output in `log`, the systemd channel in `notify`. If you
+  need the same knowledge in two places, move it down instead of copying it.
 - Test-only or debug-only accessors are not added to headers; use the existing
   debug logging instead.
 - Add a new module only for a genuinely new mechanism (a transport, an
@@ -274,6 +299,12 @@ documents must be corrected.
 
 - `systemd/linkstay.service` expects `Type=notify`, `NotifyAccess=main`,
   `WatchdogSec=30`. Keep them consistent with the notifier.
+- `ls_notify_init()` reports one of three states: `LS_NOTIFY_ACTIVE`,
+  `LS_NOTIFY_INACTIVE` (NOTIFY_SOCKET unset — systemd is not supervising), or
+  `LS_NOTIFY_FAILED` (NOTIFY_SOCKET set but unusable). Only FAILED is an error,
+  and even then it is non-fatal: `app.c` logs a warning and monitoring
+  continues. Keep that property — a broken notify channel must never abort a
+  network monitor.
 - Notifier messages: `READY=1` at startup, `STATUS=` updates (deduplicated
   within 2 s and capped at `LS_NOTIFY_STATUS_SIZE`), `WATCHDOG=1` at
   `WATCHDOG_USEC / 2000` ms (half the deadline), `STOPPING=1` on every exit
@@ -306,14 +337,17 @@ wrong and say which one you changed.
 ## 7. Repository map
 
 ```
-Makefile                        build, release, lint, test, sanitize, install
+Makefile                        build, release, lint, test, check, sanitize, install
 README.md                       user-facing behavior (CLI, shutdown, systemd)
 .gitignore                      build outputs, editor state, local AI-tool config
-src/base.h/.c                   foundation: errors, clock, logging, durations
+src/base.h/.c                   foundation: errors, clock, math, durations
+src/log.h/.c                    leveled logging; only stderr writer
+src/addr.h/.c                   IPv4/IPv6 literal parsing
 src/opts.h/.c                   OPT_SPECS table, option resolution, validation
 src/loop.h/.c                   poll(2) loop, fd slots, timers, signalfd
 src/icmp.h/.c                   raw socket, BPF, echo build/match
-src/app.h/.c                    probe FSM, stats, action, notifier
+src/notify.h/.c                 sd_notify channel and protocol
+src/app.h/.c                    probe FSM, stats, action, banners
 src/main.c                      entry point
 systemd/linkstay.service        deployable unit example (sandboxed)
 tests/run_tests.sh              black-box CLI/env/live/systemd-notify suite

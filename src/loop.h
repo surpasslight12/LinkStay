@@ -14,6 +14,7 @@
  */
 
 #include "base.h"
+#include "log.h"
 
 #include <poll.h>
 #include <signal.h>
@@ -35,10 +36,9 @@ typedef struct {
   void *userdata;
 } ls_timer_t;
 
-/* The loop owns its slot arrays. `stopping` and `exit_code` are observable by
- * the embedding layer (app.c checks `stopping` after a callback may have failed
- * the loop); every other field is private to loop.c — use the ls_loop_* and
- * ls_timer_* API instead of touching slots directly. */
+/* The loop owns its slot arrays; every field is private to loop.c. Callbacks
+ * and the embedding layer observe and control the loop only through the
+ * ls_loop_* / ls_timer_* API. */
 struct ls_loop {
   const ls_log_t *log;
   uint64_t now_ms;
@@ -90,9 +90,15 @@ void ls_loop_destroy(ls_loop_t *restrict loop);
                                      ls_err_t *restrict err);
 
 /* Runs until ls_loop_stop() or a fatal loop error; returns the exit code. */
-int ls_loop_run(ls_loop_t *restrict loop);
+[[nodiscard]] int ls_loop_run(ls_loop_t *restrict loop);
 
 void ls_loop_stop(ls_loop_t *restrict loop, int exit_code);
+
+/* True once ls_loop_stop() was called (including from a callback), so callers
+ * can tell a resolved callback from a failed one. */
+[[nodiscard]] static inline bool ls_loop_stopping(const ls_loop_t *loop) {
+  return loop->stopping;
+}
 
 /* Monotonic timestamp refreshed once per loop iteration. */
 [[nodiscard]] static inline uint64_t ls_loop_now(const ls_loop_t *loop) {
