@@ -796,6 +796,37 @@ else
     skip "NOTIFY_SOCKET protocol" "python3 not available"
   fi
 
+  # 5b) Malformed WATCHDOG_USEC must disable the watchdog instead of arming a
+  #     deadline hundreds of millions of years away (a leading '-' wraps).
+  if command -v python3 >/dev/null 2>&1; then
+    notify_sock="$TMP/notify-badusec.sock"
+    notify_out="$TMP/notify-badusec.out"
+    start_notify_receiver "$notify_sock" "$notify_out"
+    if [[ -S "$notify_sock" ]]; then
+      spawn env NOTIFY_SOCKET="$notify_sock" WATCHDOG_USEC=-1 \
+        "$BIN" -t 127.0.0.1 -i 1 -w 500 -l debug
+      sleep 1.2
+      kill -TERM "$PID" 2>/dev/null || true
+      await 3
+      stop_notify_receiver
+      hay="${STDOUT}${STDERR}"
+      messages="$(cat "$notify_out" 2>/dev/null || true)"
+      [[ "$hay" == *"watchdog disabled"* ]] && \
+        pass "malformed WATCHDOG_USEC disables the watchdog" || \
+        fail "malformed WATCHDOG_USEC disables the watchdog" "hay tail=${hay: -300}"
+      [[ "$messages" != *"WATCHDOG=1"* ]] && \
+        pass "no WATCHDOG beat with a malformed WATCHDOG_USEC" || \
+        fail "no WATCHDOG beat with a malformed WATCHDOG_USEC" "messages=$messages"
+      rm -f "$notify_sock" "$notify_out" "$notify_out.err"
+    else
+      stop_notify_receiver
+      skip "malformed WATCHDOG_USEC" "python3 receiver failed to bind"
+      rm -f "$notify_sock" "$notify_out" "$notify_out.err"
+    fi
+  else
+    skip "malformed WATCHDOG_USEC" "python3 not available"
+  fi
+
   # 6) WATCHDOG_PID mismatch disables watchdog while READY/STOPPING still work
   if command -v python3 >/dev/null 2>&1; then
     notify_sock="$TMP/notify-pid.sock"

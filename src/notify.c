@@ -17,7 +17,13 @@
 #define LS_NOTIFY_MESSAGE_SIZE 256U
 #define LS_NOTIFY_DEDUP_WINDOW_MS UINT64_C(2000)
 
+/* WATCHDOG_USEC comes from the environment, so its shape is checked before
+ * strtoull(): a leading '-' or whitespace would otherwise wrap around to a
+ * huge positive deadline instead of being rejected. */
 static bool parse_uint64(const char *value, uint64_t *out_value) {
+  if (value[0] < '0' || value[0] > '9') {
+    return false;
+  }
   errno = 0;
   char *endptr = nullptr;
   unsigned long long parsed = strtoull(value, &endptr, 10);

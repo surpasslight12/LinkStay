@@ -117,6 +117,8 @@ unshare -Urn --map-root-user bash -c \
 | 是否关机 | `-p, --poweroff` | `LINKSTAY_POWEROFF` | `false` | `true` 实际执行关机，`false` 仅模拟；接受 `true`/`false`（大小写不敏感） |
 | 日志级别 | `-l, --log-level` | `LINKSTAY_LOG_LEVEL` | `info` | 取值为 `silent` / `error` / `warn` / `info` / `debug` |
 | systemd 集成 | `-s, --systemd` | `LINKSTAY_SYSTEMD` | `true` | 启用 `sd_notify`、watchdog 与状态通知；接受 `true`/`false`（大小写不敏感）；省略参数时等价于启用，禁用建议写 `--systemd=false` 或 `-sfalse` |
+| 版本信息 | `-v, --version` | — | — | 打印版本后退出（退出码 0） |
+| 帮助信息 | `-h, --help` | — | — | 打印用法与全部选项后退出（退出码 0） |
 
 优先级规则：CLI 参数 > 环境变量 > 编译期默认值。
 

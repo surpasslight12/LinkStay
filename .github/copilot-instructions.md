@@ -45,7 +45,7 @@ where the binary owns the network namespace and can create raw sockets:
 ```bash
 unshare -Urn --map-root-user bash -c \
   'ip link set lo up; LINKSTAY_TEST_LIVE=1 LINKSTAY_TEST_UNREACHABLE_TARGET=203.0.113.1 make test'
-# baseline with live tests enabled: Pass: 202   Fail: 0   Skip: 0
+# baseline with live tests enabled: Pass: 204   Fail: 0   Skip: 0
 ```
 
 `LINKSTAY_TEST_LIVE=1` forces the live section past the `getcap` check;
@@ -314,7 +314,9 @@ documents must be corrected.
 - Notifier messages: `READY=1` at startup, `STATUS=` updates (deduplicated
   within 2 s and capped at `LS_NOTIFY_STATUS_SIZE`), `WATCHDOG=1` at
   `WATCHDOG_USEC / 2000` ms (half the deadline), `STOPPING=1` on every exit
-  path. `WATCHDOG_PID` must match `getpid()` or the watchdog stays disabled.
+  path. The watchdog stays disabled when `WATCHDOG_PID` does not match
+  `getpid()` or when `WATCHDOG_USEC` is missing or malformed (a leading `-`
+  must not wrap around into a huge deadline).
 - Without `NOTIFY_SOCKET` (or with `--systemd=false`) every notifier call is a
   no-op; callers never branch on availability.
 - The unit's sandboxing is part of the product: raw ICMP needs `CAP_NET_RAW`;
