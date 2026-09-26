@@ -1,3 +1,10 @@
+/*
+ * opts.c — option resolution and validation. One table (OPT_SPECS) describes
+ * every option and drives getopt_long, the environment layer, and error naming.
+ * Validation is limited to what can be decided without I/O beyond reading the
+ * environment and probing for the systemd runtime.
+ */
+
 #include "opts.h"
 
 #include <arpa/inet.h>
@@ -19,11 +26,9 @@
 #define LS_DEFAULT_POWEROFF false
 #define LS_DEFAULT_SYSTEMD true
 
-#define LS_BOOL_VALUES "true|false|1|0|yes|no|on|off"
+#define LS_BOOL_VALUES "true|false"
 #define LS_LOG_LEVEL_VALUES "silent|error|warn|info|debug"
 #define LS_SYSTEMD_RUNTIME_DIR "/run/systemd/system"
-
-#define OPTSTRING "t:i:n:w:p::l:s::vh"
 
 /* ---- Small named-value parsers ---- */
 
@@ -31,11 +36,6 @@ typedef struct {
   const char *name;
   int value;
 } named_value_t;
-
-static const named_value_t BOOL_NAMES[] = {
-    {"true", 1},  {"1", 1}, {"yes", 1}, {"on", 1},
-    {"false", 0}, {"0", 0}, {"no", 0},  {"off", 0},
-};
 
 static const named_value_t LOG_LEVEL_NAMES[] = {
     {"silent", LS_LOG_SILENT}, {"error", LS_LOG_ERROR},
@@ -63,6 +63,17 @@ static bool invalid_value(const char *name, const char *value,
                     value != nullptr ? value : "<empty>", allowed);
 }
 
+/* ---- Per-option value appliers ----
+ *
+ * Every applier has the same shape so the option table below can drive both
+ * the CLI and the environment layer. `name` is the user-facing spelling of the
+ * source ("--target" or "LINKSTAY_TARGET"); a NULL value means a bare CLI flag
+ * (only the boolean options accept that) because environment values are always
+ * non-NULL strings. */
+
+typedef bool (*apply_fn_t)(const char *name, const char *value,
+                           ls_opts_t *opts, ls_err_t *err);
+
 static bool apply_string(const char *name, const char *value, char *dest,
                          size_t size, ls_err_t *err) {
   if (value == nullptr) {
@@ -76,16 +87,27 @@ static bool apply_string(const char *name, const char *value, char *dest,
   return true;
 }
 
+/* Rejects what strtoull() would otherwise accept silently: leading whitespace,
+ * an empty string, and a leading '-' (which wraps around to a huge unsigned
+ * value). A leading '+' stays valid because the historical parser took it. */
+static bool has_unsigned_shape(const char *value) {
+  if (value == nullptr) {
+    return false;
+  }
+  const char *digits = value[0] == '+' ? value + 1 : value;
+  return digits[0] >= '0' && digits[0] <= '9';
+}
+
 static bool apply_positive_int(const char *name, const char *value,
                                const char *unit, int *dest, ls_err_t *err) {
-  if (value == nullptr) {
+  if (!has_unsigned_shape(value)) {
     return invalid_value(name, value, "a positive integer", err);
   }
   errno = 0;
   char *endptr = nullptr;
-  long long parsed = strtoll(value, &endptr, 10);
-  if (errno != 0 || endptr == value || *endptr != '\0' || parsed < 1 ||
-      parsed > INT_MAX) {
+  unsigned long long parsed = strtoull(value, &endptr, 10);
+  if (errno != 0 || *endptr != '\0' || parsed < 1 ||
+      parsed > (unsigned long long)INT_MAX) {
     return ls_err_set(err, "Invalid value for %s: %s (range 1..%d %s)", name,
                       value, INT_MAX, unit);
   }
@@ -93,28 +115,30 @@ static bool apply_positive_int(const char *name, const char *value,
   return true;
 }
 
-static bool apply_bool(const char *name, const char *value,
-                       bool bare_means_true, bool *dest, ls_err_t *err) {
-  if (value == nullptr) {
-    if (!bare_means_true) {
-      return invalid_value(name, value, LS_BOOL_VALUES, err);
-    }
+/* Boolean values are deliberately limited to true/false (case-insensitive):
+ * one spelling per state, no numeric or shell-style aliases. */
+static bool apply_bool(const char *name, const char *value, bool *dest,
+                       ls_err_t *err) {
+  if (value == nullptr) { /* bare CLI flag, e.g. -p or --systemd */
     *dest = true;
     return true;
   }
-  int parsed = 0;
-  if (!lookup_named(BOOL_NAMES, LS_ARRAY_LEN(BOOL_NAMES), value, &parsed)) {
-    return invalid_value(name, value, LS_BOOL_VALUES, err);
+  if (strcasecmp(value, "true") == 0) {
+    *dest = true;
+    return true;
   }
-  *dest = parsed != 0;
-  return true;
+  if (strcasecmp(value, "false") == 0) {
+    *dest = false;
+    return true;
+  }
+  return invalid_value(name, value, LS_BOOL_VALUES, err);
 }
 
 static bool apply_duration(const char *name, const char *value,
                            uint64_t default_unit_ms, uint64_t max_ms,
                            uint64_t *out_ms, ls_err_t *err) {
   const char *display = value != nullptr ? value : "<empty>";
-  if (value == nullptr || value[0] == '\0') {
+  if (!has_unsigned_shape(value)) {
     return ls_err_set(err,
                       "Invalid value for %s: %s (use a positive integer, "
                       "optionally suffixed 's' or 'ms')",
@@ -123,7 +147,7 @@ static bool apply_duration(const char *name, const char *value,
   errno = 0;
   char *endptr = nullptr;
   unsigned long long parsed = strtoull(value, &endptr, 10);
-  if (errno != 0 || endptr == value || parsed == 0) {
+  if (errno != 0 || parsed == 0) {
     return ls_err_set(err,
                       "Invalid value for %s: %s (use a positive integer, "
                       "optionally suffixed 's' or 'ms')",
@@ -158,9 +182,6 @@ static bool apply_duration(const char *name, const char *value,
 
 static bool apply_log_level(const char *name, const char *value,
                             ls_log_level_t *dest, ls_err_t *err) {
-  if (value == nullptr) {
-    return invalid_value(name, value, LS_LOG_LEVEL_VALUES, err);
-  }
   int parsed = 0;
   if (!lookup_named(LOG_LEVEL_NAMES, LS_ARRAY_LEN(LOG_LEVEL_NAMES), value,
                     &parsed)) {
@@ -168,6 +189,127 @@ static bool apply_log_level(const char *name, const char *value,
   }
   *dest = (ls_log_level_t)parsed;
   return true;
+}
+
+/* Typed adapters binding an applier signature to one ls_opts_t field. Keeping
+ * them separate (instead of offsets into the struct) keeps the table
+ * type-safe; adding an option means adding one row plus its adapter. */
+static bool apply_target(const char *name, const char *value, ls_opts_t *opts,
+                         ls_err_t *err) {
+  return apply_string(name, value, opts->target, sizeof(opts->target), err);
+}
+
+static bool apply_interval(const char *name, const char *value, ls_opts_t *opts,
+                           ls_err_t *err) {
+  return apply_duration(name, value, LS_MS_PER_SEC,
+                        (uint64_t)INT_MAX * LS_MS_PER_SEC, &opts->interval_ms,
+                        err);
+}
+
+static bool apply_threshold(const char *name, const char *value,
+                            ls_opts_t *opts, ls_err_t *err) {
+  return apply_positive_int(name, value, "failures", &opts->fail_threshold,
+                            err);
+}
+
+static bool apply_timeout(const char *name, const char *value, ls_opts_t *opts,
+                          ls_err_t *err) {
+  return apply_duration(name, value, 1, (uint64_t)INT_MAX, &opts->timeout_ms,
+                        err);
+}
+
+static bool apply_poweroff(const char *name, const char *value, ls_opts_t *opts,
+                           ls_err_t *err) {
+  return apply_bool(name, value, &opts->poweroff, err);
+}
+
+static bool apply_systemd(const char *name, const char *value, ls_opts_t *opts,
+                          ls_err_t *err) {
+  return apply_bool(name, value, &opts->systemd, err);
+}
+
+static bool apply_level(const char *name, const char *value, ls_opts_t *opts,
+                        ls_err_t *err) {
+  return apply_log_level(name, value, &opts->log_level, err);
+}
+
+/* ---- Option table (single source of truth) ----
+ *
+ * One row drives getopt_long (built at run time), the environment layer, and
+ * error naming. help/version carry no applier: they are handled by the
+ * pre-scan so they win over invalid arguments or environment values. */
+
+typedef enum {
+  ARG_NONE,     /* no argument: -v, -h */
+  ARG_REQUIRED, /* -t <ip>, --target <ip> */
+  ARG_OPTIONAL, /* -p[<bool>], --poweroff[=<bool>] */
+} arg_kind_t;
+
+/* Field order keeps the table compact: one pointer trio, then the two small
+ * scalars (the compiler would otherwise insert 11 bytes of padding). */
+typedef struct {
+  const char *long_name; /* without the leading "--" */
+  const char *env_name;  /* NULL for CLI-only options */
+  apply_fn_t apply;      /* NULL for help/version */
+  arg_kind_t arg_kind;
+  char short_name;
+} opt_spec_t;
+
+static const opt_spec_t OPT_SPECS[] = {
+    {"target", "LINKSTAY_TARGET", apply_target, ARG_REQUIRED, 't'},
+    {"interval", "LINKSTAY_INTERVAL", apply_interval, ARG_REQUIRED, 'i'},
+    {"threshold", "LINKSTAY_THRESHOLD", apply_threshold, ARG_REQUIRED, 'n'},
+    {"timeout", "LINKSTAY_TIMEOUT", apply_timeout, ARG_REQUIRED, 'w'},
+    {"poweroff", "LINKSTAY_POWEROFF", apply_poweroff, ARG_OPTIONAL, 'p'},
+    {"log-level", "LINKSTAY_LOG_LEVEL", apply_level, ARG_REQUIRED, 'l'},
+    {"systemd", "LINKSTAY_SYSTEMD", apply_systemd, ARG_OPTIONAL, 's'},
+    {"version", nullptr, nullptr, ARG_NONE, 'v'},
+    {"help", nullptr, nullptr, ARG_NONE, 'h'},
+};
+
+static const opt_spec_t *find_spec(int short_name) {
+  for (size_t i = 0; i < LS_ARRAY_LEN(OPT_SPECS); i++) {
+    if (OPT_SPECS[i].short_name == short_name) {
+      return &OPT_SPECS[i];
+    }
+  }
+  return nullptr;
+}
+
+/* getopt_long needs a struct option array plus an optstring; both are derived
+ * from OPT_SPECS so the two can never drift apart. */
+typedef struct {
+  struct option long_opts[LS_ARRAY_LEN(OPT_SPECS) + 1];
+  char optstring[LS_ARRAY_LEN(OPT_SPECS) * 3 + 1];
+} opt_tables_t;
+
+static void build_getopt_tables(opt_tables_t *tables) {
+  size_t pos = 0;
+  for (size_t i = 0; i < LS_ARRAY_LEN(OPT_SPECS); i++) {
+    const opt_spec_t *spec = &OPT_SPECS[i];
+    int has_arg = no_argument;
+    if (spec->arg_kind == ARG_REQUIRED) {
+      has_arg = required_argument;
+    } else if (spec->arg_kind == ARG_OPTIONAL) {
+      has_arg = optional_argument;
+    }
+    tables->long_opts[i] = (struct option){
+        .name = spec->long_name,
+        .has_arg = has_arg,
+        .flag = nullptr,
+        .val = spec->short_name,
+    };
+
+    tables->optstring[pos++] = spec->short_name;
+    if (spec->arg_kind != ARG_NONE) {
+      tables->optstring[pos++] = ':';
+    }
+    if (spec->arg_kind == ARG_OPTIONAL) {
+      tables->optstring[pos++] = ':';
+    }
+  }
+  tables->optstring[pos] = '\0';
+  tables->long_opts[LS_ARRAY_LEN(OPT_SPECS)] = (struct option){};
 }
 
 /* ---- Defaults, environment, CLI ---- */
@@ -184,32 +326,21 @@ static void load_defaults(ls_opts_t *opts) {
   (void)snprintf(opts->target, sizeof(opts->target), "%s", LS_DEFAULT_TARGET);
 }
 
-static const struct option LONG_OPTIONS[] = {
-    {"target", required_argument, nullptr, 't'},
-    {"interval", required_argument, nullptr, 'i'},
-    {"threshold", required_argument, nullptr, 'n'},
-    {"timeout", required_argument, nullptr, 'w'},
-    {"poweroff", optional_argument, nullptr, 'p'},
-    {"log-level", required_argument, nullptr, 'l'},
-    {"systemd", optional_argument, nullptr, 's'},
-    {"version", no_argument, nullptr, 'v'},
-    {"help", no_argument, nullptr, 'h'},
-    {nullptr, 0, nullptr, 0},
-};
-
 static bool load_cli(ls_opts_t *opts, int argc, char **argv,
-                     bool cli_seen[256], ls_err_t *err) {
+                     const opt_tables_t *tables,
+                     bool seen[LS_ARRAY_LEN(OPT_SPECS)], ls_err_t *err) {
   optind = 1;
   opterr = 0;
 
   int letter;
-  while ((letter = getopt_long(argc, argv, OPTSTRING, LONG_OPTIONS, nullptr)) !=
-         -1) {
+  while ((letter = getopt_long(argc, argv, tables->optstring, tables->long_opts,
+                               nullptr)) != -1) {
     if (letter == '?') {
-      /* getopt_long reports both missing arguments and unknown short options
-       * as '?'. A non-zero optopt is a missing required short/long argument
-       * only when that letter has a required argument in OPTSTRING. */
-      if (optopt != 0 && strchr("tinwl", optopt) != nullptr) {
+      /* getopt_long reports both missing arguments and unknown options as
+       * '?'. Only a known option whose argument is required turns the first
+       * case into a message about the argument. */
+      const opt_spec_t *failed = find_spec(optopt);
+      if (failed != nullptr && failed->arg_kind == ARG_REQUIRED) {
         return ls_err_set(
             err, "Option requires an argument or has invalid value: -%c",
             optopt);
@@ -219,53 +350,20 @@ static bool load_cli(ls_opts_t *opts, int argc, char **argv,
                                                     : "<unknown>");
     }
 
-    cli_seen[(unsigned char)letter] = true;
-    switch (letter) {
-    case 't':
-      if (!apply_string("--target", optarg, opts->target,
-                        sizeof(opts->target), err)) {
-        return false;
-      }
-      break;
-    case 'i':
-      if (!apply_duration("--interval", optarg, LS_MS_PER_SEC,
-                          (uint64_t)INT_MAX * LS_MS_PER_SEC,
-                          &opts->interval_ms, err)) {
-        return false;
-      }
-      break;
-    case 'n':
-      if (!apply_positive_int("--threshold", optarg, "failures",
-                              &opts->fail_threshold, err)) {
-        return false;
-      }
-      break;
-    case 'w':
-      if (!apply_duration("--timeout", optarg, 1, (uint64_t)INT_MAX,
-                          &opts->timeout_ms, err)) {
-        return false;
-      }
-      break;
-    case 'p':
-      if (!apply_bool("--poweroff", optarg, true, &opts->poweroff, err)) {
-        return false;
-      }
-      break;
-    case 'l':
-      if (!apply_log_level("--log-level", optarg, &opts->log_level, err)) {
-        return false;
-      }
-      break;
-    case 's':
-      if (!apply_bool("--systemd", optarg, true, &opts->systemd, err)) {
-        return false;
-      }
-      break;
-    case 'v':
-    case 'h':
-      break;
-    default:
+    const opt_spec_t *spec = find_spec(letter);
+    if (spec == nullptr) {
       return ls_err_set(err, "Internal option parse failure");
+    }
+    size_t index = (size_t)(spec - OPT_SPECS);
+    seen[index] = true;
+    if (spec->apply == nullptr) {
+      continue; /* help/version: already handled by the pre-scan */
+    }
+
+    char display[32];
+    (void)snprintf(display, sizeof(display), "--%s", spec->long_name);
+    if (!spec->apply(display, optarg, opts, err)) {
+      return false;
     }
   }
 
@@ -275,49 +373,19 @@ static bool load_cli(ls_opts_t *opts, int argc, char **argv,
   return true;
 }
 
-static bool load_env(ls_opts_t *opts, const bool cli_seen[256],
-                     ls_err_t *err) {
-  const char *value;
-
-  if (!cli_seen[(unsigned char)'t'] &&
-      (value = getenv("LINKSTAY_TARGET")) != nullptr &&
-      !apply_string("LINKSTAY_TARGET", value, opts->target,
-                    sizeof(opts->target), err)) {
-    return false;
-  }
-  if (!cli_seen[(unsigned char)'i'] &&
-      (value = getenv("LINKSTAY_INTERVAL")) != nullptr &&
-      !apply_duration("LINKSTAY_INTERVAL", value, LS_MS_PER_SEC,
-                      (uint64_t)INT_MAX * LS_MS_PER_SEC, &opts->interval_ms,
-                      err)) {
-    return false;
-  }
-  if (!cli_seen[(unsigned char)'n'] &&
-      (value = getenv("LINKSTAY_THRESHOLD")) != nullptr &&
-      !apply_positive_int("LINKSTAY_THRESHOLD", value, "failures",
-                          &opts->fail_threshold, err)) {
-    return false;
-  }
-  if (!cli_seen[(unsigned char)'w'] &&
-      (value = getenv("LINKSTAY_TIMEOUT")) != nullptr &&
-      !apply_duration("LINKSTAY_TIMEOUT", value, 1, (uint64_t)INT_MAX,
-                      &opts->timeout_ms, err)) {
-    return false;
-  }
-  if (!cli_seen[(unsigned char)'p'] &&
-      (value = getenv("LINKSTAY_POWEROFF")) != nullptr &&
-      !apply_bool("LINKSTAY_POWEROFF", value, false, &opts->poweroff, err)) {
-    return false;
-  }
-  if (!cli_seen[(unsigned char)'l'] &&
-      (value = getenv("LINKSTAY_LOG_LEVEL")) != nullptr &&
-      !apply_log_level("LINKSTAY_LOG_LEVEL", value, &opts->log_level, err)) {
-    return false;
-  }
-  if (!cli_seen[(unsigned char)'s'] &&
-      (value = getenv("LINKSTAY_SYSTEMD")) != nullptr &&
-      !apply_bool("LINKSTAY_SYSTEMD", value, false, &opts->systemd, err)) {
-    return false;
+/* Applies every environment variable whose CLI counterpart was not given, so a
+ * valid (or invalid) env value can never defeat an explicit CLI option. */
+static bool load_env(ls_opts_t *opts,
+                     const bool seen[LS_ARRAY_LEN(OPT_SPECS)], ls_err_t *err) {
+  for (size_t i = 0; i < LS_ARRAY_LEN(OPT_SPECS); i++) {
+    const opt_spec_t *spec = &OPT_SPECS[i];
+    if (seen[i] || spec->env_name == nullptr || spec->apply == nullptr) {
+      continue;
+    }
+    const char *value = getenv(spec->env_name);
+    if (value != nullptr && !spec->apply(spec->env_name, value, opts, err)) {
+      return false;
+    }
   }
   return true;
 }
@@ -364,6 +432,8 @@ static bool validate(const ls_opts_t *opts, ls_err_t *err) {
 
 /* ---- Help & version ---- */
 
+/* Hand-written user-facing prose; keep the option spellings in sync with
+ * OPT_SPECS when adding or renaming an option. */
 static void print_usage(void) {
   char interval_default[32];
   char timeout_default[32];
@@ -394,7 +464,8 @@ static void print_usage(void) {
   printf("                              (default: %s; false only simulates)\n",
          LS_DEFAULT_POWEROFF ? "true" : "false");
   printf("                              Flag alone enables it; use "
-         "--poweroff=false or -p0 to disable\n");
+         "--poweroff=false\n");
+  printf("                              or -pfalse to disable\n");
   printf("                              true requires a systemd host with "
          "%s\n\n",
          LS_SYSTEMCTL_PATH);
@@ -407,8 +478,7 @@ static void print_usage(void) {
          "(default: %s)\n",
          LS_DEFAULT_SYSTEMD ? "true" : "false");
   printf("                              Flag alone enables it; use "
-         "--systemd=false, --systemd=0,\n");
-  printf("                              -sfalse, or -s0 to disable\n");
+         "--systemd=false or -sfalse to disable\n");
   printf("                              Watchdog is auto-enabled with "
          "systemd\n");
   printf("                              Log timestamps are auto-disabled when "
@@ -428,8 +498,8 @@ static void print_usage(void) {
   printf("\nExamples:\n");
   printf("  %s -t 1.1.1.1 -i 10 -n 5\n", LS_PROGRAM_NAME);
   printf("  %s -t 192.168.1.1 -i 5 -n 3 --poweroff\n", LS_PROGRAM_NAME);
-  printf("  %s -t 8.8.8.8 -l debug --systemd=0\n", LS_PROGRAM_NAME);
-  printf("  %s -t 8.8.8.8 -i 5 -n 3 -p -s0 -l debug\n", LS_PROGRAM_NAME);
+  printf("  %s -t 8.8.8.8 -l debug --systemd=false\n", LS_PROGRAM_NAME);
+  printf("  %s -t 8.8.8.8 -i 5 -n 3 -p -sfalse -l debug\n", LS_PROGRAM_NAME);
 }
 
 static void print_version(void) {
@@ -455,7 +525,8 @@ static bool handle_exit_option(int requested, bool *exit_requested) {
  * --version. This lets those flags win even when the environment or other
  * arguments are invalid. getopt globals are restored so the real parse starts
  * clean. */
-static int scan_exit_option(int argc, char **argv) {
+static int scan_exit_option(int argc, char **argv,
+                            const opt_tables_t *tables) {
   int saved_optind = optind;
   int saved_opterr = opterr;
   int saved_optopt = optopt;
@@ -465,8 +536,8 @@ static int scan_exit_option(int argc, char **argv) {
 
   int requested = 0;
   int letter;
-  while ((letter = getopt_long(argc, argv, OPTSTRING, LONG_OPTIONS, nullptr)) !=
-         -1) {
+  while ((letter = getopt_long(argc, argv, tables->optstring, tables->long_opts,
+                               nullptr)) != -1) {
     if (letter == 'v' || letter == 'h') {
       requested = letter;
       break;
@@ -515,15 +586,15 @@ bool ls_opts_resolve(ls_opts_t *restrict opts, int argc, char **restrict argv,
   *exit_requested = false;
   load_defaults(opts);
 
-  if (handle_exit_option(scan_exit_option(argc, argv), exit_requested)) {
+  opt_tables_t tables;
+  build_getopt_tables(&tables);
+
+  if (handle_exit_option(scan_exit_option(argc, argv, &tables),
+                         exit_requested)) {
     return true;
   }
 
-  bool cli_seen[256] = {false};
-  if (!load_cli(opts, argc, argv, cli_seen, err) ||
-      !load_env(opts, cli_seen, err)) {
-    return false;
-  }
-
-  return validate(opts, err);
+  bool seen[LS_ARRAY_LEN(OPT_SPECS)] = {false};
+  return load_cli(opts, argc, argv, &tables, seen, err) &&
+         load_env(opts, seen, err) && validate(opts, err);
 }

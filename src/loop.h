@@ -35,6 +35,10 @@ typedef struct {
   void *userdata;
 } ls_timer_t;
 
+/* The loop owns its slot arrays. `stopping` and `exit_code` are observable by
+ * the embedding layer (app.c checks `stopping` after a callback may have failed
+ * the loop); every other field is private to loop.c — use the ls_loop_* and
+ * ls_timer_* API instead of touching slots directly. */
 struct ls_loop {
   const ls_log_t *log;
   uint64_t now_ms;
@@ -111,9 +115,14 @@ static inline void ls_timer_arm_after(ls_timer_t *t, uint64_t base_ms,
 }
 
 /* Steps a periodic timer: keeps the original phase when possible, but never
- * schedules into the past. */
+ * schedules into the past. A zero interval disarms the timer instead of
+ * re-arming it at `now_ms`, which would spin the loop forever. */
 static inline void ls_timer_step(ls_timer_t *t, uint64_t interval_ms,
                                  uint64_t now_ms) {
+  if (interval_ms == 0) {
+    ls_timer_disarm(t);
+    return;
+  }
   uint64_t base = ls_timer_armed(t) ? t->deadline_ms : now_ms;
   uint64_t next = ls_add_sat(base, interval_ms);
   if (next < now_ms) {

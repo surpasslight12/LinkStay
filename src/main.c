@@ -1,3 +1,8 @@
+/*
+ * main.c — process entry point: resolve options, run the application, and map
+ * the result to an exit code. It owns no monitoring logic.
+ */
+
 #include "app.h"
 
 /* ---- Fatal-error logging ----
@@ -27,7 +32,9 @@ int main(int argc, char **argv) {
     return LS_EXIT_SUCCESS;
   }
 
-  ls_app_t app;
+  /* Zero-initialized so ls_app_destroy() is safe even if ls_app_init() fails
+   * before it finishes assigning *app. */
+  ls_app_t app = {};
   if (!ls_app_init(&app, &opts, &err)) {
     log_fatal_error(opts.log_level, ls_opts_timestamps(&opts), err.msg);
     ls_app_destroy(&app);

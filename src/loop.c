@@ -1,3 +1,9 @@
+/*
+ * loop.c — poll(2) event loop: fixed fd slots, absolute-deadline timer slots,
+ * and an integrated signalfd channel. Knows nothing about probes, ICMP, or
+ * configuration.
+ */
+
 #include "loop.h"
 
 #include <errno.h>
@@ -83,6 +89,14 @@ bool ls_loop_watch_signals(ls_loop_t *restrict loop,
   loop->signal_userdata = userdata;
   if (!ls_loop_add_fd(loop, loop->signal_fd, dispatch_signal_fd, nullptr,
                       true, err)) {
+    /* Roll the channel back so a failed registration leaves the loop exactly
+     * as it was: no fd, no signal callback, original signal mask. */
+    close(loop->signal_fd);
+    loop->signal_fd = -1;
+    loop->signal_cb = nullptr;
+    loop->signal_userdata = nullptr;
+    (void)sigprocmask(SIG_SETMASK, &loop->previous_mask, nullptr);
+    loop->previous_mask_valid = false;
     return false; /* ls_loop_add_fd already set err */
   }
   return true;
@@ -174,8 +188,9 @@ static int poll_timeout_ms(const ls_loop_t *loop) {
 static void dispatch_fds(ls_loop_t *loop) {
   const short error_events = POLLERR | POLLHUP | POLLNVAL;
   for (size_t i = 0; i < loop->fd_count && !loop->stopping; i++) {
+    /* poll(2) rewrites revents on every call, so the previous value needs no
+     * clearing; error events take precedence over readability. */
     short revents = loop->fds[i].revents;
-    loop->fds[i].revents = 0;
     if (revents & error_events) {
       if (loop->fd_critical[i]) {
         ls_error(loop->log, "Critical fd %d entered error state, stopping",
@@ -217,10 +232,13 @@ int ls_loop_run(ls_loop_t *restrict loop) {
       break;
     }
 
-    if (!refresh_now(loop)) {
-      break;
-    }
     if (poll_result > 0) {
+      /* Only fd dispatch needs a timestamp after poll(2); timer callbacks run
+       * at the top of the next iteration, which refreshes the clock again.
+       * A poll timeout therefore costs a single clock read per iteration. */
+      if (!refresh_now(loop)) {
+        break;
+      }
       dispatch_fds(loop);
     }
   }

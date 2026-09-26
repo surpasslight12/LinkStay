@@ -4,6 +4,19 @@
 # - Live tests require CAP_NET_RAW on $BIN; they are auto-skipped otherwise.
 # - NOTIFY_SOCKET protocol tests use python3 when available; otherwise skipped.
 # Exits non-zero if any test failed.
+#
+# Environment knobs:
+#   LINKSTAY_TEST_LIVE=1
+#     Force the live ICMP suite even when `getcap` reports no cap_net_raw. Use
+#     it inside a user+network namespace, where the binary is root and owns the
+#     network namespace (containers cannot set file capabilities):
+#       unshare -Urn --map-root-user bash -c \
+#         'ip link set lo up; LINKSTAY_TEST_LIVE=1 make test'
+#   LINKSTAY_TEST_UNREACHABLE_TARGET=<ip>
+#     Target used by the "no reply reaches the threshold" test (default
+#     192.0.2.1, RFC 5737 TEST-NET-1). A bare network namespace has no default
+#     route, so point this at an unroutable address to exercise the
+#     ENETUNREACH send-failure path instead of a silent timeout.
 
 set -u
 
@@ -324,10 +337,10 @@ expect_accept "--interval 1 / --threshold 1 / --timeout 500 accepted" \
   "$BIN" -t 1.1.1.1 -i 1 -n 1 -w 500
 
 # Attached short arguments for required numeric options
-expect_accept "attached -i2" "$BIN" -t 1.1.1.1 -i2 -w 500 -s0 -l silent
-expect_accept "attached -n3" "$BIN" -t 1.1.1.1 -n3 -w 500 -s0 -l silent
-expect_accept "attached -w500" "$BIN" -t 1.1.1.1 -w500 -s0 -l silent
-expect_accept "attached -ldebug" "$BIN" -t 1.1.1.1 -w500 -ldebug -s0
+expect_accept "attached -i2" "$BIN" -t 1.1.1.1 -i2 -w 500 -sfalse -l silent
+expect_accept "attached -n3" "$BIN" -t 1.1.1.1 -n3 -w 500 -sfalse -l silent
+expect_accept "attached -w500" "$BIN" -t 1.1.1.1 -w500 -sfalse -l silent
+expect_accept "attached -ldebug" "$BIN" -t 1.1.1.1 -w500 -ldebug -sfalse
 
 # Empty and junk values
 expect_reject "--interval= empty" "Invalid value for --interval" \
@@ -343,35 +356,35 @@ expect_reject "--timeout overflow" "Invalid value for --timeout" \
 
 # Integer boundaries: parser accepts INT_MAX and rejects INT_MAX+1
 expect_accept "--interval INT_MAX accepted" \
-  "$BIN" -t 1.1.1.1 -i 2147483647 -s0 -l silent
+  "$BIN" -t 1.1.1.1 -i 2147483647 -sfalse -l silent
 expect_reject "--interval INT_MAX+1 rejected" "Invalid value for --interval" \
   "$BIN" -t 1.1.1.1 -i 2147483648
 expect_accept "--threshold INT_MAX accepted" \
-  "$BIN" -t 1.1.1.1 -n 2147483647 -s0 -l silent
+  "$BIN" -t 1.1.1.1 -n 2147483647 -sfalse -l silent
 expect_reject "--threshold INT_MAX+1 rejected" "Invalid value for --threshold" \
   "$BIN" -t 1.1.1.1 -n 2147483648
 expect_accept "--timeout INT_MAX accepted with matching interval" \
-  "$BIN" -t 1.1.1.1 -i 2147484 -w 2147483647 -s0 -l silent
+  "$BIN" -t 1.1.1.1 -i 2147484 -w 2147483647 -sfalse -l silent
 expect_reject "--timeout INT_MAX+1 rejected" "Invalid value for --timeout" \
   "$BIN" -t 1.1.1.1 -i 2147484 -w 2147483648
 
 # strtoll permits a leading sign; document that behavior with acceptance tests
 expect_accept "leading + on interval accepted" \
-  "$BIN" -t 1.1.1.1 -i +5 -w 1000 -s0 -l silent
+  "$BIN" -t 1.1.1.1 -i +5 -w 1000 -sfalse -l silent
 expect_accept "leading zeros accepted" \
-  "$BIN" -t 1.1.1.1 -i 0005 -w 1000 -s0 -l silent
+  "$BIN" -t 1.1.1.1 -i 0005 -w 1000 -sfalse -l silent
 
 ###############################################################################
 section "Duration suffix parsing (s / ms)"
 ###############################################################################
 # Plain numbers keep their historical units: interval=seconds, timeout=ms.
-expect_accept "plain -i keeps seconds unit" "$BIN" -t 1.1.1.1 -i 2 -w 500 -s0 -l silent
-expect_accept "-i 500ms accepted" "$BIN" -t 1.1.1.1 -i 500ms -w 400 -s0 -l silent
-expect_accept "-i 2s accepted" "$BIN" -t 1.1.1.1 -i 2s -w 500 -s0 -l silent
+expect_accept "plain -i keeps seconds unit" "$BIN" -t 1.1.1.1 -i 2 -w 500 -sfalse -l silent
+expect_accept "-i 500ms accepted" "$BIN" -t 1.1.1.1 -i 500ms -w 400 -sfalse -l silent
+expect_accept "-i 2s accepted" "$BIN" -t 1.1.1.1 -i 2s -w 500 -sfalse -l silent
 expect_accept "-i 0005ms accepted (leading zeros)" \
-  "$BIN" -t 1.1.1.1 -i 0005ms -w 400 -s0 -l silent
-expect_accept "-w 1s accepted" "$BIN" -t 1.1.1.1 -i 2 -w 1s -s0 -l silent
-expect_accept "-w 500ms accepted" "$BIN" -t 1.1.1.1 -i 1 -w 500ms -s0 -l silent
+  "$BIN" -t 1.1.1.1 -i 0005ms -w 400 -sfalse -l silent
+expect_accept "-w 1s accepted" "$BIN" -t 1.1.1.1 -i 2 -w 1s -sfalse -l silent
+expect_accept "-w 500ms accepted" "$BIN" -t 1.1.1.1 -i 1 -w 500ms -sfalse -l silent
 expect_reject "-i 5S rejected (lowercase suffixes only)" \
   "Invalid value for --interval" "$BIN" -t 1.1.1.1 -i 5S -w 500
 expect_reject "-w 1.5s rejected (integers only)" "Invalid value for --timeout" \
@@ -383,11 +396,11 @@ expect_reject "interval in ms must still exceed timeout" \
 expect_reject "-w 2147484s exceeds INT_MAX ms" "Invalid value for --timeout" \
   "$BIN" -t 1.1.1.1 -i 2147485 -w 2147484s
 expect_debug_contains "dump shows ms-suffixed interval" "Interval: 1500ms" \
-  "$BIN" -t 1.1.1.1 -i 1500ms -w 500 -l debug -s0
+  "$BIN" -t 1.1.1.1 -i 1500ms -w 500 -l debug -sfalse
 expect_debug_contains "dump shows s-suffixed timeout" "Timeout: 1s" \
-  "$BIN" -t 1.1.1.1 -i 2 -w 1s -l debug -s0
+  "$BIN" -t 1.1.1.1 -i 2 -w 1s -l debug -sfalse
 expect_accept "LINKSTAY_INTERVAL with ms suffix" \
-  env LINKSTAY_INTERVAL=500ms "$BIN" -t 1.1.1.1 -w 400 -s0 -l silent
+  env LINKSTAY_INTERVAL=500ms "$BIN" -t 1.1.1.1 -w 400 -sfalse -l silent
 expect_reject "LINKSTAY_TIMEOUT with unknown suffix" \
   "Invalid value for LINKSTAY_TIMEOUT" \
   env LINKSTAY_TIMEOUT=1m "$BIN" -t 1.1.1.1
@@ -406,34 +419,41 @@ expect_accept "timeout just below interval accepted (no hidden margin)" \
 ###############################################################################
 section "Poweroff parsing"
 ###############################################################################
-for v in false 0 no off; do
-  expect_accept "--poweroff=$v" "$BIN" -t 1.1.1.1 --poweroff="$v"
-done
-expect_accept "--poweroff=false" "$BIN" -t 1.1.1.1 -p0
-expect_accept "-pfalse" "$BIN" -t 1.1.1.1 -pfalse
-expect_accept "-pNO (bool names are case-insensitive)" "$BIN" -t 1.1.1.1 -pNO
+# Boolean values are limited to true/false (case-insensitive); every other
+# historical spelling must be rejected with a message naming the accepted set.
+expect_accept "--poweroff=false" "$BIN" -t 1.1.1.1 --poweroff=false
+expect_accept "-pfalse (attached)" "$BIN" -t 1.1.1.1 -pfalse
+expect_accept "-pFALSE (case-insensitive)" "$BIN" -t 1.1.1.1 -pFALSE
 expect_accept "--poweroff omitted" "$BIN" -t 1.1.1.1
-for v in true 1 yes on; do
-  if (( SYSTEMD_RUNTIME )); then
-    expect_accept "--poweroff=$v accepted on systemd host" \
-      "$BIN" -t 1.1.1.1 --poweroff="$v"
-  else
-    expect_reject "--poweroff=$v rejected on non-systemd host" \
-      "poweroff requires a systemd host" \
-      "$BIN" -t 1.1.1.1 --poweroff="$v"
-  fi
-done
 expect_reject "--poweroff invalid" "Invalid value for --poweroff" \
   "$BIN" -t 1.1.1.1 --poweroff=bogus
 expect_reject "--poweroff= empty" "Invalid value for --poweroff" \
   "$BIN" -t 1.1.1.1 --poweroff=
+expect_reject "--poweroff=1 rejected (only true/false)" \
+  "Invalid value for --poweroff" "$BIN" -t 1.1.1.1 --poweroff=1
+expect_reject "-p0 rejected (only true/false)" "Invalid value for --poweroff" \
+  "$BIN" -t 1.1.1.1 -p0
+expect_reject "-pNO rejected (only true/false)" "Invalid value for --poweroff" \
+  "$BIN" -t 1.1.1.1 -pNO
+expect_reject "--poweroff=yes rejected (only true/false)" \
+  "Invalid value for --poweroff" "$BIN" -t 1.1.1.1 --poweroff=yes
 expect_reject "--poweroff false is positional" "Unexpected argument" \
   "$BIN" -t 1.1.1.1 --poweroff false
+
+# --poweroff=true is validated against the systemd runtime.
+if (( SYSTEMD_RUNTIME )); then
+  expect_accept "--poweroff=true accepted on systemd host" \
+    "$BIN" -t 1.1.1.1 --poweroff=true
+else
+  expect_reject "--poweroff=true rejected on non-systemd host" \
+    "poweroff requires a systemd host" \
+    "$BIN" -t 1.1.1.1 --poweroff=true
+fi
 
 # Bare -p enables poweroff. On systemd hosts validation passes and the binary
 # enters the loop; elsewhere the validation error is the expected result.
 scrub_env
-run_capture timeout --preserve-status -s TERM 1s "$BIN" -t 127.0.0.1 -p -l silent -s0
+run_capture timeout --preserve-status -s TERM 1s "$BIN" -t 127.0.0.1 -p -l silent -sfalse
 hay="${STDOUT}${STDERR}"
 if (( SYSTEMD_RUNTIME )); then
   if [[ "$hay" != *"Invalid value for"* ]] \
@@ -467,7 +487,7 @@ expect_reject "--log-level= empty" "Invalid value for --log-level" \
   "$BIN" -t 1.1.1.1 --log-level=
 
 scrub_env
-run_capture timeout --preserve-status -s TERM 1s "$BIN" -t 1.1.1.1 -l silent -s0
+run_capture timeout --preserve-status -s TERM 1s "$BIN" -t 1.1.1.1 -l silent -sfalse
 hay="${STDOUT}${STDERR}"
 [[ -z "$hay" ]] && pass "silent suppresses even init errors" || \
   fail "silent suppresses even init errors" "hay=$hay"
@@ -475,21 +495,25 @@ hay="${STDOUT}${STDERR}"
 ###############################################################################
 section "Bool / systemd flag parsing"
 ###############################################################################
-for v in true 1 yes on false 0 no off; do
+for v in true false; do
   expect_accept "--systemd=$v" "$BIN" -t 1.1.1.1 --systemd="$v"
 done
 expect_accept "--systemd=TRUE case-insensitive" \
   "$BIN" -t 1.1.1.1 --systemd=TRUE
 expect_accept "bare --systemd" "$BIN" -t 1.1.1.1 --systemd
-expect_accept "-s0 disables systemd" "$BIN" -t 1.1.1.1 -s0
 expect_accept "-sfalse disables systemd" "$BIN" -t 1.1.1.1 -sfalse
 expect_accept "-sFALSE case-insensitive" "$BIN" -t 1.1.1.1 -sFALSE
-expect_accept "-sYES case-insensitive" "$BIN" -t 1.1.1.1 -sYES
 expect_accept "bare -s enables systemd" "$BIN" -t 1.1.1.1 -s
 expect_reject "--systemd=bogus rejected" "Invalid value for --systemd" \
   "$BIN" -t 1.1.1.1 --systemd=bogus
 expect_reject "--systemd= empty rejected" "Invalid value for --systemd" \
   "$BIN" -t 1.1.1.1 --systemd=
+expect_reject "--systemd=0 rejected (only true/false)" \
+  "Invalid value for --systemd" "$BIN" -t 1.1.1.1 --systemd=0
+expect_reject "-s0 rejected (only true/false)" "Invalid value for --systemd" \
+  "$BIN" -t 1.1.1.1 -s0
+expect_reject "-sYES rejected (only true/false)" "Invalid value for --systemd" \
+  "$BIN" -t 1.1.1.1 -sYES
 expect_reject "--systemd false is positional" "Unexpected argument" \
   "$BIN" -t 1.1.1.1 --systemd false
 
@@ -514,13 +538,13 @@ section "Environment variables"
 ###############################################################################
 # Each env var is accepted on its own
 expect_accept "LINKSTAY_TARGET accepted" \
-  env LINKSTAY_TARGET=8.8.8.8 "$BIN" -l silent -s0
+  env LINKSTAY_TARGET=8.8.8.8 "$BIN" -l silent -sfalse
 expect_accept "LINKSTAY_INTERVAL accepted" \
-  env LINKSTAY_INTERVAL=5 "$BIN" -t 1.1.1.1 -w 400 -s0 -l silent
+  env LINKSTAY_INTERVAL=5 "$BIN" -t 1.1.1.1 -w 400 -sfalse -l silent
 expect_accept "LINKSTAY_THRESHOLD accepted" \
   env LINKSTAY_THRESHOLD=4 "$BIN" -t 1.1.1.1
 expect_accept "LINKSTAY_TIMEOUT accepted" \
-  env LINKSTAY_TIMEOUT=400 "$BIN" -t 1.1.1.1 -s0 -l silent
+  env LINKSTAY_TIMEOUT=400 "$BIN" -t 1.1.1.1 -sfalse -l silent
 expect_accept "LINKSTAY_POWEROFF=false accepted" \
   env LINKSTAY_POWEROFF=false "$BIN" -t 1.1.1.1
 expect_accept "LINKSTAY_LOG_LEVEL=debug accepted" \
@@ -528,27 +552,27 @@ expect_accept "LINKSTAY_LOG_LEVEL=debug accepted" \
 expect_accept "LINKSTAY_SYSTEMD=false accepted" \
   env LINKSTAY_SYSTEMD=false "$BIN" -t 1.1.1.1
 
-# Bool env vars accept every documented spelling, case-insensitively
-for v in true 1 yes on false 0 no off; do
-  if (( SYSTEMD_RUNTIME )); then
-    expect_accept "LINKSTAY_POWEROFF=$v accepted" \
-      env LINKSTAY_POWEROFF="$v" "$BIN" -t 1.1.1.1
-  else
-    case "$v" in
-      true|1|yes|on)
-        expect_reject "LINKSTAY_POWEROFF=$v rejected on non-systemd host" \
-          "poweroff requires a systemd host" \
-          env LINKSTAY_POWEROFF="$v" "$BIN" -t 1.1.1.1 ;;
-      *)
-        expect_accept "LINKSTAY_POWEROFF=$v accepted" \
-          env LINKSTAY_POWEROFF="$v" "$BIN" -t 1.1.1.1 ;;
-    esac
-  fi
-  expect_accept "LINKSTAY_SYSTEMD=$v accepted" \
+# Bool env vars accept only true/false, case-insensitively
+expect_accept "LINKSTAY_SYSTEMD=true accepted" \
+  env LINKSTAY_SYSTEMD=true "$BIN" -t 1.1.1.1
+expect_accept "LINKSTAY_SYSTEMD=FALSE case-insensitive" \
+  env LINKSTAY_SYSTEMD=FALSE "$BIN" -t 1.1.1.1
+if (( SYSTEMD_RUNTIME )); then
+  expect_accept "LINKSTAY_POWEROFF=true accepted on systemd host" \
+    env LINKSTAY_POWEROFF=true "$BIN" -t 1.1.1.1
+else
+  expect_reject "LINKSTAY_POWEROFF=true rejected on non-systemd host" \
+    "poweroff requires a systemd host" \
+    env LINKSTAY_POWEROFF=true "$BIN" -t 1.1.1.1
+fi
+for v in 1 0 yes no on off; do
+  expect_reject "LINKSTAY_SYSTEMD=$v rejected (only true/false)" \
+    "Invalid value for LINKSTAY_SYSTEMD" \
     env LINKSTAY_SYSTEMD="$v" "$BIN" -t 1.1.1.1
 done
-expect_accept "LINKSTAY_SYSTEMD=TRUE case-insensitive" \
-  env LINKSTAY_SYSTEMD=TRUE "$BIN" -t 1.1.1.1
+expect_reject "LINKSTAY_POWEROFF=0 rejected (only true/false)" \
+  "Invalid value for LINKSTAY_POWEROFF" \
+  env LINKSTAY_POWEROFF=0 "$BIN" -t 1.1.1.1
 
 # Invalid env values are rejected with the env var name
 expect_reject "LINKSTAY_INTERVAL=abc rejected" "Invalid value for LINKSTAY_INTERVAL" \
@@ -581,7 +605,7 @@ section "Env / CLI precedence"
 ###############################################################################
 # CLI must override env: env invalid target overridden by valid CLI target
 scrub_env
-LINKSTAY_TARGET=invalid run_capture timeout --preserve-status -s TERM 1s "$BIN" -t 1.1.1.1 -l silent -s0
+LINKSTAY_TARGET=invalid run_capture timeout --preserve-status -s TERM 1s "$BIN" -t 1.1.1.1 -l silent -sfalse
 [[ "$STDERR" != *"Invalid IPv4/IPv6"* && "$STDERR" != *"Target must be a valid"* ]] && \
   pass "CLI --target overrides invalid LINKSTAY_TARGET" || \
   fail "CLI --target overrides invalid LINKSTAY_TARGET" "$STDERR"
@@ -599,11 +623,11 @@ expect_accept "CLI --threshold overrides invalid LINKSTAY_THRESHOLD" \
 expect_accept "CLI --timeout overrides invalid LINKSTAY_TIMEOUT" \
   env LINKSTAY_TIMEOUT=foo "$BIN" -t 1.1.1.1 -w 500
 expect_accept "CLI --poweroff overrides invalid LINKSTAY_POWEROFF" \
-  env LINKSTAY_POWEROFF=junk "$BIN" -t 1.1.1.1 -p0 -w 500
+  env LINKSTAY_POWEROFF=junk "$BIN" -t 1.1.1.1 -pfalse -w 500
 expect_accept "CLI --log-level overrides invalid LINKSTAY_LOG_LEVEL" \
-  env LINKSTAY_LOG_LEVEL=junk "$BIN" -t 1.1.1.1 -l debug -w 500 -s0
+  env LINKSTAY_LOG_LEVEL=junk "$BIN" -t 1.1.1.1 -l debug -w 500 -sfalse
 expect_accept "CLI --systemd overrides invalid LINKSTAY_SYSTEMD" \
-  env LINKSTAY_SYSTEMD=junk "$BIN" -t 1.1.1.1 -s0 -w 500
+  env LINKSTAY_SYSTEMD=junk "$BIN" -t 1.1.1.1 -sfalse -w 500
 
 ###############################################################################
 section "Debug config dump"
@@ -611,19 +635,19 @@ section "Debug config dump"
 # The debug dump is emitted before the raw socket is opened, so it can be
 # checked without CAP_NET_RAW.
 expect_debug_contains "dump shows target" "Target: 8.8.8.8" \
-  "$BIN" -t 8.8.8.8 -i 7 -w 600 -n 4 -p0 -l debug -s0
+  "$BIN" -t 8.8.8.8 -i 7 -w 600 -n 4 -pfalse -l debug -sfalse
 expect_debug_contains "dump shows interval" "Interval: 7s" \
-  "$BIN" -t 8.8.8.8 -i 7 -w 600 -n 4 -p0 -l debug -s0
+  "$BIN" -t 8.8.8.8 -i 7 -w 600 -n 4 -pfalse -l debug -sfalse
 expect_debug_contains "dump shows threshold" "Threshold: 4" \
-  "$BIN" -t 8.8.8.8 -i 7 -w 600 -n 4 -p0 -l debug -s0
+  "$BIN" -t 8.8.8.8 -i 7 -w 600 -n 4 -pfalse -l debug -sfalse
 expect_debug_contains "dump shows timeout" "Timeout: 600ms" \
-  "$BIN" -t 8.8.8.8 -i 7 -w 600 -n 4 -p0 -l debug -s0
+  "$BIN" -t 8.8.8.8 -i 7 -w 600 -n 4 -pfalse -l debug -sfalse
 expect_debug_contains "dump shows poweroff false" "Poweroff: false" \
-  "$BIN" -t 8.8.8.8 -i 7 -w 600 -n 4 -p0 -l debug -s0
+  "$BIN" -t 8.8.8.8 -i 7 -w 600 -n 4 -pfalse -l debug -sfalse
 expect_debug_contains "dump shows log level" "Log Level: DEBUG" \
-  "$BIN" -t 8.8.8.8 -i 7 -w 600 -n 4 -p0 -l debug -s0
+  "$BIN" -t 8.8.8.8 -i 7 -w 600 -n 4 -pfalse -l debug -sfalse
 expect_debug_contains "systemd=false enables timestamps" "Timestamp: true" \
-  "$BIN" -t 8.8.8.8 -l debug -s0
+  "$BIN" -t 8.8.8.8 -l debug -sfalse
 expect_debug_contains "systemd=true disables timestamps" "Timestamp: false" \
   "$BIN" -t 8.8.8.8 -l debug --systemd
 
@@ -631,35 +655,35 @@ expect_debug_contains "systemd=true disables timestamps" "Timestamp: false" \
 # us observe the final resolved configuration.
 expect_debug_contains "CLI target wins over valid env target" "Target: 1.1.1.1" \
   env LINKSTAY_TARGET=8.8.8.8 \
-  "$BIN" -t 1.1.1.1 -i 2 -w 500 -n 3 -p0 -l debug -s0
+  "$BIN" -t 1.1.1.1 -i 2 -w 500 -n 3 -pfalse -l debug -sfalse
 expect_debug_contains "CLI interval wins over valid env interval" "Interval: 2s" \
   env LINKSTAY_INTERVAL=9 \
-  "$BIN" -t 1.1.1.1 -i 2 -w 500 -n 3 -p0 -l debug -s0
+  "$BIN" -t 1.1.1.1 -i 2 -w 500 -n 3 -pfalse -l debug -sfalse
 expect_debug_contains "CLI timeout wins over valid env timeout" "Timeout: 500ms" \
   env LINKSTAY_TIMEOUT=900 \
-  "$BIN" -t 1.1.1.1 -i 2 -w 500 -n 3 -p0 -l debug -s0
+  "$BIN" -t 1.1.1.1 -i 2 -w 500 -n 3 -pfalse -l debug -sfalse
 expect_debug_contains "CLI threshold wins over valid env threshold" "Threshold: 3" \
   env LINKSTAY_THRESHOLD=9 \
-  "$BIN" -t 1.1.1.1 -i 2 -w 500 -n 3 -p0 -l debug -s0
+  "$BIN" -t 1.1.1.1 -i 2 -w 500 -n 3 -pfalse -l debug -sfalse
 expect_debug_contains "CLI poweroff wins over valid env poweroff" "Poweroff: false" \
   env LINKSTAY_POWEROFF=true \
-  "$BIN" -t 1.1.1.1 -i 2 -w 500 -n 3 -p0 -l debug -s0
+  "$BIN" -t 1.1.1.1 -i 2 -w 500 -n 3 -pfalse -l debug -sfalse
 expect_debug_contains "CLI log-level wins over valid env log-level" "Log Level: DEBUG" \
   env LINKSTAY_LOG_LEVEL=error \
-  "$BIN" -t 1.1.1.1 -i 2 -w 500 -n 3 -p0 -l debug -s0
+  "$BIN" -t 1.1.1.1 -i 2 -w 500 -n 3 -pfalse -l debug -sfalse
 expect_debug_contains "CLI systemd wins over valid env systemd" "Systemd: false" \
   env LINKSTAY_SYSTEMD=true \
-  "$BIN" -t 1.1.1.1 -i 2 -w 500 -n 3 -p0 -l debug -s0
+  "$BIN" -t 1.1.1.1 -i 2 -w 500 -n 3 -pfalse -l debug -sfalse
 
 ###############################################################################
 section "Live ICMP (requires CAP_NET_RAW)"
 ###############################################################################
 caps="$(caps_str)"
-if [[ "$caps" != *cap_net_raw* ]]; then
-  skip "Live ICMP suite" "$BIN lacks cap_net_raw — run: sudo setcap cap_net_raw=eip $BIN"
+if [[ "$caps" != *cap_net_raw* && "${LINKSTAY_TEST_LIVE:-0}" != "1" ]]; then
+  skip "Live ICMP suite" "$BIN lacks cap_net_raw — run: sudo setcap cap_net_raw=eip $BIN (or LINKSTAY_TEST_LIVE=1 inside 'unshare -Urn')"
 else
   # 1) Successful ping to loopback, SIGTERM after ~2.5s, expect clean exit + replies
-  spawn "$BIN" -t 127.0.0.1 -i 1 -w 500 -l debug -s0
+  spawn "$BIN" -t 127.0.0.1 -i 1 -w 500 -l debug -sfalse
   sleep 2.5
   kill -TERM "$PID" 2>/dev/null || true
   await 3
@@ -677,7 +701,7 @@ else
     fail "systemd integration inactive without NOTIFY_SOCKET" "no inactive debug line"
 
   # 2) SIGINT is treated like SIGTERM
-  spawn "$BIN" -t 127.0.0.1 -i 1 -w 500 -l info -s0
+  spawn "$BIN" -t 127.0.0.1 -i 1 -w 500 -l info -sfalse
   sleep 1.5
   kill -INT "$PID" 2>/dev/null || true
   await 3
@@ -688,7 +712,7 @@ else
     fail "SIGINT logs shutdown" "no shutdown banner"
 
   # 3) IPv6 loopback ping
-  spawn "$BIN" -t ::1 -i 1 -w 500 -l debug -s0
+  spawn "$BIN" -t ::1 -i 1 -w 500 -l debug -sfalse
   sleep 1.5
   kill -TERM "$PID" 2>/dev/null || true
   await 3
@@ -699,7 +723,7 @@ else
     fail "IPv6 loopback received replies" "no IPv6 reply line"
 
   # 4) SIGUSR1 dumps stats mid-run
-  spawn "$BIN" -t 127.0.0.1 -i 1 -w 500 -l info -s0
+  spawn "$BIN" -t 127.0.0.1 -i 1 -w 500 -l info -sfalse
   sleep 2.5
   kill -USR1 "$PID" 2>/dev/null || true
   sleep 0.3
@@ -780,10 +804,12 @@ else
     skip "WATCHDOG_PID mismatch notify" "python3 not available"
   fi
 
-  # 7) Unreachable target with poweroff disabled reaches threshold and exits
+  # 7) Unreachable target with poweroff disabled reaches threshold and exits.
+  # Both a silent timeout (routable TEST-NET) and an immediate send failure
+  # (no route in a bare namespace) must count toward the failure threshold.
   scrub_env
-  # 192.0.2.0/24 is TEST-NET-1 (RFC 5737), guaranteed not routable
-  run_capture timeout 10s "$BIN" -t 192.0.2.1 -i 1 -w 300 -n 2 -l info -s0
+  unreachable="${LINKSTAY_TEST_UNREACHABLE_TARGET:-192.0.2.1}"
+  run_capture timeout 10s "$BIN" -t "$unreachable" -i 1 -w 300 -n 2 -l info -sfalse
   hay="${STDOUT}${STDERR}"
   if [[ "$RC" == "0" && "$hay" == *"Dry-run complete"* ]]; then
     pass "dry-run threshold trigger exits cleanly"

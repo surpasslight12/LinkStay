@@ -4,10 +4,14 @@
 /*
  * app.h — application assembly layer.
  *
- * Wires resolved options, the ICMP transport, and the notifier into the event
- * loop and owns the probe state machine. Statistics, threshold action, and
- * systemd notify integration are implementation details of app.c; their
- * types appear here only because ls_app_t embeds them.
+ * Public surface: ls_app_init(), ls_app_run(), ls_app_destroy(). main.c owns
+ * the ls_app_t storage but never inspects its fields; every other symbol in
+ * app.c is static. The value types below are internal to app.c and appear here
+ * only because ls_app_t embeds them by value (the design is heap-free, so the
+ * struct cannot be made opaque behind a pointer).
+ *
+ * Lifetime: ls_app_init() must succeed before ls_app_run(); ls_app_destroy()
+ * is safe on a zero-initialized struct and after a failed init.
  */
 
 #include "base.h"
@@ -15,8 +19,11 @@
 #include "loop.h"
 #include "opts.h"
 
-/* ---- Statistics value type ---- */
+/* ---- Private value types of app.c (embedded in ls_app_t) ---- */
 
+/* Cumulative probe counters. Latency is kept in microseconds so the running
+ * sum stays integral; the *_us fields hold no sample until the first success
+ * (they carry an internal "no sample" sentinel). */
 typedef struct {
   uint64_t total;
   uint64_t ok;
@@ -27,8 +34,9 @@ typedef struct {
   uint64_t started_at_ms;
 } ls_stats_t;
 
-/* ---- systemd notify state ---- */
-
+/* sd_notify-style notifier state. All notify helpers are no-ops while
+ * `enabled` is false, which is the case whenever systemd integration is off or
+ * NOTIFY_SOCKET is absent. */
 #define LS_NOTIFY_STATUS_SIZE 240U
 
 typedef struct {
@@ -47,8 +55,11 @@ typedef enum {
 } ls_probe_state_t;
 
 typedef struct {
+  /* Resolved configuration (copied in by ls_app_init). */
   ls_opts_t opts;
   ls_log_t log;
+
+  /* Runtime state. */
   ls_stats_t stats;
   ls_icmp_t icmp;
   ls_notify_t notify;
@@ -72,10 +83,18 @@ typedef struct {
   bool signal_stop;
 } ls_app_t;
 
+/* Resolves the target, opens the raw ICMP socket, and prepares statistics and
+ * the notifier. On failure returns false with err set; ls_app_destroy() is
+ * still safe to call. */
 [[nodiscard]] bool ls_app_init(ls_app_t *restrict app,
                                const ls_opts_t *restrict opts,
                                ls_err_t *restrict err);
+
+/* Registers the loop callbacks and runs until stopped. Returns the process
+ * exit code (LS_EXIT_SUCCESS / LS_EXIT_FAILURE). */
 int ls_app_run(ls_app_t *restrict app);
+
+/* Releases the ICMP socket and notifier socket, then zeroes the struct. */
 void ls_app_destroy(ls_app_t *restrict app);
 
 #endif /* LINKSTAY_APP_H */

@@ -1,3 +1,9 @@
+/*
+ * icmp.c — raw-socket ICMP transport: socket setup, best-effort BPF filter,
+ * echo request construction, and reply matching. Transport only: it owns no
+ * timers, statistics, or configuration.
+ */
+
 #include "icmp.h"
 
 #include <arpa/inet.h>
@@ -152,27 +158,47 @@ static void next_sequence(ls_icmp_t *icmp) {
                        : (uint16_t)(icmp->sequence + 1);
 }
 
-bool ls_icmp_send_echo(ls_icmp_t *restrict icmp,
-                       const struct sockaddr_storage *restrict dest,
-                       socklen_t dest_len, uint16_t identifier,
-                       size_t packet_len, ls_err_t *restrict err) {
+/* Routing/link/buffer conditions mean "this probe did not get out", not
+ * "the socket is broken": the caller counts them as probe failures. */
+static bool send_error_is_network_condition(int error) {
+  switch (error) {
+  case ENETUNREACH:
+  case EHOSTUNREACH:
+  case ENETDOWN:
+  case EHOSTDOWN:
+  case ENETRESET:
+  case ENOBUFS:
+  case EAGAIN: /* the non-blocking twin of EWOULDBLOCK on Linux */
+    return true;
+  default:
+    return false;
+  }
+}
+
+ls_icmp_send_status_t ls_icmp_send_echo(
+    ls_icmp_t *restrict icmp, const struct sockaddr_storage *restrict dest,
+    socklen_t dest_len, uint16_t identifier, size_t packet_len,
+    ls_err_t *restrict err) {
   if (icmp == nullptr || dest == nullptr || icmp->sockfd < 0) {
-    return ls_err_set(err, "ICMP socket is not initialized");
+    (void)ls_err_set(err, "ICMP socket is not initialized");
+    return LS_ICMP_SEND_ERROR;
   }
   if (dest->ss_family != AF_INET && dest->ss_family != AF_INET6) {
-    return ls_err_set(err, "Unsupported address family: %d", dest->ss_family);
+    (void)ls_err_set(err, "Unsupported address family: %d", dest->ss_family);
+    return LS_ICMP_SEND_ERROR;
   }
   if (dest->ss_family != icmp->family) {
-    return ls_err_set(
-        err, "Address family mismatch: dest=%d, socket=%d",
-        dest->ss_family, icmp->family);
+    (void)ls_err_set(err, "Address family mismatch: dest=%d, socket=%d",
+                     dest->ss_family, icmp->family);
+    return LS_ICMP_SEND_ERROR;
   }
   /* Lower bound covers the echo header (8 bytes for both families) so the
    * payload length below can never underflow. */
   size_t header_len = (icmp->family == AF_INET6) ? sizeof(struct icmp6_hdr)
                                                  : sizeof(struct icmphdr);
   if (packet_len < header_len || packet_len > sizeof(icmp->send_buf)) {
-    return ls_err_set(err, "Invalid ICMP packet size: %zu", packet_len);
+    (void)ls_err_set(err, "Invalid ICMP packet size: %zu", packet_len);
+    return LS_ICMP_SEND_ERROR;
   }
 
   next_sequence(icmp);
@@ -197,15 +223,24 @@ bool ls_icmp_send_echo(ls_icmp_t *restrict icmp,
     hdr->checksum = icmp_checksum(icmp->send_buf, packet_len);
   }
 
-  ssize_t sent = sendto(icmp->sockfd, icmp->send_buf, packet_len, MSG_NOSIGNAL,
-                        (const struct sockaddr *)dest, dest_len);
+  ssize_t sent;
+  do {
+    sent = sendto(icmp->sockfd, icmp->send_buf, packet_len, MSG_NOSIGNAL,
+                  (const struct sockaddr *)dest, dest_len);
+  } while (sent < 0 && errno == EINTR);
+
   if (sent < 0) {
-    return ls_err_set(err, "Failed to send packet: %s", strerror(errno));
+    int send_errno = errno;
+    (void)ls_err_set(err, "Failed to send packet: %s", strerror(send_errno));
+    return send_error_is_network_condition(send_errno)
+               ? LS_ICMP_SEND_UNREACHABLE
+               : LS_ICMP_SEND_ERROR;
   }
   if ((size_t)sent != packet_len) {
-    return ls_err_set(err, "Short ICMP send: %zd", sent);
+    (void)ls_err_set(err, "Short ICMP send: %zd", sent);
+    return LS_ICMP_SEND_ERROR;
   }
-  return true;
+  return LS_ICMP_SEND_OK;
 }
 
 /* ---- Reply matching ---- */
@@ -226,35 +261,32 @@ static bool source_matches(const struct sockaddr_storage *dest,
                 sizeof(dest6->sin6_addr)) == 0;
 }
 
-static bool parse_ipv4_reply(const uint8_t *buf, size_t received,
-                             uint16_t identifier, uint16_t expected_sequence) {
-  const struct ip *ip_hdr = (const struct ip *)buf;
-  if (received < sizeof(*ip_hdr)) {
-    return false;
+/* Matches one received packet against the expected echo reply.
+ *
+ * Linux raw-socket asymmetry, do not "fix": an IPPROTO_ICMP socket delivers
+ * the IPv4 header before the ICMP header, while an IPPROTO_ICMPV6 socket
+ * delivers the ICMPv6 payload only (the kernel strips the IPv6 header). */
+static bool reply_matches(const uint8_t *buf, size_t received, int family,
+                          uint16_t identifier, uint16_t expected_sequence) {
+  if (family == AF_INET) {
+    const struct ip *ip_hdr = (const struct ip *)buf;
+    if (received < sizeof(*ip_hdr) || ip_hdr->ip_p != IPPROTO_ICMP) {
+      return false;
+    }
+    /* ip_hl is the IPv4 header length in 32-bit words — multiply by 4 for
+     * bytes. This correctly handles IPv4 options that extend the header
+     * beyond the base sizeof(*ip_hdr). */
+    size_t ip_hdr_len = (size_t)ip_hdr->ip_hl * 4;
+    if (ip_hdr_len < sizeof(*ip_hdr) ||
+        ip_hdr_len + sizeof(struct icmphdr) > received) {
+      return false;
+    }
+    const struct icmphdr *hdr = (const struct icmphdr *)(buf + ip_hdr_len);
+    return hdr->type == ICMP_ECHOREPLY &&
+           ntohs(hdr->un.echo.id) == identifier &&
+           ntohs(hdr->un.echo.sequence) == expected_sequence;
   }
-  if (ip_hdr->ip_p != IPPROTO_ICMP) {
-    return false;
-  }
-  /* ip_hl is the IPv4 header length in 32-bit words — multiply by 4 for
-   * bytes. This correctly handles IPv4 options that extend the header
-   * beyond the base sizeof(*ip_hdr). */
-  size_t ip_hdr_len = (size_t)ip_hdr->ip_hl * 4;
-  if (ip_hdr_len < sizeof(*ip_hdr) || ip_hdr_len > received ||
-      ip_hdr_len + sizeof(struct icmphdr) > received) {
-    return false;
-  }
-  const struct icmphdr *hdr = (const struct icmphdr *)(buf + ip_hdr_len);
-  return hdr->type == ICMP_ECHOREPLY &&
-         ntohs(hdr->un.echo.id) == identifier &&
-         ntohs(hdr->un.echo.sequence) == expected_sequence;
-}
 
-static bool parse_ipv6_reply(const uint8_t *buf, size_t received,
-                             uint16_t identifier, uint16_t expected_sequence) {
-  /* No IPv6 header to skip: on Linux, an IPPROTO_ICMPV6 raw socket delivers
-   * only the ICMPv6 payload (the kernel strips the IPv6 header), whereas an
-   * IPPROTO_ICMP raw socket includes the IPv4 header. This asymmetry is
-   * standard raw-socket behavior, not an oversight. */
   const struct icmp6_hdr *hdr = (const struct icmp6_hdr *)buf;
   if (received < sizeof(*hdr)) {
     return false;
@@ -267,7 +299,7 @@ static bool parse_ipv6_reply(const uint8_t *buf, size_t received,
 ls_icmp_recv_status_t ls_icmp_recv(
     ls_icmp_t *restrict icmp, const struct sockaddr_storage *restrict dest,
     uint16_t identifier, uint16_t expected_sequence, ls_err_t *restrict err) {
-  if (icmp == nullptr || dest == nullptr) {
+  if (icmp == nullptr || dest == nullptr || icmp->sockfd < 0) {
     (void)ls_err_set(err, "Invalid ICMP receive arguments");
     return LS_ICMP_RECV_ERROR;
   }
@@ -289,10 +321,7 @@ ls_icmp_recv_status_t ls_icmp_recv(
     return LS_ICMP_RECV_IGNORED;
   }
 
-  bool matched = (dest->ss_family == AF_INET)
-                     ? parse_ipv4_reply(icmp->recv_buf, (size_t)received,
-                                        identifier, expected_sequence)
-                     : parse_ipv6_reply(icmp->recv_buf, (size_t)received,
-                                        identifier, expected_sequence);
+  bool matched = reply_matches(icmp->recv_buf, (size_t)received,
+                               dest->ss_family, identifier, expected_sequence);
   return matched ? LS_ICMP_RECV_MATCHED : LS_ICMP_RECV_IGNORED;
 }

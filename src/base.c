@@ -1,3 +1,8 @@
+/*
+ * base.c — dependency-free foundation: unified error type, monotonic clock,
+ * duration formatting, and leveled logging.
+ */
+
 #include "base.h"
 
 #include <inttypes.h>
@@ -80,20 +85,17 @@ void ls_log_init(ls_log_t *restrict log, ls_log_level_t level,
   log->timestamps = timestamps;
 }
 
+/* Indexed by level - LS_LOG_SILENT so the table order mirrors the enum. */
+static const char *const LEVEL_NAMES[] = {
+    "SILENT", "ERROR", "WARN", "INFO", "DEBUG",
+};
+
 const char *ls_log_level_name(ls_log_level_t level) {
-  switch (level) {
-  case LS_LOG_SILENT:
-    return "SILENT";
-  case LS_LOG_ERROR:
-    return "ERROR";
-  case LS_LOG_WARN:
-    return "WARN";
-  case LS_LOG_INFO:
-    return "INFO";
-  case LS_LOG_DEBUG:
-    return "DEBUG";
+  int index = (int)level - (int)LS_LOG_SILENT;
+  if (index < 0 || (size_t)index >= LS_ARRAY_LEN(LEVEL_NAMES)) {
+    return "UNKNOWN";
   }
-  return "UNKNOWN";
+  return LEVEL_NAMES[index];
 }
 
 void ls_log_va(const ls_log_t *restrict log, ls_log_level_t level,

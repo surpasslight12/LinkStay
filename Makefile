@@ -84,7 +84,7 @@ test: $(TARGET)
 # SAN=address,undefined,leak`.
 sanitize:
 	$(MAKE) BIN_DIR=$(SANITIZE_BIN_DIR) \
-		CFLAGS="$(WARN_CFLAGS) -O1 -g -fno-omit-frame-pointer $(CODEGEN_CFLAGS) -fsanitize=$(SAN) -fno-sanitize-recover=all" \
+		CFLAGS="$(WARN_CFLAGS) -O1 -g -fno-omit-frame-pointer $(CODEGEN_CFLAGS) -fsanitize=$(SAN) -fno-sanitize-recover=all -MMD -MP" \
 		LDFLAGS="-fsanitize=$(SAN) -fno-sanitize-recover=all" \
 		all
 	@echo "Sanitizer build complete (SAN=$(SAN)): $(SANITIZE_BIN_DIR)/linkstay"

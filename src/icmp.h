@@ -25,6 +25,18 @@ typedef enum {
   LS_ICMP_RECV_ERROR = 2,    /* recvfrom failed */
 } ls_icmp_recv_status_t;
 
+typedef enum {
+  LS_ICMP_SEND_OK = 0,          /* echo request handed to the kernel */
+  LS_ICMP_SEND_UNREACHABLE = 1, /* routing/link/buffer condition: this probe
+                                   failed, but the socket stays usable */
+  LS_ICMP_SEND_ERROR = 2,       /* socket-level failure; fatal to the caller */
+} ls_icmp_send_status_t;
+
+/* Fields are owned by icmp.c. The assembly layer (app.c) only reads `sockfd`
+ * (to poll it), `bpf_errno`/`bpf_attached` (to log the filter state) and
+ * `sequence` (to remember the outstanding probe), and may set `sockfd = -1`
+ * before ls_icmp_open() so a failed init still leaves the struct closeable.
+ * No other field access is allowed outside icmp.c. */
 typedef struct {
   int sockfd;
   int family; /* AF_INET or AF_INET6 */
@@ -55,8 +67,14 @@ static_assert(sizeof(struct icmphdr) >= 8,
                                 ls_err_t *restrict err);
 void ls_icmp_close(ls_icmp_t *restrict icmp);
 
-/* Sends one echo request; advances icmp->sequence (1..65535, never 0). */
-[[nodiscard]] bool ls_icmp_send_echo(
+/* Sends one echo request; advances icmp->sequence (1..65535, never 0).
+ *
+ * LS_ICMP_SEND_UNREACHABLE covers transient routing/link/buffer errors
+ * (ENETUNREACH, EHOSTUNREACH, ENETDOWN, ENOBUFS, EAGAIN): the probe did not
+ * get out, but the socket is fine, so callers count it as a failed probe.
+ * LS_ICMP_SEND_ERROR covers socket misuse and every other syscall failure and
+ * is fatal. `err` carries the detail for both failure statuses. */
+[[nodiscard]] ls_icmp_send_status_t ls_icmp_send_echo(
     ls_icmp_t *restrict icmp, const struct sockaddr_storage *restrict dest,
     socklen_t dest_len, uint16_t identifier, size_t packet_len,
     ls_err_t *restrict err);
