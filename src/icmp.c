@@ -71,7 +71,6 @@ bool ls_icmp_open(ls_icmp_t *restrict icmp, int family,
   }
 
   icmp->bpf_errno = attach_family_filter(icmp->sockfd, family);
-  icmp->bpf_attached = icmp->bpf_errno == 0;
   return true;
 }
 

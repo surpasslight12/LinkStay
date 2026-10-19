@@ -317,6 +317,7 @@ static void build_getopt_tables(opt_tables_t *tables) {
 
 static void load_defaults(ls_opts_t *opts) {
   *opts = (ls_opts_t){
+      .target = LS_DEFAULT_TARGET,
       .interval_ms = LS_DEFAULT_INTERVAL_MS,
       .fail_threshold = LS_DEFAULT_FAIL_THRESHOLD,
       .timeout_ms = LS_DEFAULT_TIMEOUT_MS,
@@ -324,7 +325,6 @@ static void load_defaults(ls_opts_t *opts) {
       .log_level = LS_LOG_INFO,
       .systemd = LS_DEFAULT_SYSTEMD,
   };
-  (void)snprintf(opts->target, sizeof(opts->target), "%s", LS_DEFAULT_TARGET);
 }
 
 static bool load_cli(ls_opts_t *opts, int argc, char **argv,

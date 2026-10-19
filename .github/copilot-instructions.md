@@ -32,28 +32,21 @@ result. "It compiles" is not done.
 
 ```bash
 make                 # must produce zero compiler warnings
-make test            # full suite; baseline: 179 pass, 1 skip (no CAP_NET_RAW)
+make test            # unit suite + shell suite; shell baseline: 179 pass, 1 skip
 make lint            # cppcheck + clang-tidy: zero findings
-make sanitize-test   # ASan+UBSan build, same suite; required for loop/icmp/app changes
-make check           # runs test + lint + sanitize-test in one go
+make shellcheck      # ShellCheck tests/*.sh: zero findings
+make sanitize-test   # ASan+UBSan unit + shell suites; required for loop/icmp/app changes
+make check           # runs test + lint + shellcheck + sanitize-test
 ```
 
-Live ICMP tests are skipped when the binary lacks `CAP_NET_RAW`. Without root
-(or in a container) run the whole live suite inside a user + network namespace,
-where the binary owns the network namespace and can create raw sockets:
-
-```bash
-unshare -Urn --map-root-user bash -c \
-  'ip link set lo up; LINKSTAY_TEST_LIVE=1 LINKSTAY_TEST_UNREACHABLE_TARGET=203.0.113.1 make test'
-# baseline with live tests enabled: Pass: 207   Fail: 0   Skip: 0
-```
-
-`LINKSTAY_TEST_LIVE=1` forces the live section past the `getcap` check;
-`LINKSTAY_TEST_UNREACHABLE_TARGET` points the "no reply reaches the threshold"
-test at an unroutable address so it exercises the `ENETUNREACH` send path
-instead of a silent timeout. If you changed anything on the probe or event-loop
-path, run the live suite and say so explicitly. Never report a skipped test as
-a pass.
+`tests/unit.c` currently runs 66 assertions over the pure `base`/`addr`/`log`/
+`loop` helpers. Live ICMP tests are skipped when the binary lacks `CAP_NET_RAW`.
+Run them inside a user + network namespace with the recipe in `README.md`
+("测试说明"); the full suite then reports `Pass: 207   Fail: 0   Skip: 0`
+(without live tests: `Pass: 179   Fail: 0   Skip: 1`). If you changed anything
+on the probe or event-loop path, run the live suite and say so explicitly.
+Never report a skipped test as a pass. CI runs `make check` on every push and
+pull request (`.github/workflows/ci.yml`).
 
 ## 3. Hard invariants
 
@@ -73,6 +66,9 @@ a pass.
   code generation, no build system beyond the `Makefile`. Feature-test macros
   (`_POSIX_C_SOURCE=200809L`, `_DEFAULT_SOURCE`) are defined in the Makefile and
   fall back to the same values in `base.h`; keep both.
+- **Portable release defaults.** LTO is enabled by default (set `LTO=0` for a
+  toolchain without LTO); `-march=native` stays opt-in (`NATIVE=1`) so default
+  binaries remain deployable on other machines of the same architecture.
 - **C23 is enforced, not assumed.** The Makefile compiles with
   `-std=c23 -pedantic-errors`, and `base.h` has a `__STDC_VERSION__` guard that
   fails the build under an older standard. Vendor extensions are limited to an
@@ -231,21 +227,9 @@ Rules:
 `getopt_long` tables (so the short option string can never drift from the long
 options), drives the environment layer, and supplies the names used in error
 messages. Adding an option means: one `OPT_SPECS` row, one `apply_*` adapter,
-help text, a `README.md` table row, and tests. `README.md` repeats the table
-below for users; if the two ever disagree, `OPT_SPECS` (the code) wins and both
-documents must be corrected.
-
-| Short | Long | Env var | Default | Meaning |
-|-------|------|---------|---------|---------|
-| `-t` | `--target` | `LINKSTAY_TARGET` | `1.1.1.1` | IPv4/IPv6 literal only; DNS is rejected |
-| `-i` | `--interval` | `LINKSTAY_INTERVAL` | `10s` | Probe interval; plain number = seconds |
-| `-n` | `--threshold` | `LINKSTAY_THRESHOLD` | `5` | Consecutive failures before the action |
-| `-w` | `--timeout` | `LINKSTAY_TIMEOUT` | `3000ms` | Reply timeout; plain number = ms; must be `< interval` |
-| `-p` | `--poweroff` | `LINKSTAY_POWEROFF` | `false` | Optional bool (`true`/`false`); bare flag = true; false = dry-run |
-| `-l` | `--log-level` | `LINKSTAY_LOG_LEVEL` | `info` | `silent\|error\|warn\|info\|debug` |
-| `-s` | `--systemd` | `LINKSTAY_SYSTEMD` | `true` | Optional bool (`true`/`false`); bare flag = true |
-| `-v` | `--version` | — | — | Print version, exit 0 |
-| `-h` | `--help` | — | — | Print help, exit 0 |
+help text, a `README.md` table row, and tests. The user-facing option table
+lives in `README.md`; if the two ever disagree, `OPT_SPECS` (the code) wins and
+both documents must be corrected.
 
 - Effective precedence: CLI > environment > defaults. The CLI is applied first
   and an env var is consulted only when its option was not seen, so an invalid
@@ -349,32 +333,25 @@ tests, hot-path performance work, and consistency fixes within the rules above.
 
 **Do not do:** add heap/threads/dependencies/a license, reformat unrelated code,
 mix a behavior change with a pure refactor in one change, add AI-tool files, or
-leave `make lint` / `make test` failing.
+leave `make check` (or any individual target it runs) failing.
 
 When code and documentation disagree, the code is the source of truth for
 behavior and this file is the source of truth for structure — fix whichever is
 wrong and say which one you changed.
 
-## 7. Repository map
+## 7. Repository and generated files
 
 ```
-Makefile                        build, release, lint, test, check, sanitize, install
-README.md                       user-facing behavior (CLI, shutdown, systemd)
-.gitignore                      build outputs, editor state, local AI-tool config
-src/base.h/.c                   foundation: errors, clock, math, durations
-src/log.h/.c                    leveled logging; only stderr writer
-src/addr.h/.c                   IPv4/IPv6 literal parsing
-src/opts.h/.c                   OPT_SPECS table, option resolution, validation
-src/loop.h/.c                   poll(2) loop, fd slots, timers, signalfd
-src/icmp.h/.c                   raw socket, BPF, echo build/match
-src/notify.h/.c                 sd_notify channel and protocol
-src/app.h/.c                    probe FSM, stats, action, banners
-src/main.c                      entry point
-systemd/linkstay.service        deployable unit example (sandboxed)
-tests/run_tests.sh              black-box CLI/env/live/systemd-notify suite
-.github/copilot-instructions.md this contract
+src/                        flat C modules, one owner per responsibility (section 4)
+tests/unit.c                unit tests for pure helpers
+tests/run_tests.sh          shell-suite entry point
+tests/lib.sh                assertions, process/NOTIFY helpers
+tests/cli.sh                CLI/env/validation/precedence cases
+tests/live.sh               live ICMP, signals, threshold cases
+tests/notify.sh             NOTIFY_SOCKET protocol cases (sourced by live.sh)
+.github/workflows/ci.yml    CI: make check on push/pull_request
 ```
 
-`bin/` and `bin-sanitize/` are generated build outputs and are gitignored;
-`make clean` removes both. `.vscode/` is a local editor directory and is
-gitignored on purpose — do not commit IDE settings.
+`bin/` and `bin-sanitize/` are build outputs and are gitignored; `make clean`
+removes both. `.vscode/` is local editor state and is gitignored on purpose —
+do not commit IDE settings.

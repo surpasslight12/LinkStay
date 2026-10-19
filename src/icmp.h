@@ -33,16 +33,15 @@ typedef enum {
 } ls_icmp_send_status_t;
 
 /* Fields are owned by icmp.c. The assembly layer (app.c) only reads `sockfd`
- * (to poll it), `bpf_errno`/`bpf_attached` (to log the filter state) and
- * `sequence` (to remember the outstanding probe), and may set `sockfd = -1`
- * before ls_icmp_open() so a failed init still leaves the struct closeable.
- * No other field access is allowed outside icmp.c. */
+ * (to poll it), `bpf_errno` (to log the filter state) and `sequence` (to
+ * remember the outstanding probe), and may set `sockfd = -1` before
+ * ls_icmp_open() so a failed init still leaves the struct closeable. No other
+ * field access is allowed outside icmp.c. */
 typedef struct {
   int sockfd;
   int family; /* AF_INET or AF_INET6 */
   uint16_t sequence;
-  bool bpf_attached;
-  int bpf_errno; /* non-fatal: filter attach failure reason */
+  int bpf_errno; /* 0 when attached; otherwise the non-fatal attach failure */
 
   /* Reused packet buffers (zero-alloc model). Send buffer aligned to 4 so
    * casts to struct icmphdr / struct icmp6_hdr are well-defined; receive

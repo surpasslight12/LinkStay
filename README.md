@@ -10,7 +10,7 @@
 - **原生 ICMP 实现**：使用 raw socket + BPF 内核过滤，无需依赖系统 `ping` 命令
 - **可选的真实关机**：通过布尔开关 `--poweroff` 决定是否正式关机；`false` 仅模拟，`true` 达到阈值后立即执行关机
 - **systemd 深度集成**：支持 `sd_notify`、watchdog、状态通知；watchdog 随 systemd 自动启用
-- **高性能**：单一二进制文件 ≈ 46 KiB（strip 后），内存占用 < 5 MB，CPU 占用 < 1%
+- **高性能**：默认 LTO 构建，单一二进制文件 ≈ 42 KiB（strip 后），内存占用 < 5 MB，CPU 占用 < 1%
 - **安全加固**：编译期 Full RELRO、PIE、Stack Canary、NX、FORTIFY_SOURCE；运行期 systemd 沙箱
 
 ## 快速开始
@@ -18,10 +18,11 @@
 ### 1. 构建
 
 ```bash
-make               # 构建 bin/linkstay
+make               # 构建 bin/linkstay（默认启用 LTO）
 make release       # 构建后 strip
-make test          # 运行功能测试
-make sanitize-test # ASan/UBSan 构建并运行同一套测试
+make test          # 单元测试 + 功能测试
+make check         # test + lint + shellcheck + sanitize-test
+make sanitize-test # ASan/UBSan 构建并运行两套测试
 ```
 
 ### 2. 运行
@@ -73,13 +74,16 @@ journalctl -fu linkstay
 
 | 目标 | 说明 |
 |------|------|
-| `make` | 构建 `bin/linkstay` |
+| `make` | 构建 `bin/linkstay`（默认启用 LTO） |
 | `make release` | 构建后 strip |
-| `make test` | 运行 `tests/run_tests.sh` |
+| `make help` | 列出全部目标和可覆盖变量 |
+| `make unit-test` | 构建并运行 `tests/unit.c` 单元测试 |
+| `make test` | 单元测试 + `tests/run_tests.sh` 功能测试 |
 | `make lint` | cppcheck + clang-tidy，基线为零告警 |
-| `make check` | 依次执行 `test` + `lint` + `sanitize-test`（提交前的最小验证集） |
+| `make shellcheck` | 对 `tests/*.sh` 运行 ShellCheck，基线为零告警 |
+| `make check` | 依次执行 `test` + `lint` + `shellcheck` + `sanitize-test`（提交前的最小验证集） |
 | `make sanitize` | 以 ASan/UBSan 构建到 `bin-sanitize/`（可用 `SAN=` 覆盖） |
-| `make sanitize-test` | sanitizer 构建并运行同一套测试 |
+| `make sanitize-test` | sanitizer 构建并运行单元测试与功能测试 |
 | `make install` | 安装二进制到 `$(PREFIX)/bin/linkstay`，默认 `PREFIX=/usr/local` |
 | `make install-systemd` | 安装二进制和 `systemd/linkstay.service` |
 | `make uninstall` | 删除已安装的二进制和 systemd unit |
@@ -91,11 +95,11 @@ journalctl -fu linkstay
 make install-systemd DESTDIR=/tmp/linkstay-stage PREFIX=/usr/local
 ```
 
-默认构建不启用 `-march=native`，产物可在同架构其他机器上运行；如需为本机 CPU 调优，可使用 `make NATIVE=1`。
+默认构建不启用 `-march=native`，产物可在同架构其他机器上运行；如需为本机 CPU 调优，可使用 `make NATIVE=1`。默认启用 `-flto`，工具链不支持 LTO 时用 `make LTO=0`；切换 `NATIVE`/`LTO`/警告选项会自动触发重建（Makefile 用配置戳记）。`make check` 需要 `cppcheck`、`clang-tidy` 与 `shellcheck`。
 
 ### 5. 测试说明
 
-`make test` 覆盖参数/环境变量解析、优先级、错误信息、NOTIFY_SOCKET 协议与实网 ICMP（loopback、信号、阈值模拟关机）。实网用例需要 `bin/linkstay` 具备 `cap_net_raw`，缺失时该组用例自动跳过并计入 `Skip`。
+`make test` 先运行 `tests/unit.c`（66 项纯函数断言），再由 `tests/run_tests.sh` 驱动 shell 套件，覆盖参数/环境变量解析、优先级、错误信息、NOTIFY_SOCKET 协议与实网 ICMP（loopback、信号、阈值模拟关机）。shell 套件拆分为 `tests/lib.sh`（断言与进程/通知辅助）、`tests/cli.sh`（静态用例）、`tests/live.sh`（实网用例）和 `tests/notify.sh`（sd_notify 协议用例）。实网用例需要 `bin/linkstay` 具备 `cap_net_raw`，缺失时该组用例自动跳过并计入 `Skip`。
 
 容器或普通用户无法用 `setcap` 时，可在用户+网络命名空间内运行完整实网用例（无需 root）：
 
@@ -120,14 +124,9 @@ unshare -Urn --map-root-user bash -c \
 | 版本信息 | `-v, --version` | — | — | 打印版本后退出（退出码 0） |
 | 帮助信息 | `-h, --help` | — | — | 打印用法与全部选项后退出（退出码 0） |
 
-优先级规则：CLI 参数 > 环境变量 > 编译期默认值。
+优先级：CLI 参数 > 环境变量 > 编译期默认值。`--interval` 与 `--timeout` 均接受可选的 `s`/`ms` 后缀（仅小写，如 `-i 500ms`、`-w 1s`），内部统一以毫秒处理，唯一跨参数约束是 `timeout_ms < interval_ms`；日志与 `--help` 的时长统一由 `ls_format_duration()` 格式化（整秒显示为 `10s`，否则显示为 `1500ms`）。
 
-时间参数统一说明：`--interval` 与 `--timeout` 均接受可选的 `s`/`ms` 后缀（仅小写，如 `-i 500ms`、`-w 1s`）；不带后缀时保持历史单位——interval 按秒、timeout 按毫秒。两者内部统一以毫秒处理，跨参数约束只有一条：`timeout_ms < interval_ms`。日志、`--help` 与 `--log-level debug` 输出中的时长统一由 `ls_format_duration()` 格式化（整秒显示为 `10s`，否则显示为 `1500ms`）。
-
-短选项格式说明：
-
-- 必选参数既支持分开写法（如 `-i 5`），也支持粘连写法（如 `-i5`）
-- `-p`、`-s` 对应可选参数；不带值时等价于启用，若要显式关闭请使用 `--poweroff=false`/`-pfalse`、`--systemd=false`/`-sfalse`（布尔值只接受 `true`/`false`）
+短选项：必选参数既支持分开写法（如 `-i 5`），也支持粘连写法（如 `-i5`）；`-p`/`-s` 的可选布尔参数建议写成 `-pfalse`/`-sfalse`，或使用 `--poweroff=false`/`--systemd=false`。
 
 ## 探测与失败判定
 
@@ -171,7 +170,7 @@ unshare -Urn --map-root-user bash -c \
 
 显示细节：
 
-- **延迟自适应精度**：小于 1ms 保留三位小数（如 `0.004ms`），1–100ms 两位，超过 100ms 一位；因此 loopback 这类亚毫秒链路不会再显示成 `0.00ms`
+- **延迟自适应精度**：小于 1ms 保留三位小数（如 `0.004ms`），1–100ms 两位，100ms 及以上一位；因此 loopback 这类亚毫秒链路不会再显示成 `0.00ms`
 - **运行时长**以 `1h2m3s` / `3d2h1m5s` 形式显示，而不是累计秒数
 - **单复数正确**：`1 ping` / `2 pings`
 - `--poweroff=false` 时启动横幅与 `systemd` 状态里会标注 `(dry-run)`
@@ -189,24 +188,15 @@ unshare -Urn --map-root-user bash -c \
 
 ### `Timeout (...) must be smaller than interval (...)`
 
-`--interval` 与 `--timeout` 内部均以毫秒处理，二者必须满足：
-
-```text
-timeout_ms < interval_ms
-```
-
-例如：
+`--interval` 与 `--timeout` 内部均以毫秒处理，二者必须满足 `timeout_ms < interval_ms`：
 
 ```bash
 # 错误：5000 ms 并不小于 5 s = 5000 ms
 ./bin/linkstay --target 1.1.1.1 --interval 5 --timeout 5000
 
-# 正确：3000 ms 小于 5 s = 5000 ms
+# 正确：3000 ms 小于 5000 ms；也可统一用后缀避免心算
 ./bin/linkstay --target 1.1.1.1 --interval 5 --timeout 3000
-
-# 等价写法：使用统一后缀，无需心算单位
 ./bin/linkstay --target 1.1.1.1 --interval 5s --timeout 3s
-./bin/linkstay --target 1.1.1.1 --interval 5000ms --timeout 3000ms
 ```
 
 ### `Operation not permitted (root or CAP_NET_RAW required)`
@@ -245,7 +235,7 @@ sudo ./bin/linkstay --target 1.1.1.1
 ## 项目结构
 
 ```
-Makefile                # 构建、release、lint、test、check、sanitize、clean 入口
+Makefile                # 构建、release、test、unit-test、lint、shellcheck、check 等入口
 README.md               # 使用说明（面向用户的行为契约）
 .gitignore              # 忽略构建产物、编辑器状态与本地 AI 工具目录
 src/                    # 头文件与实现同目录，flat layout
@@ -261,14 +251,18 @@ src/                    # 头文件与实现同目录，flat layout
 systemd/
 └── linkstay.service  # systemd unit 示例文件
 tests/
-└── run_tests.sh      # 配置解析 + 优先级 + 可选的 CAP_NET_RAW 实网测试
+├── unit.c            # 纯函数单元测试（base / addr / log / loop 辅助函数）
+├── run_tests.sh      # shell 套件入口：加载辅助模块、执行并汇总
+├── lib.sh            # 断言、进程控制、NOTIFY 接收器辅助
+├── cli.sh            # 参数/环境变量解析、优先级、调试输出
+├── live.sh           # 实网 ICMP、信号、阈值动作
+└── notify.sh         # NOTIFY_SOCKET 协议用例（由 live.sh 加载）
 .github/
-└── copilot-instructions.md  # 工程契约：不变量、模块边界、验证流程
+├── copilot-instructions.md  # 工程契约：不变量、模块边界、验证流程
+└── workflows/ci.yml         # CI：安装检查工具并执行 make check
 ```
 
 `bin/`（默认构建）与 `bin-sanitize/`（sanitizer 构建）是 `make` 生成的产物，已被 `.gitignore` 忽略，可随时用 `make clean` 删除。
-
-模块依赖是单向的：`base` 零项目依赖，`log`/`addr` 只依赖 `base`，`opts`/`loop`/`icmp`/`notify` 依赖这三个基础模块中的若干个，`app` 统一组装，`main` 只调用 `app`/`opts`。各模块职责：地址字面量规则由 `addr` 独占（`opts` 校验与 `icmp` 传输不再各写一份），日志输出由 `log` 独占，systemd 集成由 `notify` 独占（只负责通道与协议，何时发送由 `app` 决定），统计与关机动作是 `app.c` 的私有实现。所有可失败的 init/parse 接口遵循统一约定：返回 `bool` + 调用方持有的 `ls_err_t` 错误缓冲；需要区分多种结果时改用小型状态枚举（如 `ls_icmp_recv_status_t`、`ls_notify_state_t`）。
 
 代码以 `-std=c23 -pedantic-errors` 构建，`base.h` 中有 `__STDC_VERSION__` 守卫，使用 C17 及更早标准会直接编译失败。
 

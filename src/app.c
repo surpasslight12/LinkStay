@@ -27,6 +27,14 @@
 #define LS_PACKET_SIZE 64U
 #define LS_MAX_REPLY_DRAIN_PER_WAKEUP 32U
 
+/* Compile-time guardrails: the assembly layer relies on these capacities. */
+static_assert(LS_PACKET_SIZE <= LS_ICMP_SEND_BUFFER_SIZE,
+              "echo packet must fit in the ICMP send buffer");
+static_assert(LS_LOOP_MAX_FDS >= 2,
+              "app needs the signalfd and the ICMP socket");
+static_assert(LS_LOOP_MAX_TIMERS >= 3,
+              "app needs ping, reply, and watchdog timer slots");
+
 /* Double conversion factors for latency math; derived from the integer unit
  * constants in base.h so they cannot drift apart. */
 #define LS_NS_PER_MS_F ((double)LS_NS_PER_MS)
@@ -39,7 +47,7 @@
 /* Implementation-private constants. */
 #define LS_STATS_NO_SAMPLE UINT64_MAX
 #define LS_STARTUP_GRACE_MS UINT64_C(1000)
-#define LS_POLL_INTERVAL_MS 50U
+#define LS_SHUTDOWN_RETRY_MS 50U
 
 typedef enum {
   LS_ACTION_SIMULATED = 0,
@@ -61,12 +69,8 @@ static void stats_add_ok(ls_stats_t *stats, double latency_ms) {
   if (LS_UNLIKELY(latency_ms < 0.0)) {
     latency_ms = 0.0;
   }
-  if (LS_LIKELY(stats->total < UINT64_MAX)) {
-    stats->total++;
-  }
-  if (LS_LIKELY(stats->ok < UINT64_MAX)) {
-    stats->ok++;
-  }
+  stats->total = ls_add_sat(stats->total, 1);
+  stats->ok = ls_add_sat(stats->ok, 1);
   uint64_t latency_us = (uint64_t)(latency_ms * LS_US_PER_MS_F);
   stats->latency_sum_us = ls_add_sat(stats->latency_sum_us, latency_us);
   if (latency_us < stats->latency_min_us) {
@@ -81,12 +85,8 @@ static void stats_add_ok(ls_stats_t *stats, double latency_ms) {
 }
 
 static void stats_add_fail(ls_stats_t *stats) {
-  if (LS_LIKELY(stats->total < UINT64_MAX)) {
-    stats->total++;
-  }
-  if (LS_LIKELY(stats->failed < UINT64_MAX)) {
-    stats->failed++;
-  }
+  stats->total = ls_add_sat(stats->total, 1);
+  stats->failed = ls_add_sat(stats->failed, 1);
 }
 
 static double stats_success_rate(const ls_stats_t *stats) {
@@ -137,7 +137,7 @@ static char *const SHUTDOWN_ARGV[] = {
 static bool sleep_retry_window(void) {
   struct timespec remaining = {
       .tv_sec = 0,
-      .tv_nsec = (long)LS_POLL_INTERVAL_MS * (long)LS_NS_PER_MS,
+      .tv_nsec = (long)LS_SHUTDOWN_RETRY_MS * (long)LS_NS_PER_MS,
   };
   while (nanosleep(&remaining, &remaining) < 0) {
     if (errno != EINTR) {
@@ -347,7 +347,7 @@ static void check_threshold(ls_app_t *app) {
   }
 
   action_result_t result = run_shutdown_action(app->opts.poweroff, &app->log);
-  if (!app->opts.poweroff) {
+  if (result == LS_ACTION_SIMULATED) {
     ls_info(&app->log, "Dry-run complete: simulated shutdown reached, "
                        "exiting monitor loop");
     ls_loop_stop(&app->loop, LS_EXIT_SUCCESS);
@@ -443,8 +443,10 @@ static void on_reply_timer([[maybe_unused]] ls_loop_t *loop, void *userdata) {
   ls_app_t *app = userdata;
 
   /* Defensive: bail if the probe was already resolved by another path
-   * (e.g. a late poll wakeup that raced with this timer firing). */
+   * (e.g. a late poll wakeup that raced with this timer firing). Disarm
+   * first: a fired timer that stays armed would spin the event loop. */
   if (app->probe_state != LS_PROBE_AWAIT_REPLY) {
+    ls_timer_disarm(app->reply_timer);
     return;
   }
 
@@ -551,13 +553,13 @@ bool ls_app_init(ls_app_t *restrict app, const ls_opts_t *restrict opts,
   *app = (ls_app_t){
       .opts = *opts,
       .identifier = (uint16_t)(getpid() & 0xFFFF),
+      /* Keep destroy safe if init bails before the sockets are opened. */
+      .icmp = {.sockfd = -1},
+      .notify = {.sockfd = -1},
   };
   if (app->identifier == 0) {
     app->identifier = 1;
   }
-  /* Keep destroy safe even if init bails before these are opened. */
-  app->icmp.sockfd = -1;
-  app->notify.sockfd = -1;
 
   ls_log_init(&app->log, app->opts.log_level, ls_opts_timestamps(&app->opts));
   if (app->opts.log_level == LS_LOG_DEBUG) {
@@ -579,7 +581,7 @@ bool ls_app_init(ls_app_t *restrict app, const ls_opts_t *restrict opts,
             "without kernel-side packet filtering",
             family == AF_INET6 ? "IPv6" : "IPv4",
             strerror(app->icmp.bpf_errno));
-  } else if (app->icmp.bpf_attached) {
+  } else {
     ls_debug(&app->log, "ICMP BPF filter active for %s traffic",
              family == AF_INET6 ? "IPv6" : "IPv4");
   }
