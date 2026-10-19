@@ -74,7 +74,7 @@ expect_accept "accepts IPv6 literal ::1" "$BIN" -t ::1
 
 section "Numeric arg validation"
 expect_reject "--interval 0 rejected" "Invalid value for --interval" \
-  "$BIN" -t 1.1.1.1 -i 0
+  "$BIN" -t 1.1.1.1 -i 0s
 expect_reject "--interval -1 rejected" "Invalid value for --interval" \
   "$BIN" -t 1.1.1.1 -i -1
 expect_reject "--interval abc rejected" "Invalid value for --interval" \
@@ -84,17 +84,17 @@ expect_reject "--threshold 0 rejected" "Invalid value for --threshold" \
 expect_reject "--threshold xyz rejected" "Invalid value for --threshold" \
   "$BIN" -t 1.1.1.1 --threshold xyz
 expect_reject "--timeout 0 rejected" "Invalid value for --timeout" \
-  "$BIN" -t 1.1.1.1 -w 0
+  "$BIN" -t 1.1.1.1 -w 0ms
 expect_reject "--timeout negative rejected" "Invalid value for --timeout" \
   "$BIN" -t 1.1.1.1 -w -100
-expect_accept "--interval 1 / --threshold 1 / --timeout 500 accepted" \
-  "$BIN" -t 1.1.1.1 -i 1 -n 1 -w 500
+expect_accept "--interval 1s / --threshold 1 / --timeout 500ms accepted" \
+  "$BIN" -t 1.1.1.1 -i 1s -n 1 -w 500ms
 
 # Attached short arguments for required numeric options
-expect_accept "attached -i2" "$BIN" -t 1.1.1.1 -i2 -w 500 -sfalse -l silent
-expect_accept "attached -n3" "$BIN" -t 1.1.1.1 -n3 -w 500 -sfalse -l silent
-expect_accept "attached -w500" "$BIN" -t 1.1.1.1 -w500 -sfalse -l silent
-expect_accept "attached -ldebug" "$BIN" -t 1.1.1.1 -w500 -ldebug -sfalse
+expect_accept "attached -i2s" "$BIN" -t 1.1.1.1 -i2s -w 500ms -sfalse -l silent
+expect_accept "attached -n3" "$BIN" -t 1.1.1.1 -n3 -w 500ms -sfalse -l silent
+expect_accept "attached -w500ms" "$BIN" -t 1.1.1.1 -w500ms -sfalse -l silent
+expect_accept "attached -ldebug" "$BIN" -t 1.1.1.1 -w500ms -ldebug -sfalse
 
 # Empty and junk values
 expect_reject "--interval= empty" "Invalid value for --interval" \
@@ -104,69 +104,70 @@ expect_reject "--threshold= empty" "Invalid value for --threshold" \
 expect_reject "--timeout= empty" "Invalid value for --timeout" \
   "$BIN" -t 1.1.1.1 --timeout=
 expect_reject "--interval with trailing junk" "Invalid value for --interval" \
-  "$BIN" -t 1.1.1.1 -i 5x -w 500
+  "$BIN" -t 1.1.1.1 -i 5x -w 500ms
 expect_reject "--timeout overflow" "Invalid value for --timeout" \
-  "$BIN" -t 1.1.1.1 -i 1 -w 999999999999999999999999
+  "$BIN" -t 1.1.1.1 -i 1s -w 999999999999999999999999ms
 
 # Integer boundaries: parser accepts INT_MAX and rejects INT_MAX+1
 expect_accept "--interval INT_MAX accepted" \
-  "$BIN" -t 1.1.1.1 -i 2147483647 -sfalse -l silent
+  "$BIN" -t 1.1.1.1 -i 2147483647s -sfalse -l silent
 expect_reject "--interval INT_MAX+1 rejected" "Invalid value for --interval" \
-  "$BIN" -t 1.1.1.1 -i 2147483648
+  "$BIN" -t 1.1.1.1 -i 2147483648s
 expect_accept "--threshold INT_MAX accepted" \
   "$BIN" -t 1.1.1.1 -n 2147483647 -sfalse -l silent
 expect_reject "--threshold INT_MAX+1 rejected" "Invalid value for --threshold" \
   "$BIN" -t 1.1.1.1 -n 2147483648
 expect_accept "--timeout INT_MAX accepted with matching interval" \
-  "$BIN" -t 1.1.1.1 -i 2147484 -w 2147483647 -sfalse -l silent
+  "$BIN" -t 1.1.1.1 -i 2147484s -w 2147483647ms -sfalse -l silent
 expect_reject "--timeout INT_MAX+1 rejected" "Invalid value for --timeout" \
-  "$BIN" -t 1.1.1.1 -i 2147484 -w 2147483648
+  "$BIN" -t 1.1.1.1 -i 2147484s -w 2147483648ms
 
-# A leading '+' and leading zeros stay accepted (historical parser behavior);
-# leading whitespace and '-' are rejected by the shape check.
-expect_accept "leading + on interval accepted" \
-  "$BIN" -t 1.1.1.1 -i +5 -w 1000 -sfalse -l silent
+# Leading zeros stay accepted; a leading '+' is a legacy spelling and is
+# rejected, as are leading whitespace and '-'.
+expect_reject "leading + rejected" "Invalid value for --interval" \
+  "$BIN" -t 1.1.1.1 -i +5s -w 1000ms -sfalse -l silent
 expect_accept "leading zeros accepted" \
-  "$BIN" -t 1.1.1.1 -i 0005 -w 1000 -sfalse -l silent
+  "$BIN" -t 1.1.1.1 -i 0005s -w 1000ms -sfalse -l silent
 
 section "Duration suffix parsing (s / ms)"
 
-# Plain numbers keep their historical units: interval=seconds, timeout=ms.
-expect_accept "plain -i keeps seconds unit" "$BIN" -t 1.1.1.1 -i 2 -w 500 -sfalse -l silent
-expect_accept "-i 500ms accepted" "$BIN" -t 1.1.1.1 -i 500ms -w 400 -sfalse -l silent
-expect_accept "-i 2s accepted" "$BIN" -t 1.1.1.1 -i 2s -w 500 -sfalse -l silent
+# Duration values require an explicit suffix; bare -i 2 is rejected.
+expect_reject "bare -i 2 rejected (suffix required)" \
+  "Invalid value for --interval" "$BIN" -t 1.1.1.1 -i 2 -w 500ms -sfalse -l silent
+expect_accept "-i 500ms accepted" "$BIN" -t 1.1.1.1 -i 500ms -w 400ms -sfalse -l silent
+expect_accept "-i 2s accepted" "$BIN" -t 1.1.1.1 -i 2s -w 500ms -sfalse -l silent
 expect_accept "-i 0005ms accepted (leading zeros)" \
-  "$BIN" -t 1.1.1.1 -i 0005ms -w 400 -sfalse -l silent
-expect_accept "-w 1s accepted" "$BIN" -t 1.1.1.1 -i 2 -w 1s -sfalse -l silent
-expect_accept "-w 500ms accepted" "$BIN" -t 1.1.1.1 -i 1 -w 500ms -sfalse -l silent
+  "$BIN" -t 1.1.1.1 -i 0005ms -w 400ms -sfalse -l silent
+expect_accept "-w 1s accepted" "$BIN" -t 1.1.1.1 -i 2s -w 1s -sfalse -l silent
+expect_accept "-w 500ms accepted" "$BIN" -t 1.1.1.1 -i 1s -w 500ms -sfalse -l silent
 expect_reject "-i 5S rejected (lowercase suffixes only)" \
-  "Invalid value for --interval" "$BIN" -t 1.1.1.1 -i 5S -w 500
+  "Invalid value for --interval" "$BIN" -t 1.1.1.1 -i 5S -w 500ms
 expect_reject "-w 1.5s rejected (integers only)" "Invalid value for --timeout" \
-  "$BIN" -t 1.1.1.1 -i 2 -w 1.5s
+  "$BIN" -t 1.1.1.1 -i 2s -w 1.5s
 expect_reject "-w 1m rejected (unknown suffix)" "Invalid value for --timeout" \
-  "$BIN" -t 1.1.1.1 -i 2 -w 1m
+  "$BIN" -t 1.1.1.1 -i 2s -w 1m
 expect_reject "interval in ms must still exceed timeout" \
-  "must be smaller than interval" "$BIN" -t 1.1.1.1 -i 500ms -w 600
+  "must be smaller than interval" "$BIN" -t 1.1.1.1 -i 500ms -w 600ms
 expect_reject "-w 2147484s exceeds INT_MAX ms" "Invalid value for --timeout" \
-  "$BIN" -t 1.1.1.1 -i 2147485 -w 2147484s
+  "$BIN" -t 1.1.1.1 -i 2147485s -w 2147484s
 expect_debug_contains "dump shows ms-suffixed interval" "Interval: 1500ms" \
-  "$BIN" -t 1.1.1.1 -i 1500ms -w 500 -l debug -sfalse
+  "$BIN" -t 1.1.1.1 -i 1500ms -w 500ms -l debug -sfalse
 expect_debug_contains "dump shows s-suffixed timeout" "Timeout: 1s" \
-  "$BIN" -t 1.1.1.1 -i 2 -w 1s -l debug -sfalse
+  "$BIN" -t 1.1.1.1 -i 2s -w 1s -l debug -sfalse
 expect_accept "LINKSTAY_INTERVAL with ms suffix" \
-  env LINKSTAY_INTERVAL=500ms "$BIN" -t 1.1.1.1 -w 400 -sfalse -l silent
+  env LINKSTAY_INTERVAL=500ms "$BIN" -t 1.1.1.1 -w 400ms -sfalse -l silent
 expect_reject "LINKSTAY_TIMEOUT with unknown suffix" \
   "Invalid value for LINKSTAY_TIMEOUT" \
   env LINKSTAY_TIMEOUT=1m "$BIN" -t 1.1.1.1
 
 section "Cross-field validation"
 expect_reject "timeout > interval rejected" "must be smaller than interval" \
-  "$BIN" -t 1.1.1.1 -i 1 -w 5000
+  "$BIN" -t 1.1.1.1 -i 1s -w 5000ms
 expect_reject "timeout == interval rejected" "must be smaller than interval" \
-  "$BIN" -t 1.1.1.1 -i 1 -w 1000
-expect_accept "timeout < interval accepted" "$BIN" -t 1.1.1.1 -i 2 -w 1500
+  "$BIN" -t 1.1.1.1 -i 1s -w 1000ms
+expect_accept "timeout < interval accepted" "$BIN" -t 1.1.1.1 -i 2s -w 1500ms
 expect_accept "timeout just below interval accepted (no hidden margin)" \
-  "$BIN" -t 1.1.1.1 -i 1 -w 999
+  "$BIN" -t 1.1.1.1 -i 1s -w 999ms
 
 section "Poweroff parsing"
 
@@ -284,11 +285,11 @@ section "Environment variables"
 expect_accept "LINKSTAY_TARGET accepted" \
   env LINKSTAY_TARGET=8.8.8.8 "$BIN" -l silent -sfalse
 expect_accept "LINKSTAY_INTERVAL accepted" \
-  env LINKSTAY_INTERVAL=5 "$BIN" -t 1.1.1.1 -w 400 -sfalse -l silent
+  env LINKSTAY_INTERVAL=5s "$BIN" -t 1.1.1.1 -w 400ms -sfalse -l silent
 expect_accept "LINKSTAY_THRESHOLD accepted" \
   env LINKSTAY_THRESHOLD=4 "$BIN" -t 1.1.1.1
 expect_accept "LINKSTAY_TIMEOUT accepted" \
-  env LINKSTAY_TIMEOUT=400 "$BIN" -t 1.1.1.1 -sfalse -l silent
+  env LINKSTAY_TIMEOUT=400ms "$BIN" -t 1.1.1.1 -sfalse -l silent
 expect_accept "LINKSTAY_POWEROFF=false accepted" \
   env LINKSTAY_POWEROFF=false "$BIN" -t 1.1.1.1
 expect_accept "LINKSTAY_LOG_LEVEL=debug accepted" \
@@ -319,7 +320,7 @@ expect_reject "LINKSTAY_POWEROFF=0 rejected (only true/false)" \
   env LINKSTAY_POWEROFF=0 "$BIN" -t 1.1.1.1
 
 # Invalid env values are rejected with the env var name
-for pair in LINKSTAY_INTERVAL=abc LINKSTAY_THRESHOLD=abc LINKSTAY_TIMEOUT=0 \
+for pair in LINKSTAY_INTERVAL=abc LINKSTAY_THRESHOLD=abc LINKSTAY_TIMEOUT=0ms \
             LINKSTAY_POWEROFF=junk LINKSTAY_LOG_LEVEL=junk \
             LINKSTAY_SYSTEMD=junk; do
   var="${pair%%=*}"
@@ -348,34 +349,34 @@ expect_reject "env-invalid surfaces when CLI does not override" \
 
 # CLI must override even an invalid env value, not just an invalid string value
 expect_accept "CLI --interval overrides invalid LINKSTAY_INTERVAL" \
-  env LINKSTAY_INTERVAL=foo "$BIN" -t 1.1.1.1 -i 2 -w 500
+  env LINKSTAY_INTERVAL=foo "$BIN" -t 1.1.1.1 -i 2s -w 500ms
 expect_accept "CLI --threshold overrides invalid LINKSTAY_THRESHOLD" \
-  env LINKSTAY_THRESHOLD=foo "$BIN" -t 1.1.1.1 -n 3 -w 500
+  env LINKSTAY_THRESHOLD=foo "$BIN" -t 1.1.1.1 -n 3 -w 500ms
 expect_accept "CLI --timeout overrides invalid LINKSTAY_TIMEOUT" \
-  env LINKSTAY_TIMEOUT=foo "$BIN" -t 1.1.1.1 -w 500
+  env LINKSTAY_TIMEOUT=foo "$BIN" -t 1.1.1.1 -w 500ms
 expect_accept "CLI --poweroff overrides invalid LINKSTAY_POWEROFF" \
-  env LINKSTAY_POWEROFF=junk "$BIN" -t 1.1.1.1 -pfalse -w 500
+  env LINKSTAY_POWEROFF=junk "$BIN" -t 1.1.1.1 -pfalse -w 500ms
 expect_accept "CLI --log-level overrides invalid LINKSTAY_LOG_LEVEL" \
-  env LINKSTAY_LOG_LEVEL=junk "$BIN" -t 1.1.1.1 -l debug -w 500 -sfalse
+  env LINKSTAY_LOG_LEVEL=junk "$BIN" -t 1.1.1.1 -l debug -w 500ms -sfalse
 expect_accept "CLI --systemd overrides invalid LINKSTAY_SYSTEMD" \
-  env LINKSTAY_SYSTEMD=junk "$BIN" -t 1.1.1.1 -sfalse -w 500
+  env LINKSTAY_SYSTEMD=junk "$BIN" -t 1.1.1.1 -sfalse -w 500ms
 
 section "Debug config dump"
 
 # The debug dump is emitted before the raw socket is opened, so it can be
 # checked without CAP_NET_RAW.
 expect_debug_contains "dump shows target" "Target: 8.8.8.8" \
-  "$BIN" -t 8.8.8.8 -i 7 -w 600 -n 4 -pfalse -l debug -sfalse
+  "$BIN" -t 8.8.8.8 -i 7s -w 600ms -n 4 -pfalse -l debug -sfalse
 expect_debug_contains "dump shows interval" "Interval: 7s" \
-  "$BIN" -t 8.8.8.8 -i 7 -w 600 -n 4 -pfalse -l debug -sfalse
+  "$BIN" -t 8.8.8.8 -i 7s -w 600ms -n 4 -pfalse -l debug -sfalse
 expect_debug_contains "dump shows threshold" "Threshold: 4" \
-  "$BIN" -t 8.8.8.8 -i 7 -w 600 -n 4 -pfalse -l debug -sfalse
+  "$BIN" -t 8.8.8.8 -i 7s -w 600ms -n 4 -pfalse -l debug -sfalse
 expect_debug_contains "dump shows timeout" "Timeout: 600ms" \
-  "$BIN" -t 8.8.8.8 -i 7 -w 600 -n 4 -pfalse -l debug -sfalse
+  "$BIN" -t 8.8.8.8 -i 7s -w 600ms -n 4 -pfalse -l debug -sfalse
 expect_debug_contains "dump shows poweroff false" "Poweroff: false" \
-  "$BIN" -t 8.8.8.8 -i 7 -w 600 -n 4 -pfalse -l debug -sfalse
+  "$BIN" -t 8.8.8.8 -i 7s -w 600ms -n 4 -pfalse -l debug -sfalse
 expect_debug_contains "dump shows log level" "Log Level: DEBUG" \
-  "$BIN" -t 8.8.8.8 -i 7 -w 600 -n 4 -pfalse -l debug -sfalse
+  "$BIN" -t 8.8.8.8 -i 7s -w 600ms -n 4 -pfalse -l debug -sfalse
 expect_debug_contains "systemd=false enables timestamps" "Timestamp: true" \
   "$BIN" -t 8.8.8.8 -l debug -sfalse
 expect_debug_contains "systemd=true disables timestamps" "Timestamp: false" \
@@ -385,22 +386,22 @@ expect_debug_contains "systemd=true disables timestamps" "Timestamp: false" \
 # us observe the final resolved configuration.
 expect_debug_contains "CLI target wins over valid env target" "Target: 1.1.1.1" \
   env LINKSTAY_TARGET=8.8.8.8 \
-  "$BIN" -t 1.1.1.1 -i 2 -w 500 -n 3 -pfalse -l debug -sfalse
+  "$BIN" -t 1.1.1.1 -i 2s -w 500ms -n 3 -pfalse -l debug -sfalse
 expect_debug_contains "CLI interval wins over valid env interval" "Interval: 2s" \
-  env LINKSTAY_INTERVAL=9 \
-  "$BIN" -t 1.1.1.1 -i 2 -w 500 -n 3 -pfalse -l debug -sfalse
+  env LINKSTAY_INTERVAL=9s \
+  "$BIN" -t 1.1.1.1 -i 2s -w 500ms -n 3 -pfalse -l debug -sfalse
 expect_debug_contains "CLI timeout wins over valid env timeout" "Timeout: 500ms" \
-  env LINKSTAY_TIMEOUT=900 \
-  "$BIN" -t 1.1.1.1 -i 2 -w 500 -n 3 -pfalse -l debug -sfalse
+  env LINKSTAY_TIMEOUT=900ms \
+  "$BIN" -t 1.1.1.1 -i 2s -w 500ms -n 3 -pfalse -l debug -sfalse
 expect_debug_contains "CLI threshold wins over valid env threshold" "Threshold: 3" \
   env LINKSTAY_THRESHOLD=9 \
-  "$BIN" -t 1.1.1.1 -i 2 -w 500 -n 3 -pfalse -l debug -sfalse
+  "$BIN" -t 1.1.1.1 -i 2s -w 500ms -n 3 -pfalse -l debug -sfalse
 expect_debug_contains "CLI poweroff wins over valid env poweroff" "Poweroff: false" \
   env LINKSTAY_POWEROFF=true \
-  "$BIN" -t 1.1.1.1 -i 2 -w 500 -n 3 -pfalse -l debug -sfalse
+  "$BIN" -t 1.1.1.1 -i 2s -w 500ms -n 3 -pfalse -l debug -sfalse
 expect_debug_contains "CLI log-level wins over valid env log-level" "Log Level: DEBUG" \
   env LINKSTAY_LOG_LEVEL=error \
-  "$BIN" -t 1.1.1.1 -i 2 -w 500 -n 3 -pfalse -l debug -sfalse
+  "$BIN" -t 1.1.1.1 -i 2s -w 500ms -n 3 -pfalse -l debug -sfalse
 expect_debug_contains "CLI systemd wins over valid env systemd" "Systemd: false" \
   env LINKSTAY_SYSTEMD=true \
-  "$BIN" -t 1.1.1.1 -i 2 -w 500 -n 3 -pfalse -l debug -sfalse
+  "$BIN" -t 1.1.1.1 -i 2s -w 500ms -n 3 -pfalse -l debug -sfalse

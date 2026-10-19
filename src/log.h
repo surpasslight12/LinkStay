@@ -29,13 +29,8 @@ typedef struct {
   bool timestamps;
 } ls_log_t;
 
-/* Cold-path marker for the error and warning loggers; expands to nothing when
- * the compiler does not know the attribute. */
-#if defined(__GNUC__)
+/* Cold-path marker for the error and warning loggers. */
 #define LS_COLD [[gnu::cold]]
-#else
-#define LS_COLD
-#endif
 
 void ls_log_init(ls_log_t *restrict log, ls_log_level_t level,
                  bool timestamps);

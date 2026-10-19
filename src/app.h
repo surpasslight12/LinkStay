@@ -5,10 +5,10 @@
  * app.h — application assembly layer.
  *
  * Public surface: ls_app_init(), ls_app_run(), ls_app_destroy(). main.c owns
- * the ls_app_t storage but never inspects its fields; every other symbol in
- * app.c is static. ls_stats_t is owned by stats.h and appears here only because
- * ls_app_t embeds it by value (the design is heap-free, so the struct cannot be
- * made opaque behind a pointer).
+ * the ls_app_t storage and reads only its `log` member for the final exit
+ * diagnostic; every other symbol in app.c is static. ls_stats_t is owned by
+ * stats.h and appears here only because ls_app_t embeds it by value (the
+ * design is heap-free, so the struct cannot be made opaque behind a pointer).
  *
  * Lifetime: ls_app_init() must succeed before ls_app_run(); ls_app_destroy()
  * is safe on a zero-initialized struct and after a failed init.

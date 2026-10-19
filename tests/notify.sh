@@ -7,7 +7,7 @@ if command -v python3 >/dev/null 2>&1; then
   notify_sock="$TMP/notify.sock"
   notify_out="$TMP/notify.out"
   if run_notify_case 1.8 "$notify_sock" "$notify_out" \
-       WATCHDOG_USEC=1000000 "$BIN" -t 127.0.0.1 -i 1 -w 500 -l debug; then
+       WATCHDOG_USEC=1000000 "$BIN" -t 127.0.0.1 -i 1s -w 500ms -l debug; then
     [[ "$hay" == *"systemd integration active, watchdog ping every 500ms"* ]] && \
       pass "systemd watchdog interval derived from WATCHDOG_USEC" || \
       fail "systemd watchdog interval derived from WATCHDOG_USEC" \
@@ -33,7 +33,7 @@ if command -v python3 >/dev/null 2>&1; then
   notify_sock="$TMP/notify-badusec.sock"
   notify_out="$TMP/notify-badusec.out"
   if run_notify_case 1.2 "$notify_sock" "$notify_out" \
-       WATCHDOG_USEC=-1 "$BIN" -t 127.0.0.1 -i 1 -w 500 -l debug; then
+       WATCHDOG_USEC=-1 "$BIN" -t 127.0.0.1 -i 1s -w 500ms -l debug; then
     [[ "$hay" == *"watchdog disabled"* ]] && \
       pass "malformed WATCHDOG_USEC disables the watchdog" || \
       fail "malformed WATCHDOG_USEC disables the watchdog" "hay tail=${hay: -300}"
@@ -53,7 +53,7 @@ if command -v python3 >/dev/null 2>&1; then
   notify_out="$TMP/notify-pid.out"
   if run_notify_case 1.2 "$notify_sock" "$notify_out" \
        WATCHDOG_USEC=1000000 WATCHDOG_PID=99999999 \
-       "$BIN" -t 127.0.0.1 -i 1 -w 500 -l debug; then
+       "$BIN" -t 127.0.0.1 -i 1s -w 500ms -l debug; then
     [[ "$hay" == *"watchdog disabled"* ]] && \
       pass "WATCHDOG_PID mismatch disables watchdog" || \
       fail "WATCHDOG_PID mismatch disables watchdog" "hay tail=${hay: -300}"

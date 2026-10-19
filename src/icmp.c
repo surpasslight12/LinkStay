@@ -65,11 +65,12 @@ bool ls_icmp_open(ls_icmp_t *restrict icmp, int family,
                         proto);
   if (icmp->sockfd < 0) {
     return ls_err_set(err,
-                      "cannot create ICMP socket (family=%d): %s "
+                      "Cannot create ICMP socket (family=%d): %s "
                       "(root or CAP_NET_RAW required)",
                       family, strerror(errno));
   }
 
+  icmp->opened = true;
   icmp->bpf_errno = attach_family_filter(icmp->sockfd, family);
   return true;
 }
@@ -78,10 +79,11 @@ void ls_icmp_close(ls_icmp_t *restrict icmp) {
   if (icmp == nullptr) {
     return;
   }
-  if (icmp->sockfd >= 0) {
+  if (icmp->opened && icmp->sockfd >= 0) {
     close(icmp->sockfd);
-    icmp->sockfd = -1;
   }
+  icmp->opened = false;
+  icmp->sockfd = -1;
 }
 
 /* ---- Echo request construction ---- */
@@ -204,7 +206,7 @@ ls_icmp_send_status_t ls_icmp_send_echo(
                : LS_ICMP_SEND_ERROR;
   }
   if ((size_t)sent != packet_len) {
-    (void)ls_err_set(err, "short send (%zd of %zu bytes)", sent, packet_len);
+    (void)ls_err_set(err, "Short send (%zd of %zu bytes)", sent, packet_len);
     return LS_ICMP_SEND_ERROR;
   }
   return LS_ICMP_SEND_OK;

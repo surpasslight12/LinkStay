@@ -12,7 +12,7 @@
  * known; afterwards the resolved level and timestamp policy apply. */
 
 static void log_fatal_error(ls_log_level_t level, bool timestamps,
-                            const char *restrict message) {
+                            const char *message) {
   ls_log_t log;
   ls_log_init(&log, level, timestamps);
   ls_error(&log, LS_PROGRAM_NAME " failed: %s", message);

@@ -89,14 +89,10 @@ static bool apply_string(const char *name, const char *value, char *dest,
 }
 
 /* Rejects what strtoull() would otherwise accept silently: leading whitespace,
- * an empty string, and a leading '-' (which wraps around to a huge unsigned
- * value). A leading '+' stays valid because the historical parser took it. */
+ * an empty string, a leading '+' (a legacy spelling), and a leading '-' (which
+ * would wrap around to a huge unsigned value). */
 static bool has_unsigned_shape(const char *value) {
-  if (value == nullptr) {
-    return false;
-  }
-  const char *digits = value[0] == '+' ? value + 1 : value;
-  return digits[0] >= '0' && digits[0] <= '9';
+  return value != nullptr && value[0] >= '0' && value[0] <= '9';
 }
 
 static bool apply_positive_int(const char *name, const char *value,
@@ -138,14 +134,13 @@ static bool apply_bool(const char *name, const char *value, bool *dest,
 static bool invalid_duration(const char *name, const char *display,
                              ls_err_t *err) {
   return ls_err_set(err,
-                    "Invalid value for %s: %s (use a positive integer, "
-                    "optionally suffixed 's' or 'ms')",
+                    "Invalid value for %s: %s (use a positive integer "
+                    "suffixed 's' or 'ms')",
                     name, display);
 }
 
 static bool apply_duration(const char *name, const char *value,
-                           uint64_t default_unit_ms, uint64_t max_ms,
-                           uint64_t *out_ms, ls_err_t *err) {
+                           uint64_t max_ms, uint64_t *out_ms, ls_err_t *err) {
   const char *display = value != nullptr ? value : "<empty>";
   if (!has_unsigned_shape(value)) {
     return invalid_duration(name, display, err);
@@ -156,15 +151,13 @@ static bool apply_duration(const char *name, const char *value,
   if (errno != 0 || parsed == 0) {
     return invalid_duration(name, display, err);
   }
-  uint64_t unit_ms = default_unit_ms;
-  if (*endptr != '\0') {
-    if (strcmp(endptr, "s") == 0) {
-      unit_ms = LS_MS_PER_SEC;
-    } else if (strcmp(endptr, "ms") == 0) {
-      unit_ms = 1;
-    } else {
-      return invalid_duration(name, display, err);
-    }
+  uint64_t unit_ms = 0;
+  if (strcmp(endptr, "s") == 0) {
+    unit_ms = LS_MS_PER_SEC;
+  } else if (strcmp(endptr, "ms") == 0) {
+    unit_ms = 1;
+  } else {
+    return invalid_duration(name, display, err);
   }
   uint64_t result_ms = 0;
   if (ckd_mul(&result_ms, (uint64_t)parsed, unit_ms)) {
@@ -201,9 +194,8 @@ static bool apply_target(const char *name, const char *value, ls_opts_t *opts,
 
 static bool apply_interval(const char *name, const char *value, ls_opts_t *opts,
                            ls_err_t *err) {
-  return apply_duration(name, value, LS_MS_PER_SEC,
-                        (uint64_t)INT_MAX * LS_MS_PER_SEC, &opts->interval_ms,
-                        err);
+  return apply_duration(name, value, (uint64_t)INT_MAX * LS_MS_PER_SEC,
+                        &opts->interval_ms, err);
 }
 
 static bool apply_threshold(const char *name, const char *value,
@@ -214,8 +206,7 @@ static bool apply_threshold(const char *name, const char *value,
 
 static bool apply_timeout(const char *name, const char *value, ls_opts_t *opts,
                           ls_err_t *err) {
-  return apply_duration(name, value, 1, (uint64_t)INT_MAX, &opts->timeout_ms,
-                        err);
+  return apply_duration(name, value, (uint64_t)INT_MAX, &opts->timeout_ms, err);
 }
 
 static bool apply_poweroff(const char *name, const char *value, ls_opts_t *opts,
@@ -255,9 +246,7 @@ static void help_interval(void) {
   char interval_default[32];
   ls_format_duration(LS_DEFAULT_INTERVAL_MS, interval_default,
                      sizeof(interval_default));
-  printf("Probe interval; a plain number");
-  print_help_cont();
-  printf("means seconds, 's'/'ms' suffixes accepted");
+  printf("Probe interval; requires an 's' or 'ms' suffix");
   print_help_cont();
   printf("(default: %s)", interval_default);
 }
@@ -271,9 +260,7 @@ static void help_timeout(void) {
   char timeout_default[32];
   ls_format_duration(LS_DEFAULT_TIMEOUT_MS, timeout_default,
                      sizeof(timeout_default));
-  printf("Reply timeout; a plain number means");
-  print_help_cont();
-  printf("milliseconds, 's'/'ms' suffixes accepted;");
+  printf("Reply timeout; requires an 's' or 'ms' suffix;");
   print_help_cont();
   printf("must be smaller than --interval");
   print_help_cont();
@@ -577,8 +564,8 @@ static bool validate(const ls_opts_t *opts, ls_err_t *err) {
 
 /* ---- Help & version ---- */
 
-/* Hand-written environment/examples prose; option rows and descriptions live in
- * OPT_SPECS, so adding or renaming an option only needs one table row. */
+/* Environment/examples prose is hand-written; option metadata, synopsis,
+ * grouping, and help printers stay next to OPT_SPECS. */
 static void print_usage(void) {
   printf("Usage: %s [options]\n\n", LS_PROGRAM_NAME);
   print_group(LS_GROUP_NETWORK);
@@ -597,10 +584,10 @@ static void print_usage(void) {
   printf("  Logging:      LINKSTAY_LOG_LEVEL\n");
   printf("  Integration:  LINKSTAY_SYSTEMD\n");
   printf("\nExamples:\n");
-  printf("  %s -t 1.1.1.1 -i 10 -n 5\n", LS_PROGRAM_NAME);
-  printf("  %s -t 192.168.1.1 -i 5 -n 3 --poweroff\n", LS_PROGRAM_NAME);
+  printf("  %s -t 1.1.1.1 -i 10s -n 5\n", LS_PROGRAM_NAME);
+  printf("  %s -t 192.168.1.1 -i 5s -n 3 --poweroff\n", LS_PROGRAM_NAME);
   printf("  %s -t 8.8.8.8 -l debug --systemd=false\n", LS_PROGRAM_NAME);
-  printf("  %s -t 8.8.8.8 -i 5 -n 3 -p -sfalse -l debug\n", LS_PROGRAM_NAME);
+  printf("  %s -t 8.8.8.8 -i 5s -n 3 -p -sfalse -l debug\n", LS_PROGRAM_NAME);
 }
 
 static void print_version(void) {

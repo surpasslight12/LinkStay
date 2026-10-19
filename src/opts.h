@@ -7,7 +7,7 @@
  * Effective precedence, highest first: CLI arguments, LINKSTAY_* environment
  * variables, built-in defaults. opts.c applies defaults, then the CLI, then
  * every environment variable whose CLI counterpart was not given (tracked in a
- * seen[] flags array), so an invalid env value can never defeat a valid CLI
+ * seen[] flag array), so an invalid env value can never defeat a valid CLI
  * override. Cross-field validation runs last.
  */
 

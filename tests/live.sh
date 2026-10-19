@@ -9,7 +9,7 @@ if [[ "$caps" != *cap_net_raw* && "${LINKSTAY_TEST_LIVE:-0}" != "1" ]]; then
   skip "Live ICMP suite" "$BIN lacks cap_net_raw — run: sudo setcap cap_net_raw=eip $BIN (or LINKSTAY_TEST_LIVE=1 inside 'unshare -Urn')"
 else
   # 1) Successful ping to loopback, SIGTERM after ~2.5s, expect clean exit + replies
-  spawn "$BIN" -t 127.0.0.1 -i 1 -w 500 -l debug -sfalse
+  spawn "$BIN" -t 127.0.0.1 -i 1s -w 500ms -l debug -sfalse
   sleep 2.5
   kill -TERM "$PID" 2>/dev/null || true
   await 3
@@ -45,7 +45,7 @@ else
     fail "systemd integration reports the configured disable" "no inactive debug line"
 
   # 1b) systemd integration on but NOTIFY_SOCKET unset: inactive, not an error
-  spawn "$BIN" -t 127.0.0.1 -i 1 -w 500 -l debug
+  spawn "$BIN" -t 127.0.0.1 -i 1s -w 500ms -l debug
   sleep 1.2
   kill -TERM "$PID" 2>/dev/null || true
   await 3
@@ -56,7 +56,7 @@ else
 
   # 1c) NOTIFY_SOCKET set but unusable: warn once, keep monitoring
   spawn env NOTIFY_SOCKET="$TMP/absent-notify.sock" \
-    "$BIN" -t 127.0.0.1 -i 1 -w 500 -l debug
+    "$BIN" -t 127.0.0.1 -i 1s -w 500ms -l debug
   sleep 1.5
   kill -TERM "$PID" 2>/dev/null || true
   await 3
@@ -69,7 +69,7 @@ else
     fail "monitoring continues without a notify channel" "no reply line"
 
   # 2) SIGINT is treated like SIGTERM
-  spawn "$BIN" -t 127.0.0.1 -i 1 -w 500 -l info -sfalse
+  spawn "$BIN" -t 127.0.0.1 -i 1s -w 500ms -l info -sfalse
   sleep 1.5
   kill -INT "$PID" 2>/dev/null || true
   await 3
@@ -80,7 +80,7 @@ else
     fail "SIGINT logs shutdown" "no shutdown banner"
 
   # 3) IPv6 loopback ping
-  spawn "$BIN" -t ::1 -i 1 -w 500 -l debug -sfalse
+  spawn "$BIN" -t ::1 -i 1s -w 500ms -l debug -sfalse
   sleep 1.5
   kill -TERM "$PID" 2>/dev/null || true
   await 3
@@ -91,7 +91,7 @@ else
     fail "IPv6 loopback received replies" "no IPv6 reply line"
 
   # 4) SIGUSR1 dumps stats mid-run
-  spawn "$BIN" -t 127.0.0.1 -i 1 -w 500 -l info -sfalse
+  spawn "$BIN" -t 127.0.0.1 -i 1s -w 500ms -l info -sfalse
   sleep 2.5
   kill -USR1 "$PID" 2>/dev/null || true
   sleep 0.3
@@ -112,7 +112,7 @@ else
   # (no route in a bare namespace) must count toward the failure threshold.
   scrub_env
   unreachable="${LINKSTAY_TEST_UNREACHABLE_TARGET:-192.0.2.1}"
-  run_capture timeout 10s "$BIN" -t "$unreachable" -i 1 -w 300 -n 2 -l info -sfalse
+  run_capture timeout 10s "$BIN" -t "$unreachable" -i 1s -w 300ms -n 2 -l info -sfalse
   hay="${STDOUT}${STDERR}"
   if [[ "$RC" == "0" && "$hay" == *"Dry-run complete"* ]]; then
     pass "dry-run threshold trigger exits cleanly"

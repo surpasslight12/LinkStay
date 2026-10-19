@@ -30,9 +30,9 @@ CODEGEN_CFLAGS := -ffunction-sections -fdata-sections -fno-plt
 CFLAGS ?= $(WARN_CFLAGS) $(OPT_CFLAGS) $(CODEGEN_CFLAGS)
 
 # -pedantic-errors keeps the sources strictly C23: the only tolerated vendor
-# extensions are [[gnu::...]] attributes (valid C23 attribute syntax) and
-# __builtin_expect, which base.h guards with a portable fallback. The C23
-# requirement itself is enforced by an #error in base.h.
+# extensions are [[gnu::...]] attributes (valid C23 attribute syntax) and the
+# GCC/Clang __builtin_expect used by base.h. The C23 requirement itself is
+# enforced by an #error in base.h.
 REQUIRED_CFLAGS := -std=c23 -pedantic-errors -fstack-protector-strong -fPIE \
                    -D_FORTIFY_SOURCE=3 \
                    -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
@@ -173,7 +173,8 @@ install: $(TARGET)
 	$(INSTALL) -D -m 755 $(TARGET) $(DESTDIR)$(BINDIR)/linkstay
 
 install-systemd: install
-	$(INSTALL) -D -m 644 systemd/linkstay.service $(DESTDIR)$(SYSTEMD_UNIT_DIR)/linkstay.service
+	$(INSTALL) -D -m 644 systemd/linkstay.service \
+		$(DESTDIR)$(SYSTEMD_UNIT_DIR)/linkstay.service
 
 uninstall:
 	$(RM) $(DESTDIR)$(BINDIR)/linkstay

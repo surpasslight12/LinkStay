@@ -3,13 +3,13 @@
 [![C23](https://img.shields.io/badge/C-23-blue.svg)](https://en.wikipedia.org/wiki/C23_(C_standard_revision))
 [![systemd](https://img.shields.io/badge/systemd-integrated-green.svg)](https://systemd.io/)
 
-**linkstay** 是一个轻量级、高性能的 Linux 网络监控工具，通过周期性 ICMP ping 检测网络可达性，并在连续失败达到阈值后自动执行关机。
+**linkstay** 是一个轻量级、高性能的 Linux 网络监控工具，通过周期性 ICMP ping 检测网络可达性，并在连续失败达到阈值后触发关机动作（默认仅模拟）。
 
 ## 核心特性
 
 - **原生 ICMP 实现**：使用 raw socket + BPF 内核过滤，无需依赖系统 `ping` 命令
 - **可选的真实关机**：通过布尔开关 `--poweroff` 决定是否正式关机；`false` 仅模拟，`true` 达到阈值后立即执行关机
-- **systemd 深度集成**：支持 `sd_notify`、watchdog、状态通知；watchdog 随 systemd 自动启用
+- **systemd 深度集成**：支持 `sd_notify`、watchdog（由 `WatchdogSec` 驱动）与状态通知
 - **高性能**：默认 LTO 构建，单一二进制文件 ≈ 42 KiB（strip 后），内存占用 < 5 MB，CPU 占用 < 1%
 - **安全加固**：编译期 Full RELRO、PIE、Stack Canary、NX、FORTIFY_SOURCE；运行期 systemd 沙箱
 
@@ -32,12 +32,12 @@ make sanitize-test # ASan/UBSan 构建并运行两套测试
 ./bin/linkstay --help
 
 # 前台调试运行（不实际关机，仅模拟）
-sudo ./bin/linkstay --target 1.1.1.1 --interval 10 --timeout 3000 \
+sudo ./bin/linkstay --target 1.1.1.1 --interval 10s --timeout 3000ms \
      --threshold 3 --log-level debug
 
-# 短选项示例：必选参数既可写成 “-i 5”，也可写成 “-i5”
+# 短选项示例：必选参数既可写成 “-i 5s”，也可写成 “-i5s”
 # 带可选参数的 -p / -s 建议写成 -pfalse/-sfalse，或使用 --poweroff=false/--systemd=false
-sudo ./bin/linkstay -t 1.1.1.1 -i 5 -w 1000 -n 3 -l debug -sfalse
+sudo ./bin/linkstay -t 1.1.1.1 -i 5s -w 1000ms -n 3 -l debug -sfalse
 ```
 
 ### 3. 可选：注册 systemd 服务
@@ -81,7 +81,7 @@ journalctl -fu linkstay
 | `make test` | 单元测试 + `tests/run_tests.sh` 功能测试 |
 | `make lint` | cppcheck + clang-tidy，基线为零告警 |
 | `make shellcheck` | 对 `tests/*.sh` 运行 ShellCheck，基线为零告警 |
-| `make check` | 依次执行 `test` + `lint` + `shellcheck` + `sanitize-test`（提交前的最小验证集） |
+| `make check` | 执行 `test` + `lint` + `shellcheck` + `sanitize-test`（提交前的最小验证集） |
 | `make sanitize` | 以 ASan/UBSan 构建到 `bin-sanitize/`（可用 `SAN=` 覆盖） |
 | `make sanitize-test` | sanitizer 构建并运行单元测试与功能测试 |
 | `make install` | 安装二进制到 `$(PREFIX)/bin/linkstay`，默认 `PREFIX=/usr/local` |
@@ -99,7 +99,7 @@ make install-systemd DESTDIR=/tmp/linkstay-stage PREFIX=/usr/local
 
 ### 5. 测试说明
 
-`make test` 先运行 `tests/unit.c`（166 项单元断言，覆盖 base/addr/log/loop/stats/opts），再由 `tests/run_tests.sh` 驱动 shell 套件，覆盖参数/环境变量解析、优先级、错误信息、NOTIFY_SOCKET 协议与实网 ICMP（loopback、信号、阈值模拟关机）。shell 套件拆分为 `tests/lib.sh`（断言与进程/通知辅助）、`tests/cli.sh`（静态用例）、`tests/live.sh`（实网用例）和 `tests/notify.sh`（sd_notify 协议用例）。实网用例需要 `bin/linkstay` 具备 `cap_net_raw`，缺失时该组用例自动跳过并计入 `Skip`。
+`make test` 先运行 `tests/unit.c`（170 项单元断言，覆盖 base/addr/log/loop/stats/opts），再由 `tests/run_tests.sh` 驱动 shell 套件，覆盖参数/环境变量解析、优先级、错误信息、NOTIFY_SOCKET 协议与实网 ICMP（loopback、信号、阈值模拟关机）。shell 套件拆分为 `tests/lib.sh`（断言与进程/通知辅助）、`tests/cli.sh`（静态用例）、`tests/live.sh`（实网用例）和 `tests/notify.sh`（sd_notify 协议用例）。实网用例需要 `bin/linkstay` 具备 `cap_net_raw`，缺失时该组用例自动跳过并计入 `Skip`。
 
 容器或普通用户无法用 `setcap` 时，可在用户+网络命名空间内运行完整实网用例（无需 root）：
 
@@ -115,18 +115,18 @@ unshare -Urn --map-root-user bash -c \
 | 参数 | CLI 选项 | 环境变量 | 默认值 | 说明 |
 |------|----------|----------|--------|------|
 | 监控目标 | `-t, --target` | `LINKSTAY_TARGET` | `1.1.1.1` | 目标 IP 字面量（仅支持 IPv4/IPv6，不解析域名） |
-| 检测间隔 | `-i, --interval` | `LINKSTAY_INTERVAL` | `10s` | 两次 ping 之间的间隔；纯数字按秒，支持 `s`/`ms` 后缀 |
+| 检测间隔 | `-i, --interval` | `LINKSTAY_INTERVAL` | `10s` | 两次 ping 之间的间隔；必须带 `s`/`ms` 后缀 |
 | 失败阈值 | `-n, --threshold` | `LINKSTAY_THRESHOLD` | `5` | 连续失败次数触发关机 |
-| 超时时间 | `-w, --timeout` | `LINKSTAY_TIMEOUT` | `3000ms` | 单次 ping 等待回包的超时；纯数字按毫秒，支持 `s`/`ms` 后缀；必须小于 `--interval` |
+| 超时时间 | `-w, --timeout` | `LINKSTAY_TIMEOUT` | `3000ms` | 单次 ping 等待回包的超时；必须带 `s`/`ms` 后缀，且小于 `--interval` |
 | 是否关机 | `-p, --poweroff` | `LINKSTAY_POWEROFF` | `false` | `true` 实际执行关机，`false` 仅模拟；接受 `true`/`false`（大小写不敏感） |
 | 日志级别 | `-l, --log-level` | `LINKSTAY_LOG_LEVEL` | `info` | 取值为 `silent` / `error` / `warn` / `info` / `debug` |
 | systemd 集成 | `-s, --systemd` | `LINKSTAY_SYSTEMD` | `true` | 启用 `sd_notify`、watchdog 与状态通知；接受 `true`/`false`（大小写不敏感）；省略参数时等价于启用，禁用建议写 `--systemd=false` 或 `-sfalse` |
 | 版本信息 | `-v, --version` | — | — | 打印版本后退出（退出码 0） |
 | 帮助信息 | `-h, --help` | — | — | 打印用法与全部选项后退出（退出码 0） |
 
-优先级：CLI 参数 > 环境变量 > 编译期默认值。`--interval` 与 `--timeout` 均接受可选的 `s`/`ms` 后缀（仅小写，如 `-i 500ms`、`-w 1s`），内部统一以毫秒处理，唯一跨参数约束是 `timeout_ms < interval_ms`；日志与 `--help` 的时长统一由 `ls_format_duration()` 格式化（整秒显示为 `10s`，否则显示为 `1500ms`）。
+优先级：CLI 参数 > 环境变量 > 编译期默认值。`--interval` 与 `--timeout` 必须带 `s`/`ms` 后缀（仅小写，如 `-i 500ms`、`-w 1s`），不再接受裸数字或前导 `+`；内部统一以毫秒处理，唯一跨参数约束是 `timeout_ms < interval_ms`。日志与 `--help` 的时长统一由 `ls_format_duration()` 格式化（整秒显示为 `10s`，否则显示为 `1500ms`）。
 
-短选项：必选参数既支持分开写法（如 `-i 5`），也支持粘连写法（如 `-i5`）；`-p`/`-s` 的可选布尔参数建议写成 `-pfalse`/`-sfalse`，或使用 `--poweroff=false`/`--systemd=false`。
+短选项：必选参数既支持分开写法（如 `-i 5s`），也支持粘连写法（如 `-i5s`）；`-p`/`-s` 的可选布尔参数建议写成 `-pfalse`/`-sfalse`，或使用 `--poweroff=false`/`--systemd=false`。
 
 ## 探测与失败判定
 
@@ -147,13 +147,13 @@ unshare -Urn --map-root-user bash -c \
 ### `--poweroff=true`
 达到阈值后立即执行真正关机。
 关机后端仅有一个：统一调用 `systemctl --no-block poweroff`。
-该模式要求主机存在可用的 systemd 环境（`/usr/bin/systemctl` 与 `/run/systemd/system`）。
+该模式要求主机存在可用的 systemd 环境（`/usr/bin/systemctl` 与 `/run/systemd/system`）。若 `systemctl` 调用失败，进程会记录错误并继续监控，连续失败计数保持不变。
 
 ## 日志时间戳行为
 
 时间戳行为为**派生行为**：
 
-- `--systemd=true`：日志进入 journald，linkstay 自动**关闭**前缀时间戳（避免与 journal 时间字段重复）
+- `--systemd=true`：linkstay 自动**关闭**前缀时间戳（假定日志由 journald 收集，避免与 journal 时间字段重复）；在 systemd 之外前台运行时建议配合 `--systemd=false`
 - `--systemd=false`：linkstay 自动**开启**时间戳，便于前台运行、重定向文件和手工排障
 
 ## 日志输出
@@ -192,10 +192,10 @@ unshare -Urn --map-root-user bash -c \
 
 ```bash
 # 错误：5000 ms 并不小于 5 s = 5000 ms
-./bin/linkstay --target 1.1.1.1 --interval 5 --timeout 5000
+./bin/linkstay --target 1.1.1.1 --interval 5s --timeout 5000ms
 
-# 正确：3000 ms 小于 5000 ms；也可统一用后缀避免心算
-./bin/linkstay --target 1.1.1.1 --interval 5 --timeout 3000
+# 正确：3000 ms 小于 5000 ms
+./bin/linkstay --target 1.1.1.1 --interval 5s --timeout 3000ms
 ./bin/linkstay --target 1.1.1.1 --interval 5s --timeout 3s
 ```
 
@@ -224,13 +224,13 @@ sudo ./bin/linkstay --target 1.1.1.1
 | 指令 | 用途 |
 |------|------|
 | `NoNewPrivileges=true` | 禁止提权 |
-| `ProtectSystem=strict` | 只读挂载 /usr、/boot、/etc |
+| `ProtectSystem=strict` | 文件系统整体只读（/dev、/proc、/sys 等 API 文件系统除外） |
 | `RestrictAddressFamilies` | 仅允许 AF_UNIX、AF_INET、AF_INET6（无 DNS/netlink 需求，不含 AF_NETLINK） |
 | `SystemCallFilter` | 白名单 @system-service @network-io @process |
 
 ### 资源限制
 
-`MemoryMax=50M`、`TasksMax=10`、`OOMScoreAdjust=-100`（防止被 OOM killer 杀死）
+`MemoryMax=50M`、`TasksMax=10`、`OOMScoreAdjust=-100`（降低被 OOM killer 杀死的概率）
 
 ## 项目结构
 
@@ -241,7 +241,7 @@ README.md               # 使用说明（面向用户的行为契约）
 src/                    # 头文件与实现同目录，flat layout
 ├── base.h / base.c     # 无状态基础层：错误类型、单调时钟、饱和运算、时长格式化
 ├── log.h / log.c       # 分级日志：项目内唯一的 stderr 输出点
-├── addr.h / addr.c     # IPv4/IPv6 字面量解析（配置校验与传输层共用同一实现）
+├── addr.h / addr.c     # IPv4/IPv6 字面量解析（opts 校验与 app 解析共用同一实现）
 ├── opts.h / opts.c     # 配置解析：默认值 → CLI → 环境变量 → 校验
 ├── loop.h / loop.c     # poll(2) 事件循环、绝对 deadline 定时器、signalfd
 ├── icmp.h / icmp.c     # ICMP raw socket、BPF 过滤、校验和、回包匹配

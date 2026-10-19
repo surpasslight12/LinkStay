@@ -249,8 +249,8 @@ static void test_opts_defaults(void) {
 
 static void test_opts_cli(void) {
   reset_opts_env();
-  char *argv[] = {(char *)"linkstay", "-t", "8.8.8.8", "-i", "2",
-                  "-n", "3", "-w", "500", "--poweroff=false",
+  char *argv[] = {(char *)"linkstay", "-t", "8.8.8.8", "-i", "2s",
+                  "-n", "3", "-w", "500ms", "--poweroff=false",
                   "--log-level=DEBUG", "--systemd=FALSE"};
   ls_opts_t opts;
   bool exit_requested = true;
@@ -270,7 +270,7 @@ static void test_opts_cli(void) {
 
 static void test_opts_attached_forms(void) {
   reset_opts_env();
-  char *argv[] = {(char *)"linkstay", "-t8.8.8.8", "-i2", "-n3", "-w500",
+  char *argv[] = {(char *)"linkstay", "-t8.8.8.8", "-i2s", "-n3", "-w500ms",
                   "-pfalse", "-ldebug", "-sfalse"};
   ls_opts_t opts;
   bool exit_requested = true;
@@ -299,14 +299,26 @@ static void test_opts_duration_suffixes(void) {
                      &err));
   CHECK(opts.interval_ms == UINT64_C(1500));
   CHECK(opts.timeout_ms == UINT64_C(1000));
+
+  char *bare[] = {(char *)"linkstay", "-t", "1.1.1.1", "-i", "2", "-w",
+                  "500ms"};
+  CHECK(!resolve_opts((int)LS_ARRAY_LEN(bare), bare, &opts, &exit_requested,
+                      &err));
+  CHECK(strstr(err.msg, "Invalid value for --interval") != nullptr);
+
+  char *plus[] = {(char *)"linkstay", "-t", "1.1.1.1", "-i", "+5s", "-w",
+                  "500ms"};
+  CHECK(!resolve_opts((int)LS_ARRAY_LEN(plus), plus, &opts, &exit_requested,
+                      &err));
+  CHECK(strstr(err.msg, "Invalid value for --interval") != nullptr);
 }
 
 static void test_opts_env(void) {
   reset_opts_env();
   set_opts_env("LINKSTAY_TARGET", "8.8.8.8");
-  set_opts_env("LINKSTAY_INTERVAL", "5");
+  set_opts_env("LINKSTAY_INTERVAL", "5s");
   set_opts_env("LINKSTAY_THRESHOLD", "4");
-  set_opts_env("LINKSTAY_TIMEOUT", "400");
+  set_opts_env("LINKSTAY_TIMEOUT", "400ms");
   set_opts_env("LINKSTAY_POWEROFF", "false");
   set_opts_env("LINKSTAY_LOG_LEVEL", "warn");
   set_opts_env("LINKSTAY_SYSTEMD", "false");
@@ -333,8 +345,8 @@ static void test_opts_precedence(void) {
   set_opts_env("LINKSTAY_INTERVAL", "abc");
   set_opts_env("LINKSTAY_POWEROFF", "junk");
 
-  char *argv[] = {(char *)"linkstay", "-t", "1.1.1.1", "-i", "2",
-                  "-w", "500", "-pfalse"};
+  char *argv[] = {(char *)"linkstay", "-t", "1.1.1.1", "-i", "2s",
+                  "-w", "500ms", "-pfalse"};
   ls_opts_t opts;
   bool exit_requested = true;
   ls_err_t err = {};
@@ -356,8 +368,8 @@ static void test_opts_precedence(void) {
 static void test_opts_validation(void) {
   reset_opts_env();
 
-  char *cross_field[] = {(char *)"linkstay", "-t", "1.1.1.1", "-i", "1",
-                         "-w", "1000"};
+  char *cross_field[] = {(char *)"linkstay", "-t", "1.1.1.1", "-i", "1s",
+                         "-w", "1000ms"};
   expect_opts_reject("must be smaller than interval", cross_field,
                      (int)LS_ARRAY_LEN(cross_field));
 
@@ -388,7 +400,7 @@ static void test_opts_validation(void) {
   char *stray[] = {(char *)"linkstay", "-t", "1.1.1.1", "stray"};
   expect_opts_reject("Unexpected argument", stray, (int)LS_ARRAY_LEN(stray));
 
-  char *zero_interval[] = {(char *)"linkstay", "-t", "1.1.1.1", "-i", "0"};
+  char *zero_interval[] = {(char *)"linkstay", "-t", "1.1.1.1", "-i", "0s"};
   expect_opts_reject("Invalid value for --interval", zero_interval,
                      (int)LS_ARRAY_LEN(zero_interval));
 

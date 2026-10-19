@@ -6,10 +6,10 @@
  *
  * Owns the AF_UNIX datagram channel to the service manager and the
  * READY/STATUS/WATCHDOG/STOPPING protocol, including the NOTIFY_SOCKET,
- * WATCHDOG_USEC and WATCHDOG_PID environment contract. Every operation is a
- * no-op unless the channel was established, so callers never branch on
- * availability. This is an integration backend, not policy: when to send which
- * message stays in app.c.
+ * WATCHDOG_USEC and WATCHDOG_PID environment contract. Every send operation is
+ * a no-op unless the channel was established; app.c may query availability for
+ * diagnostics, but need not branch before sending. This is an integration
+ * backend, not policy: when to send which message stays in app.c.
  */
 
 #include "base.h"
@@ -45,7 +45,7 @@ void ls_notify_destroy(ls_notify_t *restrict notify);
 [[nodiscard]] bool ls_notify_enabled(const ls_notify_t *restrict notify);
 
 [[nodiscard]] bool ls_notify_ready(ls_notify_t *restrict notify);
-[[gnu::format(printf, 2, 3)]] bool ls_notify_statusf(
+[[nodiscard]] [[gnu::format(printf, 2, 3)]] bool ls_notify_statusf(
     ls_notify_t *restrict notify, const char *restrict fmt, ...);
 [[nodiscard]] bool ls_notify_stopping(ls_notify_t *restrict notify);
 [[nodiscard]] bool ls_notify_watchdog(ls_notify_t *restrict notify);

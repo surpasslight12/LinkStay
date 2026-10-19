@@ -1,6 +1,6 @@
 /*
- * stats.c — cumulative probe counters and latency aggregates. Pure arithmetic;
- * the caller owns the ls_stats_t.
+ * stats.c — cumulative probe counters and latency aggregates. Arithmetic plus
+ * the monotonic clock for uptime; the caller owns the ls_stats_t.
  */
 
 #include "stats.h"

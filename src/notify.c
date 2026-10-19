@@ -165,10 +165,13 @@ ls_notify_state_t ls_notify_init(ls_notify_t *restrict notify,
 }
 
 void ls_notify_destroy(ls_notify_t *restrict notify) {
-  if (notify->sockfd >= 0) {
-    close(notify->sockfd);
-    notify->sockfd = -1;
+  if (notify == nullptr) {
+    return;
   }
+  if (notify->enabled && notify->sockfd >= 0) {
+    close(notify->sockfd);
+  }
+  notify->sockfd = -1;
   notify->enabled = false;
 }
 

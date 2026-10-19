@@ -1,5 +1,5 @@
 [Unit]
-Description=linkstay Network Monitor with Auto-Shutdown
+Description=linkstay Network Monitor with optional auto-shutdown
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=300
@@ -30,9 +30,9 @@ RestartSec=10
 
 # Configuration
 Environment="LINKSTAY_TARGET=1.1.1.1"
-Environment="LINKSTAY_INTERVAL=10"
+Environment="LINKSTAY_INTERVAL=10s"
 Environment="LINKSTAY_THRESHOLD=5"
-Environment="LINKSTAY_TIMEOUT=3000"
+Environment="LINKSTAY_TIMEOUT=3000ms"
 Environment="LINKSTAY_POWEROFF=false"
 Environment="LINKSTAY_LOG_LEVEL=info"
 Environment="LINKSTAY_SYSTEMD=true"

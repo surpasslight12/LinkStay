@@ -34,11 +34,12 @@
  * used to trigger the real poweroff (app.c). */
 #define LS_SYSTEMCTL_PATH "/usr/bin/systemctl"
 
-/* Time unit conversion constants (integers; float conversions for latency
- * math live in app.c and are derived from these). */
-#define LS_NS_PER_MS UINT64_C(1000000) /* nanoseconds per millisecond */
-#define LS_US_PER_MS UINT64_C(1000)    /* microseconds per millisecond */
-#define LS_MS_PER_SEC UINT64_C(1000)   /* milliseconds per second */
+/* Time unit conversion constants (integers); modules derive any float
+ * conversions they need from these. */
+#define LS_NS_PER_MS UINT64_C(1000000)  /* nanoseconds per millisecond */
+#define LS_NS_PER_SEC UINT64_C(1000000000) /* nanoseconds per second */
+#define LS_US_PER_MS UINT64_C(1000)     /* microseconds per millisecond */
+#define LS_MS_PER_SEC UINT64_C(1000)    /* milliseconds per second */
 
 /* Process exit codes: everything fatal maps to LS_EXIT_FAILURE. */
 #define LS_EXIT_SUCCESS 0
@@ -46,18 +47,11 @@
 
 #define LS_ARRAY_LEN(arr) (sizeof(arr) / sizeof((arr)[0]))
 
-/* Branch hints are the only extension that needs a fallback: a compiler
- * without __builtin_expect still gets correct (unhinted) code. Vendor
- * attributes such as [[gnu::cold]] and [[gnu::format]] need no guard because
- * they are standard C23 attribute syntax with an implementation-defined
- * namespace. */
-#if defined(__GNUC__)
+/* Branch hints use the GCC/Clang __builtin_expect builtin. Vendor attributes
+ * such as [[gnu::cold]] and [[gnu::format]] are standard C23 attribute syntax
+ * with an implementation-defined namespace. */
 #define LS_UNLIKELY(x) __builtin_expect(!!(x), 0)
 #define LS_LIKELY(x) __builtin_expect(!!(x), 1)
-#else
-#define LS_UNLIKELY(x) (!!(x))
-#define LS_LIKELY(x) (!!(x))
-#endif
 
 static_assert(sizeof(uint64_t) == 8, "uint64_t must be 8 bytes");
 

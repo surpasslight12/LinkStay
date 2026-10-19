@@ -35,11 +35,12 @@ typedef enum {
 /* Fields are owned by icmp.c. The assembly layer (app.c) only reads `sockfd`
  * (to poll it), `bpf_errno` (to log the filter state) and `sequence` (to
  * remember the outstanding probe), and may set `sockfd = -1` before
- * ls_icmp_open() so a failed init still leaves the struct closeable. No other
- * field access is allowed outside icmp.c. */
+ * ls_icmp_open(). The private `opened` flag makes ls_icmp_close() safe on a
+ * zero-initialized struct. No other field access is allowed outside icmp.c. */
 typedef struct {
   int sockfd;
-  int family; /* AF_INET or AF_INET6 */
+  bool opened; /* internal: false for a zero-initialized struct */
+  int family;  /* AF_INET or AF_INET6 */
   uint16_t sequence;
   int bpf_errno; /* 0 when attached; otherwise the non-fatal attach failure */
 

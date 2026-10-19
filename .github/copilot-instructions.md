@@ -39,7 +39,7 @@ make sanitize-test   # ASan+UBSan unit + shell suites; required for loop/icmp/ap
 make check           # runs test + lint + shellcheck + sanitize-test
 ```
 
-`tests/unit.c` currently runs 166 assertions over `base`/`addr`/`log`/`loop`/
+`tests/unit.c` currently runs 170 assertions over `base`/`addr`/`log`/`loop`/
 `stats` and the `opts` resolver. Live ICMP tests are skipped when the binary
 lacks `CAP_NET_RAW`.
 Run them inside a user + network namespace with the recipe in `README.md`
@@ -74,9 +74,10 @@ pull request (`.github/workflows/ci.yml`).
   `-std=c23 -pedantic-errors`, and `base.h` has a `__STDC_VERSION__` guard that
   fails the build under an older standard. Vendor extensions are limited to an
   explicit allow-list: `[[gnu::...]]` attributes (valid C23 attribute syntax
-  with an implementation-defined namespace) and `__builtin_expect` behind the
-  guarded `LS_LIKELY`/`LS_UNLIKELY` macros. Adding another compiler extension,
-  or a C11/C17 compatibility shim, is a design change.
+  with an implementation-defined namespace) and the GCC/Clang
+  `__builtin_expect` used by `LS_LIKELY`/`LS_UNLIKELY`. The build targets
+  GCC/Clang; adding another compiler extension, or a C11/C17 compatibility
+  shim, is a design change.
 - **Prefer the standard facility.** `<stdckdint.h>` (`ckd_mul`) is used for
   overflow-checked arithmetic, `nullptr`/`bool`/`static_assert`/`alignas` are
   keywords, and unused parameters use `[[maybe_unused]]` instead of `(void)`
@@ -114,17 +115,19 @@ private.
   overload `errno`.
 - Messages are complete sentences without a trailing period, name the offending
   source and value, and state the accepted form, e.g.
-  `Invalid value for --timeout: 1m (use a positive integer, optionally suffixed
-  's' or 'ms')`.
+  `Invalid value for --timeout: 1m (use a positive integer suffixed 's' or
+  'ms')`.
 - `ls_err_t` carries the *reason*; the caller supplies the action. A module
   message must not open with "Failed to ..." when its caller already prefixes
   the operation (that produced "Failed to send ICMP echo: Failed to send
   packet: Network is unreachable"). Syscall failures pass `strerror(errno)`
   through verbatim, so `app_fail()` and `main()` read as
   "<action>: <reason>".
-- Public entry points validate their arguments (`ls_app_init`, `ls_loop_add_fd`,
-  `ls_opts_resolve`, ...). Private `static` helpers assume their arguments are
-  valid and are not required to re-check pointers for null.
+- Public entry points validate caller-owned arguments they can meaningfully
+  reject (`ls_app_init`, `ls_loop_add_fd`, `ls_opts_resolve`, ...). Pure value
+  helpers (`ls_stats_*`, `ls_format_*`, `ls_timer_*`) and the app-owned
+  `ls_notify_*` channel assume valid pointers. Private `static` helpers do not
+  re-check pointers.
 - Modules never write to stdio. `log.c` owns log output (`fprintf` to stderr)
   and `opts.c` owns `--help`/`--version` printing; everything else reports
   through an `ls_log_t` or an `ls_err_t`.
@@ -134,15 +137,17 @@ private.
 ### 3.4 Time
 
 - Every internal duration is milliseconds in a `uint64_t` (`interval_ms`,
-  `timeout_ms`, timer deadlines). Nanoseconds exist only for latency
-  measurement (`ls_now_ns`).
-- Use the unit constants in `base.h` (`LS_NS_PER_MS`, `LS_US_PER_MS`,
-  `LS_MS_PER_SEC`). No ad-hoc `* 1000`, no raw nanosecond literals.
+  `timeout_ms`, timer deadlines). Nanoseconds are confined to the OS
+  boundary: `ls_now_ns` for latency, log timestamp fractions, and the
+  `nanosleep` conversion.
+- Use the unit constants in `base.h` (`LS_NS_PER_MS`, `LS_NS_PER_SEC`,
+  `LS_US_PER_MS`, `LS_MS_PER_SEC`). No ad-hoc `* 1000`, no raw nanosecond
+  literals.
 - Derived durations use the saturating helpers `ls_add_sat` / `ls_mul_sat`.
 - The only user-facing duration parser is `apply_duration()` reached through
-  `OPT_SPECS`: a plain number keeps its historical unit (`--interval` = seconds,
-  `--timeout` = milliseconds), a lowercase `s`/`ms` suffix overrides it, and the
-  result is always stored in milliseconds. Only one cross-field rule exists:
+  `OPT_SPECS`: both `--interval` and `--timeout` require a lowercase `s` or `ms`
+  suffix, and the result is always stored in milliseconds. Bare numbers and
+  a leading `+` are rejected. Only one cross-field rule exists:
   `timeout_ms < interval_ms`.
 - Monotonic time (`CLOCK_MONOTONIC`/`CLOCK_MONOTONIC_COARSE`) for all logic;
   `CLOCK_REALTIME` only for log timestamps in `log.c`.
@@ -187,7 +192,7 @@ layer 0  base                                    (no project dependencies)
 layer 1  log, addr, notify, stats                (base only)
 layer 2  opts   (base, log, addr)
          loop   (base, log)
-         icmp   (base, addr)
+         icmp   (base)
 layer 3  app                                     (all of the above)
 layer 4  main                                    (opts, app, log)
 ```
@@ -320,8 +325,9 @@ documents must be corrected.
   path. The watchdog stays disabled when `WATCHDOG_PID` does not match
   `getpid()` or when `WATCHDOG_USEC` is missing or malformed (a leading `-`
   must not wrap around into a huge deadline).
-- Without `NOTIFY_SOCKET` (or with `--systemd=false`) every notifier call is a
-  no-op; callers never branch on availability.
+- Without `NOTIFY_SOCKET` (or with `--systemd=false`) every notifier send is a
+  no-op; `app.c` may query `ls_notify_enabled()` for diagnostics, but need not
+  branch before sending.
 - The unit's sandboxing is part of the product: raw ICMP needs `CAP_NET_RAW`;
   `AF_NETLINK` is intentionally excluded. Do not weaken these settings without
   an explicit request.
