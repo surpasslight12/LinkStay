@@ -251,7 +251,8 @@ static void probe_succeeded(ls_app_t *app, uint16_t sequence,
   char avg_str[32];
   char uptime_str[32];
   ls_format_latency(latency_ms, latency_str, sizeof(latency_str));
-  ls_format_latency(ls_stats_avg_latency_ms(&app->stats), avg_str, sizeof(avg_str));
+  ls_format_latency(ls_stats_avg_latency_ms(&app->stats), avg_str,
+                    sizeof(avg_str));
   ls_format_uptime(ls_stats_uptime_sec(&app->stats), uptime_str,
                    sizeof(uptime_str));
 

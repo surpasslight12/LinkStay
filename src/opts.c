@@ -1,8 +1,8 @@
 /*
- * opts.c — option resolution and validation. One table (OPT_SPECS) describes
- * every option and drives getopt_long, the environment layer, and error naming.
- * Validation is limited to what can be decided without I/O beyond reading the
- * environment and probing for the systemd runtime.
+ * opts.c — option resolution, validation, and help text. One table (OPT_SPECS)
+ * describes every option and drives getopt_long, the environment layer, error
+ * naming, and --help. Validation is limited to what can be decided without I/O
+ * beyond reading the environment and probing for the systemd runtime.
  */
 
 #include "opts.h"
@@ -65,13 +65,12 @@ static bool invalid_value(const char *name, const char *value,
                     value != nullptr ? value : "<empty>", allowed);
 }
 
-/* ---- Per-option value appliers ----
- *
- * Every applier has the same shape so the option table below can drive both
+/* ---- Per-option value appliers ---- */
+/* Every applier has the same shape so the option table below can drive both
  * the CLI and the environment layer. `name` is the user-facing spelling of the
- * source ("--target" or "LINKSTAY_TARGET"); a NULL value means a bare CLI flag
- * (only the boolean options accept that) because environment values are always
- * non-NULL strings. */
+ * source ("--target" or "LINKSTAY_TARGET"); a nullptr value means a bare CLI
+ * flag (only the boolean options accept that); environment values are always
+ * non-null. */
 
 typedef bool (*apply_fn_t)(const char *name, const char *value,
                            ls_opts_t *opts, ls_err_t *err);
@@ -234,13 +233,11 @@ static bool apply_level(const char *name, const char *value, ls_opts_t *opts,
   return apply_log_level(name, value, &opts->log_level, err);
 }
 
-/* ---- Help text ----
- *
- * Each table row points at one of these printers. A printer emits the first
+/* ---- Help text ---- */
+/* Each table row points at one of these printers. A printer emits the first
  * description line; print_help_cont() starts each continuation line at the
  * shared description column. Keeping the prose next to the option table (rather
- * than in print_usage) is what makes the table the single source of truth.
- */
+ * than in print_usage) is what makes the table the single source of truth. */
 
 #define LS_HELP_DESCRIPTION_COLUMN 30
 #define LS_HELP_SYNOPSIS_WIDTH 27
@@ -296,10 +293,19 @@ static void help_poweroff(void) {
   printf("true requires a systemd host with %s", LS_SYSTEMCTL_PATH);
 }
 
+static const char *default_log_level_name(void) {
+  for (size_t i = 0; i < LS_ARRAY_LEN(LOG_LEVEL_NAMES); i++) {
+    if (LOG_LEVEL_NAMES[i].value == LS_LOG_INFO) {
+      return LOG_LEVEL_NAMES[i].name;
+    }
+  }
+  return "unknown";
+}
+
 static void help_log_level(void) {
   printf("Log level: %s", LS_LOG_LEVEL_VALUES);
   print_help_cont();
-  printf("(default: info)");
+  printf("(default: %s)", default_log_level_name());
 }
 
 static void help_systemd(void) {
@@ -317,59 +323,62 @@ static void help_systemd(void) {
   printf("Accepted values: %s", LS_BOOL_VALUES);
 }
 
-static void help_version(void) { printf("Show version information"); }
+static void help_version(void) {
+  printf("Show version information");
+}
 
-static void help_help(void) { printf("Show this help message"); }
+static void help_help(void) {
+  printf("Show this help message");
+}
 
-/* ---- Option table (single source of truth) ----
- *
- * One row drives getopt_long (built at run time), the environment layer, error
+/* ---- Option table (single source of truth) ---- */
+/* One row drives getopt_long (built at run time), the environment layer, error
  * naming, and the help text. help/version carry no applier: they are handled by
  * the pre-scan so they win over invalid arguments or environment values. */
 
 typedef enum {
-  ARG_NONE,     /* no argument: -v, -h */
-  ARG_REQUIRED, /* -t <ip>, --target <ip> */
-  ARG_OPTIONAL, /* -p[<bool>], --poweroff[=<bool>] */
+  LS_ARG_NONE,     /* no argument: -v, -h */
+  LS_ARG_REQUIRED, /* -t <ip>, --target <ip> */
+  LS_ARG_OPTIONAL, /* -p[<bool>], --poweroff[=<bool>] */
 } arg_kind_t;
 
 typedef enum {
-  GROUP_NETWORK,
-  GROUP_SHUTDOWN,
-  GROUP_LOGGING,
-  GROUP_SYSTEM,
-  GROUP_GENERAL,
+  LS_GROUP_NETWORK,  /* Network Options */
+  LS_GROUP_SHUTDOWN, /* Shutdown Options */
+  LS_GROUP_LOGGING,  /* Logging Options */
+  LS_GROUP_SYSTEM,   /* System Integration */
+  LS_GROUP_GENERAL,  /* General Options */
 } usage_group_t;
 
 typedef struct {
   const char *long_name; /* without the leading "--" */
-  const char *env_name;  /* NULL for CLI-only options */
-  apply_fn_t apply;      /* NULL for help/version */
+  const char *env_name;  /* nullptr for CLI-only options */
+  apply_fn_t apply;      /* nullptr for help/version */
   arg_kind_t arg_kind;
   char short_name;
-  const char *metavar; /* required-argument placeholder */
-  usage_group_t group;
-  void (*print_help)(void);
+  const char *metavar;      /* required-argument placeholder */
+  usage_group_t group;      /* --help section */
+  void (*print_help)(void); /* first description line printer */
 } opt_spec_t;
 
 static const opt_spec_t OPT_SPECS[] = {
-    {"target", "LINKSTAY_TARGET", apply_target, ARG_REQUIRED, 't', "ip",
-     GROUP_NETWORK, help_target},
-    {"interval", "LINKSTAY_INTERVAL", apply_interval, ARG_REQUIRED, 'i',
-     "n[s|ms]", GROUP_NETWORK, help_interval},
-    {"threshold", "LINKSTAY_THRESHOLD", apply_threshold, ARG_REQUIRED, 'n',
-     "num", GROUP_NETWORK, help_threshold},
-    {"timeout", "LINKSTAY_TIMEOUT", apply_timeout, ARG_REQUIRED, 'w',
-     "n[s|ms]", GROUP_NETWORK, help_timeout},
-    {"poweroff", "LINKSTAY_POWEROFF", apply_poweroff, ARG_OPTIONAL, 'p',
-     nullptr, GROUP_SHUTDOWN, help_poweroff},
-    {"log-level", "LINKSTAY_LOG_LEVEL", apply_level, ARG_REQUIRED, 'l',
-     "level", GROUP_LOGGING, help_log_level},
-    {"systemd", "LINKSTAY_SYSTEMD", apply_systemd, ARG_OPTIONAL, 's',
-     nullptr, GROUP_SYSTEM, help_systemd},
-    {"version", nullptr, nullptr, ARG_NONE, 'v', nullptr, GROUP_GENERAL,
+    {"target", "LINKSTAY_TARGET", apply_target, LS_ARG_REQUIRED, 't', "ip",
+     LS_GROUP_NETWORK, help_target},
+    {"interval", "LINKSTAY_INTERVAL", apply_interval, LS_ARG_REQUIRED, 'i',
+     "n[s|ms]", LS_GROUP_NETWORK, help_interval},
+    {"threshold", "LINKSTAY_THRESHOLD", apply_threshold, LS_ARG_REQUIRED, 'n',
+     "num", LS_GROUP_NETWORK, help_threshold},
+    {"timeout", "LINKSTAY_TIMEOUT", apply_timeout, LS_ARG_REQUIRED, 'w',
+     "n[s|ms]", LS_GROUP_NETWORK, help_timeout},
+    {"poweroff", "LINKSTAY_POWEROFF", apply_poweroff, LS_ARG_OPTIONAL, 'p',
+     nullptr, LS_GROUP_SHUTDOWN, help_poweroff},
+    {"log-level", "LINKSTAY_LOG_LEVEL", apply_level, LS_ARG_REQUIRED, 'l',
+     "level", LS_GROUP_LOGGING, help_log_level},
+    {"systemd", "LINKSTAY_SYSTEMD", apply_systemd, LS_ARG_OPTIONAL, 's',
+     nullptr, LS_GROUP_SYSTEM, help_systemd},
+    {"version", nullptr, nullptr, LS_ARG_NONE, 'v', nullptr, LS_GROUP_GENERAL,
      help_version},
-    {"help", nullptr, nullptr, ARG_NONE, 'h', nullptr, GROUP_GENERAL,
+    {"help", nullptr, nullptr, LS_ARG_NONE, 'h', nullptr, LS_GROUP_GENERAL,
      help_help},
 };
 
@@ -379,9 +388,9 @@ static const char *const GROUP_TITLES[] = {
 };
 
 static void format_synopsis(const opt_spec_t *spec, char *buf, size_t size) {
-  if (spec->arg_kind == ARG_NONE) {
+  if (spec->arg_kind == LS_ARG_NONE) {
     (void)snprintf(buf, size, "-%c, --%s", spec->short_name, spec->long_name);
-  } else if (spec->arg_kind == ARG_REQUIRED) {
+  } else if (spec->arg_kind == LS_ARG_REQUIRED) {
     (void)snprintf(buf, size, "-%c, --%s <%s>", spec->short_name,
                    spec->long_name, spec->metavar);
   } else {
@@ -428,9 +437,9 @@ static void build_getopt_tables(opt_tables_t *tables) {
   for (size_t i = 0; i < LS_ARRAY_LEN(OPT_SPECS); i++) {
     const opt_spec_t *spec = &OPT_SPECS[i];
     int has_arg = no_argument;
-    if (spec->arg_kind == ARG_REQUIRED) {
+    if (spec->arg_kind == LS_ARG_REQUIRED) {
       has_arg = required_argument;
-    } else if (spec->arg_kind == ARG_OPTIONAL) {
+    } else if (spec->arg_kind == LS_ARG_OPTIONAL) {
       has_arg = optional_argument;
     }
     tables->long_opts[i] = (struct option){
@@ -441,10 +450,10 @@ static void build_getopt_tables(opt_tables_t *tables) {
     };
 
     tables->optstring[pos++] = spec->short_name;
-    if (spec->arg_kind != ARG_NONE) {
+    if (spec->arg_kind != LS_ARG_NONE) {
       tables->optstring[pos++] = ':';
     }
-    if (spec->arg_kind == ARG_OPTIONAL) {
+    if (spec->arg_kind == LS_ARG_OPTIONAL) {
       tables->optstring[pos++] = ':';
     }
   }
@@ -480,7 +489,7 @@ static bool load_cli(ls_opts_t *opts, int argc, char **argv,
        * '?'. Only a known option whose argument is required turns the first
        * case into a message about the argument. */
       const opt_spec_t *failed = find_spec(optopt);
-      if (failed != nullptr && failed->arg_kind == ARG_REQUIRED) {
+      if (failed != nullptr && failed->arg_kind == LS_ARG_REQUIRED) {
         return ls_err_set(
             err, "Option requires an argument or has invalid value: -%c",
             optopt);
@@ -572,14 +581,14 @@ static bool validate(const ls_opts_t *opts, ls_err_t *err) {
  * OPT_SPECS, so adding or renaming an option only needs one table row. */
 static void print_usage(void) {
   printf("Usage: %s [options]\n\n", LS_PROGRAM_NAME);
-  print_group(GROUP_NETWORK);
+  print_group(LS_GROUP_NETWORK);
   printf("\n");
-  print_group(GROUP_SHUTDOWN);
+  print_group(LS_GROUP_SHUTDOWN);
   printf("\n");
-  print_group(GROUP_LOGGING);
-  print_group(GROUP_SYSTEM);
+  print_group(LS_GROUP_LOGGING);
+  print_group(LS_GROUP_SYSTEM);
   printf("\n");
-  print_group(GROUP_GENERAL);
+  print_group(LS_GROUP_GENERAL);
   printf("\n");
   printf("Environment Variables (lower priority than CLI args):\n");
   printf("  Network:      LINKSTAY_TARGET, LINKSTAY_INTERVAL,\n");

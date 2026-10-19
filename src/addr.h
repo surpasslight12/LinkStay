@@ -14,7 +14,7 @@
 
 #include <sys/socket.h>
 
-/* True when text parses as an IPv4 or IPv6 literal. NULL, empty strings, and
+/* True when text parses as an IPv4 or IPv6 literal. nullptr, empty strings, and
  * hostnames are all false. Use ls_addr_parse() when the reason matters. */
 [[nodiscard]] bool ls_addr_is_literal(const char *restrict text);
 

@@ -5,6 +5,7 @@
 
 #include "stats.h"
 
+/* Internal "no sample" sentinel and microsecond conversion factor. */
 #define LS_STATS_NO_SAMPLE UINT64_MAX
 #define LS_US_PER_MS_F ((double)LS_US_PER_MS)
 

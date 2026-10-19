@@ -22,6 +22,7 @@ typedef struct {
   uint64_t started_at_ms;
 } ls_stats_t;
 
+/* Accumulators update the counters; getters derive display values. */
 void ls_stats_init(ls_stats_t *restrict stats);
 void ls_stats_add_ok(ls_stats_t *restrict stats, double latency_ms);
 void ls_stats_add_fail(ls_stats_t *restrict stats);
