@@ -39,8 +39,9 @@ make sanitize-test   # ASan+UBSan unit + shell suites; required for loop/icmp/ap
 make check           # runs test + lint + shellcheck + sanitize-test
 ```
 
-`tests/unit.c` currently runs 66 assertions over the pure `base`/`addr`/`log`/
-`loop` helpers. Live ICMP tests are skipped when the binary lacks `CAP_NET_RAW`.
+`tests/unit.c` currently runs 166 assertions over `base`/`addr`/`log`/`loop`/
+`stats` and the `opts` resolver. Live ICMP tests are skipped when the binary
+lacks `CAP_NET_RAW`.
 Run them inside a user + network namespace with the recipe in `README.md`
 ("测试说明"); the full suite then reports `Pass: 207   Fail: 0   Skip: 0`
 (without live tests: `Pass: 179   Fail: 0   Skip: 1`). If you changed anything
@@ -91,7 +92,7 @@ pull request (`.github/workflows/ci.yml`).
 |------|-----------|----------|
 | Public symbol (declared in a header) | `ls_` prefix | `ls_app_run`, `ls_icmp_send_echo` |
 | Public inline helper (header-only) | `ls_` prefix, `static inline` | `ls_timer_step`, `ls_loop_now` |
-| Public type | `ls_*_t` | `ls_opts_t`, `ls_icmp_recv_status_t` |
+| Public type | `ls_*_t` | `ls_opts_t`, `ls_stats_t`, `ls_icmp_recv_status_t` |
 | `static` function in a `.c` file | plain verb-noun, no prefix | `probe_failed`, `reply_matches`, `notify_status` |
 | Preprocessor macro | `LS_` prefix, also when file-private | `LS_PACKET_SIZE`, `LS_DEFAULT_TARGET` |
 | `static const` data | `UPPER_SNAKE`, no prefix | `OPT_SPECS`, `SHUTDOWN_ARGV`, `WATCHED_SIGNALS` |
@@ -183,7 +184,7 @@ from the layers above it:
 
 ```
 layer 0  base                                    (no project dependencies)
-layer 1  log, addr, notify                       (base only)
+layer 1  log, addr, notify, stats                (base only)
 layer 2  opts   (base, log, addr)
          loop   (base, log)
          icmp   (base, addr)
@@ -200,7 +201,8 @@ layer 4  main                                    (opts, app, log)
 | `src/loop.h` `.c` | `poll(2)` loop, fixed fd slots, absolute-deadline timer slots, signalfd channel | probes, ICMP, addresses, configuration |
 | `src/icmp.h` `.c` | raw socket, best-effort BPF filter, echo construction, reply matching, send/receive status | address syntax, timers, configuration, log policy |
 | `src/notify.h` `.c` | the `sd_notify` channel and protocol (READY/STATUS/WATCHDOG/STOPPING), NOTIFY_SOCKET/WATCHDOG_USEC/WATCHDOG_PID | when a message is appropriate (that is app policy) |
-| `src/app.h` `.c` | probe state machine, statistics, threshold action, startup/shutdown banners, message policy | nothing above it; it is the top of the stack |
+| `src/stats.h` `.c` | cumulative probe counters, success rate, latency aggregates, uptime | probes, sockets, timers, configuration |
+| `src/app.h` `.c` | probe state machine, threshold action, startup/shutdown banners, message policy | nothing above it; it is the top of the stack |
 | `src/main.c` | entry point: resolve options, run the app, report a fatal startup error, map the result to an exit code | `loop`, `icmp`, `notify`, and every app-internal type; it uses only `opts`/`app` entry points plus `log` |
 
 Rules:
@@ -210,8 +212,9 @@ Rules:
 - Shared enums/constants/structs live in the header of the module that owns
   them. Private helper types stay in the `.c` file.
 - A rule that two modules would otherwise re-implement gets one owner: address
-  literals in `addr`, output in `log`, the systemd channel in `notify`. If you
-  need the same knowledge in two places, move it down instead of copying it.
+  literals in `addr`, output in `log`, the systemd channel in `notify`, probe
+  counters in `stats`. If you need the same knowledge in two places, move it
+  down instead of copying it.
 - Test-only or debug-only accessors are not added to headers; use the existing
   debug logging instead.
 - Add a new module only for a genuinely new mechanism (a transport, an
@@ -225,11 +228,12 @@ Rules:
 
 `opts.c`'s `OPT_SPECS` table is the single source of truth: it generates the
 `getopt_long` tables (so the short option string can never drift from the long
-options), drives the environment layer, and supplies the names used in error
-messages. Adding an option means: one `OPT_SPECS` row, one `apply_*` adapter,
-help text, a `README.md` table row, and tests. The user-facing option table
-lives in `README.md`; if the two ever disagree, `OPT_SPECS` (the code) wins and
-both documents must be corrected.
+options), drives the environment layer, supplies the names used in error
+messages, and owns the per-option help printers used by `--help`. Adding an
+option means: one `OPT_SPECS` row, one `apply_*` adapter, one `help_*` printer,
+a `README.md` table row, and tests. The user-facing option table lives in
+`README.md`; if the two ever disagree, `OPT_SPECS` (the code) wins and both
+documents must be corrected.
 
 - Effective precedence: CLI > environment > defaults. The CLI is applied first
   and an env var is consulted only when its option was not seen, so an invalid
@@ -259,7 +263,8 @@ both documents must be corrected.
   `ENETRESET`, `ENOBUFS`, `EAGAIN`). Those paths must keep counting toward
   `--threshold`; do not turn them back into fatal exits. Socket-misuse errors
   (`EPERM`, `EBADF`, `EINVAL`, short sends, ...) stay fatal.
-- A success resets the consecutive-failure counter and updates statistics.
+- A success resets the consecutive-failure counter and updates statistics in
+  `stats.c`.
 - On reaching the threshold: `poweroff=false` logs the dry-run and exits `0`;
   `poweroff=true` runs `/usr/bin/systemctl --no-block poweroff` through
   `posix_spawn` (stdio to `/dev/null`, explicit clean environment), observes
@@ -267,11 +272,12 @@ both documents must be corrected.
   count preserved. `poweroff=true` requires `/usr/bin/systemctl` and
   `/run/systemd/system`, validated in `opts.c`.
 - Statistics (SIGUSR1 and shutdown) report uptime, totals, success rate, and
-  min/avg/max latency from integral microsecond accumulators, formatted with
-  `ls_format_uptime()` / `ls_format_latency()`. The accumulators must keep
-  `min <= avg <= max`; the "no sample" sentinel is `UINT64_MAX`, so the max
-  accumulator has to clear it explicitly on the first success (the live suite
-  asserts the ordering).
+  min/avg/max latency from integral microsecond accumulators in
+  `ls_stats_t`, formatted with `ls_format_uptime()` / `ls_format_latency()`.
+  The accumulators must keep `min <= avg <= max`; the "no sample" sentinel is
+  `UINT64_MAX`, so the max accumulator has to clear it explicitly on the first
+  success (the live suite asserts the ordering, and the unit suite covers the
+  saturating counters and aggregates directly).
 
 ### 5.3 Event loop and timers
 
@@ -343,7 +349,7 @@ wrong and say which one you changed.
 
 ```
 src/                        flat C modules, one owner per responsibility (section 4)
-tests/unit.c                unit tests for pure helpers
+tests/unit.c                unit tests for base/addr/log/loop/stats/opts
 tests/run_tests.sh          shell-suite entry point
 tests/lib.sh                assertions, process/NOTIFY helpers
 tests/cli.sh                CLI/env/validation/precedence cases

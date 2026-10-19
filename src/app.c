@@ -1,11 +1,12 @@
 /*
- * app.c — application assembly: probe state machine, statistics, threshold
- * action, and startup/shutdown banners.
+ * app.c — application assembly: probe state machine, threshold action, and
+ * startup/shutdown banners.
  *
  * Sections are ordered so every helper is defined before its first use: no
  * forward declarations are needed. Everything here is private except the three
  * ls_app_* entry points declared in app.h. Mechanisms live in their own
- * modules (addr/log/notify/icmp/loop); this file owns policy and orchestration.
+ * modules (addr/log/notify/icmp/loop/stats); this file owns policy and
+ * orchestration.
  */
 
 #include "app.h"
@@ -35,17 +36,15 @@ static_assert(LS_LOOP_MAX_FDS >= 2,
 static_assert(LS_LOOP_MAX_TIMERS >= 3,
               "app needs ping, reply, and watchdog timer slots");
 
-/* Double conversion factors for latency math; derived from the integer unit
- * constants in base.h so they cannot drift apart. */
+/* Double conversion factor for latency measurement; derived from the integer
+ * unit constants in base.h so they cannot drift apart. */
 #define LS_NS_PER_MS_F ((double)LS_NS_PER_MS)
-#define LS_US_PER_MS_F ((double)LS_US_PER_MS)
 
 /* The only runtime safety warning worth keeping: real poweroff is dangerous
  * with an extremely low threshold. */
 #define LS_WARN_THRESHOLD_MIN_WITH_POWEROFF 3
 
 /* Implementation-private constants. */
-#define LS_STATS_NO_SAMPLE UINT64_MAX
 #define LS_STARTUP_GRACE_MS UINT64_C(1000)
 #define LS_SHUTDOWN_RETRY_MS 50U
 
@@ -54,77 +53,6 @@ typedef enum {
   LS_ACTION_TRIGGERED = 1,
   LS_ACTION_FAILED = 2,
 } action_result_t;
-
-/* ---- Statistics accumulators ---- */
-
-static void stats_init(ls_stats_t *stats) {
-  *stats = (ls_stats_t){
-      .latency_min_us = LS_STATS_NO_SAMPLE,
-      .latency_max_us = LS_STATS_NO_SAMPLE,
-      .started_at_ms = ls_now_ms(),
-  };
-}
-
-static void stats_add_ok(ls_stats_t *stats, double latency_ms) {
-  if (LS_UNLIKELY(latency_ms < 0.0)) {
-    latency_ms = 0.0;
-  }
-  stats->total = ls_add_sat(stats->total, 1);
-  stats->ok = ls_add_sat(stats->ok, 1);
-  uint64_t latency_us = (uint64_t)(latency_ms * LS_US_PER_MS_F);
-  stats->latency_sum_us = ls_add_sat(stats->latency_sum_us, latency_us);
-  if (latency_us < stats->latency_min_us) {
-    stats->latency_min_us = latency_us;
-  }
-  /* The "no sample" sentinel is UINT64_MAX, which no sample can exceed, so the
-   * first success has to clear it explicitly. */
-  if (stats->latency_max_us == LS_STATS_NO_SAMPLE ||
-      latency_us > stats->latency_max_us) {
-    stats->latency_max_us = latency_us;
-  }
-}
-
-static void stats_add_fail(ls_stats_t *stats) {
-  stats->total = ls_add_sat(stats->total, 1);
-  stats->failed = ls_add_sat(stats->failed, 1);
-}
-
-static double stats_success_rate(const ls_stats_t *stats) {
-  if (stats->total == 0) {
-    return 0.0;
-  }
-  return (double)stats->ok / (double)stats->total * 100.0;
-}
-
-static double stats_avg_latency(const ls_stats_t *stats) {
-  if (stats->ok == 0) {
-    return 0.0;
-  }
-  return (double)stats->latency_sum_us / (double)stats->ok / LS_US_PER_MS_F;
-}
-
-static double stats_latency_min_ms(const ls_stats_t *stats) {
-  if (stats->latency_min_us == LS_STATS_NO_SAMPLE) {
-    return 0.0;
-  }
-  return (double)stats->latency_min_us / LS_US_PER_MS_F;
-}
-
-static double stats_latency_max_ms(const ls_stats_t *stats) {
-  if (stats->latency_max_us == LS_STATS_NO_SAMPLE) {
-    return 0.0;
-  }
-  return (double)stats->latency_max_us / LS_US_PER_MS_F;
-}
-
-static uint64_t stats_uptime_sec(const ls_stats_t *stats) {
-  uint64_t now_ms = ls_now_ms();
-  if (now_ms == UINT64_MAX || stats->started_at_ms == UINT64_MAX ||
-      now_ms < stats->started_at_ms) {
-    return 0;
-  }
-  return (now_ms - stats->started_at_ms) / LS_MS_PER_SEC;
-}
 
 /* ---- Shutdown action (systemctl poweroff) ---- */
 
@@ -267,22 +195,22 @@ static void app_fail(ls_app_t *app, const char *what, const ls_err_t *err) {
 static void log_statistics(ls_app_t *app) {
   const ls_stats_t *s = &app->stats;
   char uptime_str[32];
-  ls_format_uptime(stats_uptime_sec(s), uptime_str, sizeof(uptime_str));
+  ls_format_uptime(ls_stats_uptime_sec(s), uptime_str, sizeof(uptime_str));
   const char *plural = s->total == 1 ? "" : "s";
 
   if (s->ok > 0) {
     char min_str[32];
     char avg_str[32];
     char max_str[32];
-    ls_format_latency(stats_latency_min_ms(s), min_str, sizeof(min_str));
-    ls_format_latency(stats_avg_latency(s), avg_str, sizeof(avg_str));
-    ls_format_latency(stats_latency_max_ms(s), max_str, sizeof(max_str));
+    ls_format_latency(ls_stats_min_latency_ms(s), min_str, sizeof(min_str));
+    ls_format_latency(ls_stats_avg_latency_ms(s), avg_str, sizeof(avg_str));
+    ls_format_latency(ls_stats_max_latency_ms(s), max_str, sizeof(max_str));
     ls_info(&app->log,
             "Statistics: uptime %s | %" PRIu64 " ping%s, %" PRIu64
             " OK, %" PRIu64 " failed (%.2f%% success) | latency min %s, "
             "avg %s, max %s",
             uptime_str, s->total, plural, s->ok, s->failed,
-            stats_success_rate(s), min_str, avg_str, max_str);
+            ls_stats_success_rate(s), min_str, avg_str, max_str);
   } else {
     ls_info(&app->log,
             "Statistics: uptime %s | %" PRIu64 " ping%s, 0 OK, %" PRIu64
@@ -304,7 +232,7 @@ static void probe_reset(ls_app_t *app) {
  * systemd status; callers run check_threshold() afterwards. */
 static void probe_failed(ls_app_t *app, const char *reason) {
   app->consecutive_fails++;
-  stats_add_fail(&app->stats);
+  ls_stats_add_fail(&app->stats);
   ls_warn(&app->log, "Probe to %s failed: %s (failure %d of %d)",
           app->opts.target, reason, app->consecutive_fails,
           app->opts.fail_threshold);
@@ -317,27 +245,27 @@ static void probe_failed(ls_app_t *app, const char *reason) {
 static void probe_succeeded(ls_app_t *app, uint16_t sequence,
                             double latency_ms) {
   app->consecutive_fails = 0;
-  stats_add_ok(&app->stats, latency_ms);
+  ls_stats_add_ok(&app->stats, latency_ms);
 
   char latency_str[32];
   char avg_str[32];
   char uptime_str[32];
   ls_format_latency(latency_ms, latency_str, sizeof(latency_str));
-  ls_format_latency(stats_avg_latency(&app->stats), avg_str, sizeof(avg_str));
-  ls_format_uptime(stats_uptime_sec(&app->stats), uptime_str,
+  ls_format_latency(ls_stats_avg_latency_ms(&app->stats), avg_str, sizeof(avg_str));
+  ls_format_uptime(ls_stats_uptime_sec(&app->stats), uptime_str,
                    sizeof(uptime_str));
 
   ls_debug(&app->log,
            "Reply from %s: seq=%u time=%s avg=%s ok=%" PRIu64 "/%" PRIu64
            " (%.1f%%)",
            app->opts.target, (unsigned)sequence, latency_str, avg_str,
-           app->stats.ok, app->stats.total, stats_success_rate(&app->stats));
+           app->stats.ok, app->stats.total, ls_stats_success_rate(&app->stats));
   (void)ls_notify_statusf(&app->notify,
                           "Online: %s up %s, last %s, avg %s, %" PRIu64
                           "/%" PRIu64 " OK (%.1f%%)",
                           app->opts.target, uptime_str, latency_str, avg_str,
                           app->stats.ok, app->stats.total,
-                          stats_success_rate(&app->stats));
+                          ls_stats_success_rate(&app->stats));
 }
 
 /* Runs the threshold action once enough consecutive failures accumulate. */
@@ -586,7 +514,7 @@ bool ls_app_init(ls_app_t *restrict app, const ls_opts_t *restrict opts,
              family == AF_INET6 ? "IPv6" : "IPv4");
   }
 
-  stats_init(&app->stats);
+  ls_stats_init(&app->stats);
 
   if (!app->opts.systemd) {
     ls_debug(&app->log,

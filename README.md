@@ -99,7 +99,7 @@ make install-systemd DESTDIR=/tmp/linkstay-stage PREFIX=/usr/local
 
 ### 5. 测试说明
 
-`make test` 先运行 `tests/unit.c`（66 项纯函数断言），再由 `tests/run_tests.sh` 驱动 shell 套件，覆盖参数/环境变量解析、优先级、错误信息、NOTIFY_SOCKET 协议与实网 ICMP（loopback、信号、阈值模拟关机）。shell 套件拆分为 `tests/lib.sh`（断言与进程/通知辅助）、`tests/cli.sh`（静态用例）、`tests/live.sh`（实网用例）和 `tests/notify.sh`（sd_notify 协议用例）。实网用例需要 `bin/linkstay` 具备 `cap_net_raw`，缺失时该组用例自动跳过并计入 `Skip`。
+`make test` 先运行 `tests/unit.c`（166 项单元断言，覆盖 base/addr/log/loop/stats/opts），再由 `tests/run_tests.sh` 驱动 shell 套件，覆盖参数/环境变量解析、优先级、错误信息、NOTIFY_SOCKET 协议与实网 ICMP（loopback、信号、阈值模拟关机）。shell 套件拆分为 `tests/lib.sh`（断言与进程/通知辅助）、`tests/cli.sh`（静态用例）、`tests/live.sh`（实网用例）和 `tests/notify.sh`（sd_notify 协议用例）。实网用例需要 `bin/linkstay` 具备 `cap_net_raw`，缺失时该组用例自动跳过并计入 `Skip`。
 
 容器或普通用户无法用 `setcap` 时，可在用户+网络命名空间内运行完整实网用例（无需 root）：
 
@@ -246,12 +246,13 @@ src/                    # 头文件与实现同目录，flat layout
 ├── loop.h / loop.c     # poll(2) 事件循环、绝对 deadline 定时器、signalfd
 ├── icmp.h / icmp.c     # ICMP raw socket、BPF 过滤、校验和、回包匹配
 ├── notify.h / notify.c # systemd sd_notify 后端：READY/STATUS/WATCHDOG/STOPPING
-├── app.h / app.c       # 组装层：probe 状态机、统计、关机动作、启动/退出横幅
+├── stats.h / stats.c   # 累计计数与延迟聚合：成功率、平均/最小/最大、运行时长
+├── app.h / app.c       # 组装层：probe 状态机、阈值动作、启动/退出横幅
 └── main.c              # 薄入口：opts → app → loop
 systemd/
 └── linkstay.service  # systemd unit 示例文件
 tests/
-├── unit.c            # 纯函数单元测试（base / addr / log / loop 辅助函数）
+├── unit.c            # 单元断言（base / addr / log / loop / stats / opts）
 ├── run_tests.sh      # shell 套件入口：加载辅助模块、执行并汇总
 ├── lib.sh            # 断言、进程控制、NOTIFY 接收器辅助
 ├── cli.sh            # 参数/环境变量解析、优先级、调试输出

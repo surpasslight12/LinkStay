@@ -234,11 +234,98 @@ static bool apply_level(const char *name, const char *value, ls_opts_t *opts,
   return apply_log_level(name, value, &opts->log_level, err);
 }
 
+/* ---- Help text ----
+ *
+ * Each table row points at one of these printers. A printer emits the first
+ * description line; print_help_cont() starts each continuation line at the
+ * shared description column. Keeping the prose next to the option table (rather
+ * than in print_usage) is what makes the table the single source of truth.
+ */
+
+#define LS_HELP_DESCRIPTION_COLUMN 30
+#define LS_HELP_SYNOPSIS_WIDTH 27
+
+static void print_help_cont(void) {
+  printf("\n%*s", LS_HELP_DESCRIPTION_COLUMN, "");
+}
+
+static void help_target(void) {
+  printf("Target IP literal to monitor (DNS disabled, default: %s)",
+         LS_DEFAULT_TARGET);
+}
+
+static void help_interval(void) {
+  char interval_default[32];
+  ls_format_duration(LS_DEFAULT_INTERVAL_MS, interval_default,
+                     sizeof(interval_default));
+  printf("Probe interval; a plain number");
+  print_help_cont();
+  printf("means seconds, 's'/'ms' suffixes accepted");
+  print_help_cont();
+  printf("(default: %s)", interval_default);
+}
+
+static void help_threshold(void) {
+  printf("Consecutive failures before shutdown (default: %d)",
+         LS_DEFAULT_FAIL_THRESHOLD);
+}
+
+static void help_timeout(void) {
+  char timeout_default[32];
+  ls_format_duration(LS_DEFAULT_TIMEOUT_MS, timeout_default,
+                     sizeof(timeout_default));
+  printf("Reply timeout; a plain number means");
+  print_help_cont();
+  printf("milliseconds, 's'/'ms' suffixes accepted;");
+  print_help_cont();
+  printf("must be smaller than --interval");
+  print_help_cont();
+  printf("(default: %s)", timeout_default);
+}
+
+static void help_poweroff(void) {
+  printf("Actually power the system off when the threshold is reached");
+  print_help_cont();
+  printf("(default: %s; false only simulates)",
+         LS_DEFAULT_POWEROFF ? "true" : "false");
+  print_help_cont();
+  printf("Flag alone enables it; use --poweroff=false");
+  print_help_cont();
+  printf("or -pfalse to disable");
+  print_help_cont();
+  printf("true requires a systemd host with %s", LS_SYSTEMCTL_PATH);
+}
+
+static void help_log_level(void) {
+  printf("Log level: %s", LS_LOG_LEVEL_VALUES);
+  print_help_cont();
+  printf("(default: info)");
+}
+
+static void help_systemd(void) {
+  printf("Enable/disable systemd integration (default: %s)",
+         LS_DEFAULT_SYSTEMD ? "true" : "false");
+  print_help_cont();
+  printf("Flag alone enables it; use --systemd=false or -sfalse to disable");
+  print_help_cont();
+  printf("Watchdog is auto-enabled with systemd");
+  print_help_cont();
+  printf("Log timestamps are auto-disabled when systemd is enabled");
+  print_help_cont();
+  printf("Otherwise timestamps stay enabled");
+  print_help_cont();
+  printf("Accepted values: %s", LS_BOOL_VALUES);
+}
+
+static void help_version(void) { printf("Show version information"); }
+
+static void help_help(void) { printf("Show this help message"); }
+
 /* ---- Option table (single source of truth) ----
  *
- * One row drives getopt_long (built at run time), the environment layer, and
- * error naming. help/version carry no applier: they are handled by the
- * pre-scan so they win over invalid arguments or environment values. */
+ * One row drives getopt_long (built at run time), the environment layer, error
+ * naming, and the help text. help/version carry no applier: they are handled by
+ * the pre-scan so they win over invalid arguments or environment values. */
 
 typedef enum {
   ARG_NONE,     /* no argument: -v, -h */
@@ -246,27 +333,79 @@ typedef enum {
   ARG_OPTIONAL, /* -p[<bool>], --poweroff[=<bool>] */
 } arg_kind_t;
 
-/* Field order keeps the table compact: the pointer trio first, then the two
- * small scalars, so the compiler inserts no padding between them. */
+typedef enum {
+  GROUP_NETWORK,
+  GROUP_SHUTDOWN,
+  GROUP_LOGGING,
+  GROUP_SYSTEM,
+  GROUP_GENERAL,
+} usage_group_t;
+
 typedef struct {
   const char *long_name; /* without the leading "--" */
   const char *env_name;  /* NULL for CLI-only options */
   apply_fn_t apply;      /* NULL for help/version */
   arg_kind_t arg_kind;
   char short_name;
+  const char *metavar; /* required-argument placeholder */
+  usage_group_t group;
+  void (*print_help)(void);
 } opt_spec_t;
 
 static const opt_spec_t OPT_SPECS[] = {
-    {"target", "LINKSTAY_TARGET", apply_target, ARG_REQUIRED, 't'},
-    {"interval", "LINKSTAY_INTERVAL", apply_interval, ARG_REQUIRED, 'i'},
-    {"threshold", "LINKSTAY_THRESHOLD", apply_threshold, ARG_REQUIRED, 'n'},
-    {"timeout", "LINKSTAY_TIMEOUT", apply_timeout, ARG_REQUIRED, 'w'},
-    {"poweroff", "LINKSTAY_POWEROFF", apply_poweroff, ARG_OPTIONAL, 'p'},
-    {"log-level", "LINKSTAY_LOG_LEVEL", apply_level, ARG_REQUIRED, 'l'},
-    {"systemd", "LINKSTAY_SYSTEMD", apply_systemd, ARG_OPTIONAL, 's'},
-    {"version", nullptr, nullptr, ARG_NONE, 'v'},
-    {"help", nullptr, nullptr, ARG_NONE, 'h'},
+    {"target", "LINKSTAY_TARGET", apply_target, ARG_REQUIRED, 't', "ip",
+     GROUP_NETWORK, help_target},
+    {"interval", "LINKSTAY_INTERVAL", apply_interval, ARG_REQUIRED, 'i',
+     "n[s|ms]", GROUP_NETWORK, help_interval},
+    {"threshold", "LINKSTAY_THRESHOLD", apply_threshold, ARG_REQUIRED, 'n',
+     "num", GROUP_NETWORK, help_threshold},
+    {"timeout", "LINKSTAY_TIMEOUT", apply_timeout, ARG_REQUIRED, 'w',
+     "n[s|ms]", GROUP_NETWORK, help_timeout},
+    {"poweroff", "LINKSTAY_POWEROFF", apply_poweroff, ARG_OPTIONAL, 'p',
+     nullptr, GROUP_SHUTDOWN, help_poweroff},
+    {"log-level", "LINKSTAY_LOG_LEVEL", apply_level, ARG_REQUIRED, 'l',
+     "level", GROUP_LOGGING, help_log_level},
+    {"systemd", "LINKSTAY_SYSTEMD", apply_systemd, ARG_OPTIONAL, 's',
+     nullptr, GROUP_SYSTEM, help_systemd},
+    {"version", nullptr, nullptr, ARG_NONE, 'v', nullptr, GROUP_GENERAL,
+     help_version},
+    {"help", nullptr, nullptr, ARG_NONE, 'h', nullptr, GROUP_GENERAL,
+     help_help},
 };
+
+static const char *const GROUP_TITLES[] = {
+    "Network Options", "Shutdown Options", "Logging Options",
+    "System Integration", "General Options",
+};
+
+static void format_synopsis(const opt_spec_t *spec, char *buf, size_t size) {
+  if (spec->arg_kind == ARG_NONE) {
+    (void)snprintf(buf, size, "-%c, --%s", spec->short_name, spec->long_name);
+  } else if (spec->arg_kind == ARG_REQUIRED) {
+    (void)snprintf(buf, size, "-%c, --%s <%s>", spec->short_name,
+                   spec->long_name, spec->metavar);
+  } else {
+    (void)snprintf(buf, size, "-%c[ARG], --%s[=ARG]", spec->short_name,
+                   spec->long_name);
+  }
+}
+
+static void print_option(const opt_spec_t *spec) {
+  char synopsis[64];
+  format_synopsis(spec, synopsis, sizeof(synopsis));
+  printf("  %-*s ", LS_HELP_SYNOPSIS_WIDTH, synopsis);
+  spec->print_help();
+  printf("\n");
+}
+
+static void print_group(usage_group_t group) {
+  printf("%s:\n", GROUP_TITLES[(size_t)group]);
+  for (size_t i = 0; i < LS_ARRAY_LEN(OPT_SPECS); i++) {
+    if (OPT_SPECS[i].group == group) {
+      print_option(&OPT_SPECS[i]);
+    }
+  }
+}
 
 static const opt_spec_t *find_spec(int short_name) {
   for (size_t i = 0; i < LS_ARRAY_LEN(OPT_SPECS); i++) {
@@ -429,64 +568,19 @@ static bool validate(const ls_opts_t *opts, ls_err_t *err) {
 
 /* ---- Help & version ---- */
 
-/* Hand-written user-facing prose; keep the option spellings in sync with
- * OPT_SPECS when adding or renaming an option. */
+/* Hand-written environment/examples prose; option rows and descriptions live in
+ * OPT_SPECS, so adding or renaming an option only needs one table row. */
 static void print_usage(void) {
-  char interval_default[32];
-  char timeout_default[32];
-  ls_format_duration(LS_DEFAULT_INTERVAL_MS, interval_default,
-                     sizeof(interval_default));
-  ls_format_duration(LS_DEFAULT_TIMEOUT_MS, timeout_default,
-                     sizeof(timeout_default));
-
   printf("Usage: %s [options]\n\n", LS_PROGRAM_NAME);
-  printf("Network Options:\n");
-  printf("  -t, --target <ip>           Target IP literal to monitor (DNS "
-         "disabled, default: %s)\n",
-         LS_DEFAULT_TARGET);
-  printf("  -i, --interval <n[s|ms]>    Probe interval; a plain number\n");
-  printf("                              means seconds, 's'/'ms' suffixes "
-         "accepted\n");
-  printf("                              (default: %s)\n", interval_default);
-  printf("  -n, --threshold <num>       Consecutive failures before shutdown "
-         "(default: %d)\n",
-         LS_DEFAULT_FAIL_THRESHOLD);
-  printf("  -w, --timeout <n[s|ms]>     Reply timeout; a plain number means\n");
-  printf("                              milliseconds, 's'/'ms' suffixes "
-         "accepted;\n");
-  printf("                              must be smaller than --interval\n");
-  printf("                              (default: %s)\n\n", timeout_default);
-  printf("Shutdown Options:\n");
-  printf("  -p[ARG], --poweroff[=ARG]   Actually power the system off when "
-         "the threshold is reached\n");
-  printf("                              (default: %s; false only simulates)\n",
-         LS_DEFAULT_POWEROFF ? "true" : "false");
-  printf("                              Flag alone enables it; use "
-         "--poweroff=false\n");
-  printf("                              or -pfalse to disable\n");
-  printf("                              true requires a systemd host with "
-         "%s\n\n",
-         LS_SYSTEMCTL_PATH);
-  printf("Logging Options:\n");
-  printf("  -l, --log-level <level>     Log level: %s\n",
-         LS_LOG_LEVEL_VALUES);
-  printf("                              (default: info)\n");
-  printf("System Integration:\n");
-  printf("  -s[ARG], --systemd[=ARG]    Enable/disable systemd integration "
-         "(default: %s)\n",
-         LS_DEFAULT_SYSTEMD ? "true" : "false");
-  printf("                              Flag alone enables it; use "
-         "--systemd=false or -sfalse to disable\n");
-  printf("                              Watchdog is auto-enabled with "
-         "systemd\n");
-  printf("                              Log timestamps are auto-disabled when "
-         "systemd is enabled\n");
-  printf("                              Otherwise timestamps stay enabled\n");
-  printf("                              Accepted values: %s\n\n",
-         LS_BOOL_VALUES);
-  printf("General Options:\n");
-  printf("  -v, --version               Show version information\n");
-  printf("  -h, --help                  Show this help message\n\n");
+  print_group(GROUP_NETWORK);
+  printf("\n");
+  print_group(GROUP_SHUTDOWN);
+  printf("\n");
+  print_group(GROUP_LOGGING);
+  print_group(GROUP_SYSTEM);
+  printf("\n");
+  print_group(GROUP_GENERAL);
+  printf("\n");
   printf("Environment Variables (lower priority than CLI args):\n");
   printf("  Network:      LINKSTAY_TARGET, LINKSTAY_INTERVAL,\n");
   printf("                LINKSTAY_THRESHOLD, LINKSTAY_TIMEOUT\n");

@@ -71,7 +71,7 @@ CONFIG_STAMP := $(BIN_DIR)/.build-config
 
 UNIT_TEST := $(BIN_DIR)/unit-tests
 UNIT_SRCS := $(TEST_DIR)/unit.c $(SRC_DIR)/base.c $(SRC_DIR)/addr.c \
-             $(SRC_DIR)/log.c
+             $(SRC_DIR)/log.c $(SRC_DIR)/opts.c $(SRC_DIR)/stats.c
 UNIT_HEADERS := $(wildcard $(INC_DIR)/*.h)
 UNIT_CFLAGS := $(filter-out -MMD -MP,$(CFLAGS))
 
