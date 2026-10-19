@@ -113,13 +113,9 @@ static bool apply_positive_int(const char *name, const char *value,
 }
 
 /* Boolean values are deliberately limited to true/false (case-insensitive):
- * one spelling per state, no numeric or shell-style aliases. */
+ * one spelling per state, no bare flags, numeric or shell-style aliases. */
 static bool apply_bool(const char *name, const char *value, bool *dest,
                        ls_err_t *err) {
-  if (value == nullptr) { /* bare CLI flag, e.g. -p or --systemd */
-    *dest = true;
-    return true;
-  }
   if (strcasecmp(value, "true") == 0) {
     *dest = true;
     return true;
@@ -273,10 +269,6 @@ static void help_poweroff(void) {
   printf("(default: %s; false only simulates)",
          LS_DEFAULT_POWEROFF ? "true" : "false");
   print_help_cont();
-  printf("Flag alone enables it; use --poweroff=false");
-  print_help_cont();
-  printf("or -pfalse to disable");
-  print_help_cont();
   printf("true requires a systemd host with %s", LS_SYSTEMCTL_PATH);
 }
 
@@ -299,7 +291,7 @@ static void help_systemd(void) {
   printf("Enable/disable systemd integration (default: %s)",
          LS_DEFAULT_SYSTEMD ? "true" : "false");
   print_help_cont();
-  printf("Flag alone enables it; use --systemd=false or -sfalse to disable");
+  printf("Use --systemd=false or -sfalse to disable");
   print_help_cont();
   printf("Watchdog is auto-enabled with systemd");
   print_help_cont();
@@ -326,7 +318,6 @@ static void help_help(void) {
 typedef enum {
   LS_ARG_NONE,     /* no argument: -v, -h */
   LS_ARG_REQUIRED, /* -t <ip>, --target <ip> */
-  LS_ARG_OPTIONAL, /* -p[<bool>], --poweroff[=<bool>] */
 } arg_kind_t;
 
 typedef enum {
@@ -357,12 +348,12 @@ static const opt_spec_t OPT_SPECS[] = {
      "num", LS_GROUP_NETWORK, help_threshold},
     {"timeout", "LINKSTAY_TIMEOUT", apply_timeout, LS_ARG_REQUIRED, 'w',
      "n[s|ms]", LS_GROUP_NETWORK, help_timeout},
-    {"poweroff", "LINKSTAY_POWEROFF", apply_poweroff, LS_ARG_OPTIONAL, 'p',
-     nullptr, LS_GROUP_SHUTDOWN, help_poweroff},
+    {"poweroff", "LINKSTAY_POWEROFF", apply_poweroff, LS_ARG_REQUIRED, 'p',
+     "true|false", LS_GROUP_SHUTDOWN, help_poweroff},
     {"log-level", "LINKSTAY_LOG_LEVEL", apply_level, LS_ARG_REQUIRED, 'l',
      "level", LS_GROUP_LOGGING, help_log_level},
-    {"systemd", "LINKSTAY_SYSTEMD", apply_systemd, LS_ARG_OPTIONAL, 's',
-     nullptr, LS_GROUP_SYSTEM, help_systemd},
+    {"systemd", "LINKSTAY_SYSTEMD", apply_systemd, LS_ARG_REQUIRED, 's',
+     "true|false", LS_GROUP_SYSTEM, help_systemd},
     {"version", nullptr, nullptr, LS_ARG_NONE, 'v', nullptr, LS_GROUP_GENERAL,
      help_version},
     {"help", nullptr, nullptr, LS_ARG_NONE, 'h', nullptr, LS_GROUP_GENERAL,
@@ -377,12 +368,9 @@ static const char *const GROUP_TITLES[] = {
 static void format_synopsis(const opt_spec_t *spec, char *buf, size_t size) {
   if (spec->arg_kind == LS_ARG_NONE) {
     (void)snprintf(buf, size, "-%c, --%s", spec->short_name, spec->long_name);
-  } else if (spec->arg_kind == LS_ARG_REQUIRED) {
+  } else {
     (void)snprintf(buf, size, "-%c, --%s <%s>", spec->short_name,
                    spec->long_name, spec->metavar);
-  } else {
-    (void)snprintf(buf, size, "-%c[ARG], --%s[=ARG]", spec->short_name,
-                   spec->long_name);
   }
 }
 
@@ -426,8 +414,6 @@ static void build_getopt_tables(opt_tables_t *tables) {
     int has_arg = no_argument;
     if (spec->arg_kind == LS_ARG_REQUIRED) {
       has_arg = required_argument;
-    } else if (spec->arg_kind == LS_ARG_OPTIONAL) {
-      has_arg = optional_argument;
     }
     tables->long_opts[i] = (struct option){
         .name = spec->long_name,
@@ -438,9 +424,6 @@ static void build_getopt_tables(opt_tables_t *tables) {
 
     tables->optstring[pos++] = spec->short_name;
     if (spec->arg_kind != LS_ARG_NONE) {
-      tables->optstring[pos++] = ':';
-    }
-    if (spec->arg_kind == LS_ARG_OPTIONAL) {
       tables->optstring[pos++] = ':';
     }
   }
@@ -585,9 +568,10 @@ static void print_usage(void) {
   printf("  Integration:  LINKSTAY_SYSTEMD\n");
   printf("\nExamples:\n");
   printf("  %s -t 1.1.1.1 -i 10s -n 5\n", LS_PROGRAM_NAME);
-  printf("  %s -t 192.168.1.1 -i 5s -n 3 --poweroff\n", LS_PROGRAM_NAME);
+  printf("  %s -t 192.168.1.1 -i 5s -n 3 --poweroff=true\n", LS_PROGRAM_NAME);
   printf("  %s -t 8.8.8.8 -l debug --systemd=false\n", LS_PROGRAM_NAME);
-  printf("  %s -t 8.8.8.8 -i 5s -n 3 -p -sfalse -l debug\n", LS_PROGRAM_NAME);
+  printf("  %s -t 8.8.8.8 -i 5s -n 3 -ptrue -sfalse -l debug\n",
+         LS_PROGRAM_NAME);
 }
 
 static void print_version(void) {

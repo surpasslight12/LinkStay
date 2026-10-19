@@ -8,9 +8,9 @@
 ## 核心特性
 
 - **原生 ICMP 实现**：使用 raw socket + BPF 内核过滤，无需依赖系统 `ping` 命令
-- **可选的真实关机**：通过布尔开关 `--poweroff` 决定是否正式关机；`false` 仅模拟，`true` 达到阈值后立即执行关机
+- **可选的真实关机**：通过布尔参数 `--poweroff=true|false` 决定是否正式关机；`false` 仅模拟，`true` 达到阈值后立即执行关机
 - **systemd 深度集成**：支持 `sd_notify`、watchdog（由 `WatchdogSec` 驱动）与状态通知
-- **高性能**：默认 LTO 构建，单一二进制文件 ≈ 42 KiB（strip 后），内存占用 < 5 MB，CPU 占用 < 1%
+- **高性能**：LTO 构建，单一二进制文件 ≈ 42 KiB（strip 后），内存占用 < 5 MB，CPU 占用 < 1%
 - **安全加固**：编译期 Full RELRO、PIE、Stack Canary、NX、FORTIFY_SOURCE；运行期 systemd 沙箱
 
 ## 快速开始
@@ -18,7 +18,7 @@
 ### 1. 构建
 
 ```bash
-make               # 构建 bin/linkstay（默认启用 LTO）
+make               # 构建 bin/linkstay（LTO 构建）
 make release       # 构建后 strip
 make test          # 单元测试 + 功能测试
 make check         # test + lint + shellcheck + sanitize-test
@@ -36,7 +36,7 @@ sudo ./bin/linkstay --target 1.1.1.1 --interval 10s --timeout 3000ms \
      --threshold 3 --log-level debug
 
 # 短选项示例：必选参数既可写成 “-i 5s”，也可写成 “-i5s”
-# 带可选参数的 -p / -s 建议写成 -pfalse/-sfalse，或使用 --poweroff=false/--systemd=false
+# 布尔参数必须显式给值：-pfalse/-ptrue、--poweroff=false/--poweroff=true（-s 同理）
 sudo ./bin/linkstay -t 1.1.1.1 -i 5s -w 1000ms -n 3 -l debug -sfalse
 ```
 
@@ -74,7 +74,7 @@ journalctl -fu linkstay
 
 | 目标 | 说明 |
 |------|------|
-| `make` | 构建 `bin/linkstay`（默认启用 LTO） |
+| `make` | 构建 `bin/linkstay`（LTO 构建） |
 | `make release` | 构建后 strip |
 | `make help` | 列出全部目标和可覆盖变量 |
 | `make unit-test` | 构建并运行 `tests/unit.c` 单元测试 |
@@ -95,7 +95,7 @@ journalctl -fu linkstay
 make install-systemd DESTDIR=/tmp/linkstay-stage PREFIX=/usr/local
 ```
 
-默认构建不启用 `-march=native`，产物可在同架构其他机器上运行；如需为本机 CPU 调优，可使用 `make NATIVE=1`。默认启用 `-flto`，工具链不支持 LTO 时用 `make LTO=0`；切换 `NATIVE`/`LTO`/警告选项会自动触发重建（Makefile 用配置戳记）。`make check` 需要 `cppcheck`、`clang-tidy` 与 `shellcheck`。
+默认构建不启用 `-march=native`，产物可在同架构其他机器上运行；如需为本机 CPU 调优，可使用 `make NATIVE=1`。构建始终启用 `-flto`；切换 `NATIVE`/警告选项会自动触发重建（Makefile 用配置戳记）。`make check` 需要 `cppcheck`、`clang-tidy` 与 `shellcheck`。
 
 ### 5. 测试说明
 
@@ -118,15 +118,15 @@ unshare -Urn --map-root-user bash -c \
 | 检测间隔 | `-i, --interval` | `LINKSTAY_INTERVAL` | `10s` | 两次 ping 之间的间隔；必须带 `s`/`ms` 后缀 |
 | 失败阈值 | `-n, --threshold` | `LINKSTAY_THRESHOLD` | `5` | 连续失败次数触发关机 |
 | 超时时间 | `-w, --timeout` | `LINKSTAY_TIMEOUT` | `3000ms` | 单次 ping 等待回包的超时；必须带 `s`/`ms` 后缀，且小于 `--interval` |
-| 是否关机 | `-p, --poweroff` | `LINKSTAY_POWEROFF` | `false` | `true` 实际执行关机，`false` 仅模拟；接受 `true`/`false`（大小写不敏感） |
+| 是否关机 | `-p, --poweroff <true\|false>` | `LINKSTAY_POWEROFF` | `false` | `true` 实际执行关机，`false` 仅模拟；必须显式给 `true`/`false`（大小写不敏感） |
 | 日志级别 | `-l, --log-level` | `LINKSTAY_LOG_LEVEL` | `info` | 取值为 `silent` / `error` / `warn` / `info` / `debug` |
-| systemd 集成 | `-s, --systemd` | `LINKSTAY_SYSTEMD` | `true` | 启用 `sd_notify`、watchdog 与状态通知；接受 `true`/`false`（大小写不敏感）；省略参数时等价于启用，禁用建议写 `--systemd=false` 或 `-sfalse` |
+| systemd 集成 | `-s, --systemd <true\|false>` | `LINKSTAY_SYSTEMD` | `true` | 启用 `sd_notify`、watchdog 与状态通知；必须显式给 `true`/`false`（大小写不敏感），例如 `--systemd=false` 或 `-sfalse` |
 | 版本信息 | `-v, --version` | — | — | 打印版本后退出（退出码 0） |
 | 帮助信息 | `-h, --help` | — | — | 打印用法与全部选项后退出（退出码 0） |
 
 优先级：CLI 参数 > 环境变量 > 编译期默认值。`--interval` 与 `--timeout` 必须带 `s`/`ms` 后缀（仅小写，如 `-i 500ms`、`-w 1s`），不再接受裸数字或前导 `+`；内部统一以毫秒处理，唯一跨参数约束是 `timeout_ms < interval_ms`。日志与 `--help` 的时长统一由 `ls_format_duration()` 格式化（整秒显示为 `10s`，否则显示为 `1500ms`）。
 
-短选项：必选参数既支持分开写法（如 `-i 5s`），也支持粘连写法（如 `-i5s`）；`-p`/`-s` 的可选布尔参数建议写成 `-pfalse`/`-sfalse`，或使用 `--poweroff=false`/`--systemd=false`。
+短选项：必选参数既支持分开写法（如 `-i 5s`），也支持粘连写法（如 `-i5s`）；`-p`/`-s` 必须显式带布尔值（`-pfalse`/`-ptrue`、`-sfalse`/`-strue`），裸 `-p`/`-s` 会被拒绝。
 
 ## 探测与失败判定
 
@@ -139,7 +139,7 @@ unshare -Urn --map-root-user bash -c \
 
 ## 关机行为说明
 
-是否正式关机由布尔开关 `--poweroff` / `LINKSTAY_POWEROFF` 控制：
+是否正式关机由布尔参数 `--poweroff=true|false` / `LINKSTAY_POWEROFF` 控制：
 
 ### `--poweroff=false`（默认）
 达到阈值后模拟关机流程，但不实际执行关机命令；**模拟动作完成后进程会退出**，以保持与真实关机路径一致。

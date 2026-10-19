@@ -45,27 +45,20 @@ ifeq ($(NATIVE),1)
   CFLAGS += -march=native -mtune=native
 endif
 
-# Link-time optimization is on by default: it cuts the stripped binary by
-# roughly 15% here. Set LTO=0 for a toolchain without LTO support.
-LTO ?= 1
-ifeq ($(LTO),1)
-  CFLAGS += -flto
-endif
+# Link-time optimization is always on; the supported GCC/Clang toolchains
+# provide it (the sanitizer build overrides CFLAGS/LDFLAGS and stays non-LTO).
+CFLAGS += -flto
 
 CFLAGS += -MMD -MP
 
 LDFLAGS ?= -Wl,-z,relro,-z,now -Wl,-z,noexecstack -pie \
-           -Wl,--gc-sections -Wl,--as-needed
-
-ifeq ($(LTO),1)
-  LDFLAGS += -flto
-endif
+           -Wl,--gc-sections -Wl,--as-needed -flto
 
 SRCS := $(wildcard $(SRC_DIR)/*.c)
 OBJS := $(patsubst $(SRC_DIR)/%.c,$(BIN_DIR)/%.o,$(SRCS))
 DEPS := $(OBJS:.o=.d)
 
-# Stamped so switching LTO/NATIVE/flags rebuilds objects instead of silently
+# Stamped so switching NATIVE/flags rebuilds objects instead of silently
 # relinking stale ones. The stamp is rewritten only when its content changes.
 CONFIG_STAMP := $(BIN_DIR)/.build-config
 
@@ -101,7 +94,7 @@ help:
 	@printf '  make install         install binary to $(BINDIR)\n'
 	@printf '  make install-systemd install binary and systemd unit\n'
 	@printf '  make clean           remove build directories\n'
-	@printf 'Variables: NATIVE=1 -march=native, LTO=0 disables -flto, SAN=<list>\n'
+	@printf 'Variables: NATIVE=1 -march=native, SAN=<list>\n'
 
 release: $(TARGET)
 	$(STRIP) --strip-all $(TARGET)

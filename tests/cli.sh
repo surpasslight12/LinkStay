@@ -189,8 +189,8 @@ expect_reject "-pNO rejected (only true/false)" "Invalid value for --poweroff" \
   "$BIN" -t 1.1.1.1 -pNO
 expect_reject "--poweroff=yes rejected (only true/false)" \
   "Invalid value for --poweroff" "$BIN" -t 1.1.1.1 --poweroff=yes
-expect_reject "--poweroff false is positional" "Unexpected argument" \
-  "$BIN" -t 1.1.1.1 --poweroff false
+expect_accept "--poweroff false accepted as separated value" \
+  "$BIN" -t 1.1.1.1 --poweroff false -sfalse
 
 # --poweroff=true is validated against the systemd runtime.
 if (( SYSTEMD_RUNTIME )); then
@@ -202,26 +202,11 @@ else
     "$BIN" -t 1.1.1.1 --poweroff=true
 fi
 
-# Bare -p enables poweroff. On systemd hosts validation passes and the binary
-# enters the loop; elsewhere the validation error is the expected result.
-scrub_env
-run_capture timeout --preserve-status -s TERM 1s "$BIN" -t 127.0.0.1 -p -l silent -sfalse
-hay="${STDOUT}${STDERR}"
-if (( SYSTEMD_RUNTIME )); then
-  if [[ "$hay" != *"Invalid value for"* ]] \
-     && [[ "$hay" != *"Unknown option"* ]] \
-     && [[ "$hay" != *"poweroff requires a systemd host"* ]]; then
-    pass "bare --poweroff accepted on systemd host"
-  else
-    fail "bare --poweroff accepted on systemd host" "hay=${hay: -200}"
-  fi
-else
-  if [[ "$RC" != "0" && "$STDERR" == *"poweroff requires a systemd host"* ]]; then
-    pass "bare --poweroff rejected on non-systemd host"
-  else
-    fail "bare --poweroff rejected on non-systemd host" "rc=$RC; hay=${hay: -200}"
-  fi
-fi
+# Bare boolean flags are no longer accepted; an explicit value is required.
+expect_reject "bare -p rejected (value required)" "Option requires an argument" \
+  "$BIN" -t 127.0.0.1 -p
+expect_reject "bare --poweroff rejected (value required)" \
+  "Option requires an argument" "$BIN" -t 127.0.0.1 --poweroff
 
 section "Log-level parsing"
 for level in silent error warn info debug; do
@@ -248,10 +233,12 @@ for v in true false; do
 done
 expect_accept "--systemd=TRUE case-insensitive" \
   "$BIN" -t 1.1.1.1 --systemd=TRUE
-expect_accept "bare --systemd" "$BIN" -t 1.1.1.1 --systemd
+expect_reject "bare --systemd rejected (value required)" "Option requires an argument" \
+  "$BIN" -t 1.1.1.1 --systemd
 expect_accept "-sfalse disables systemd" "$BIN" -t 1.1.1.1 -sfalse
 expect_accept "-sFALSE case-insensitive" "$BIN" -t 1.1.1.1 -sFALSE
-expect_accept "bare -s enables systemd" "$BIN" -t 1.1.1.1 -s
+expect_reject "bare -s rejected (value required)" "Option requires an argument" \
+  "$BIN" -t 1.1.1.1 -s
 expect_reject "--systemd=bogus rejected" "Invalid value for --systemd" \
   "$BIN" -t 1.1.1.1 --systemd=bogus
 expect_reject "--systemd= empty rejected" "Invalid value for --systemd" \
@@ -262,7 +249,7 @@ expect_reject "-s0 rejected (only true/false)" "Invalid value for --systemd" \
   "$BIN" -t 1.1.1.1 -s0
 expect_reject "-sYES rejected (only true/false)" "Invalid value for --systemd" \
   "$BIN" -t 1.1.1.1 -sYES
-expect_reject "--systemd false is positional" "Unexpected argument" \
+expect_accept "--systemd false accepted as separated value" \
   "$BIN" -t 1.1.1.1 --systemd false
 
 section "CLI parse errors"
@@ -380,7 +367,7 @@ expect_debug_contains "dump shows log level" "Log Level: DEBUG" \
 expect_debug_contains "systemd=false enables timestamps" "Timestamp: true" \
   "$BIN" -t 8.8.8.8 -l debug -sfalse
 expect_debug_contains "systemd=true disables timestamps" "Timestamp: false" \
-  "$BIN" -t 8.8.8.8 -l debug --systemd
+  "$BIN" -t 8.8.8.8 -l debug --systemd=true
 
 # CLI values win over valid env values for every option; the debug dump lets
 # us observe the final resolved configuration.

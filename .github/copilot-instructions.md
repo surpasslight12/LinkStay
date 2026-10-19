@@ -32,7 +32,7 @@ result. "It compiles" is not done.
 
 ```bash
 make                 # must produce zero compiler warnings
-make test            # unit suite + shell suite; shell baseline: 179 pass, 1 skip
+make test            # unit suite + shell suite; shell baseline: 180 pass, 1 skip
 make lint            # cppcheck + clang-tidy: zero findings
 make shellcheck      # ShellCheck tests/*.sh: zero findings
 make sanitize-test   # ASan+UBSan unit + shell suites; required for loop/icmp/app changes
@@ -43,8 +43,8 @@ make check           # runs test + lint + shellcheck + sanitize-test
 `stats` and the `opts` resolver. Live ICMP tests are skipped when the binary
 lacks `CAP_NET_RAW`.
 Run them inside a user + network namespace with the recipe in `README.md`
-("测试说明"); the full suite then reports `Pass: 207   Fail: 0   Skip: 0`
-(without live tests: `Pass: 179   Fail: 0   Skip: 1`). If you changed anything
+("测试说明"); the full suite then reports `Pass: 208   Fail: 0   Skip: 0`
+(without live tests: `Pass: 180   Fail: 0   Skip: 1`). If you changed anything
 on the probe or event-loop path, run the live suite and say so explicitly.
 Never report a skipped test as a pass. CI runs `make check` on every push and
 pull request (`.github/workflows/ci.yml`).
@@ -67,8 +67,8 @@ pull request (`.github/workflows/ci.yml`).
   code generation, no build system beyond the `Makefile`. Feature-test macros
   (`_POSIX_C_SOURCE=200809L`, `_DEFAULT_SOURCE`) are defined in the Makefile and
   fall back to the same values in `base.h`; keep both.
-- **Portable release defaults.** LTO is enabled by default (set `LTO=0` for a
-  toolchain without LTO); `-march=native` stays opt-in (`NATIVE=1`) so default
+- **Portable release defaults.** LTO is always enabled; `-march=native` stays
+  opt-in (`NATIVE=1`) so default
   binaries remain deployable on other machines of the same architecture.
 - **C23 is enforced, not assumed.** The Makefile compiles with
   `-std=c23 -pedantic-errors`, and `base.h` has a `__STDC_VERSION__` guard that
@@ -245,9 +245,10 @@ documents must be corrected.
   env value can never defeat a valid CLI flag.
 - `--help`/`--version` are detected by a getopt pre-scan and win over invalid
   arguments and invalid environment values. Keep that property.
-- `-p`/`-s` take an *optional* argument: `--systemd false` is a positional
-  argument error, not a bool. The documented disable forms are `-sfalse` and
-  `--systemd=false` (or `-pfalse` / `--poweroff=false`).
+- `-p`/`-s` require an explicit `true`/`false` argument; bare flags are
+  rejected. `-sfalse`/`--systemd=false` and the `true` equivalents are the
+  documented forms. A separated value (`--systemd false`) is consumed as the
+  option argument by getopt.
 - Boolean values are `true` and `false` only, compared case-insensitively.
   Numeric and shell-style aliases (`1`, `0`, `yes`, `no`, `on`, `off`) are
   rejected on purpose: one spelling per state. Do not reintroduce aliases
