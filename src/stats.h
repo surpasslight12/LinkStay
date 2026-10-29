@@ -4,7 +4,7 @@
 /*
  * stats.h — cumulative probe statistics.
  *
- * The accumulator is a plain value type: app.h embeds it by value because the
+ * The accumulator is a plain value type: app.c embeds it by value because the
  * design is heap-free. Latency is kept in microseconds so the running sum stays
  * integral; the latency fields hold no sample until the first success (they use
  * an internal "no sample" sentinel).

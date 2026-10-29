@@ -46,20 +46,6 @@ static const named_value_t LOG_LEVEL_NAMES[] = {
     {"debug", LS_LOG_DEBUG},
 };
 
-static bool lookup_named(const named_value_t *table, size_t count,
-                         const char *arg, int *out_value) {
-  if (arg == nullptr) {
-    return false;
-  }
-  for (size_t i = 0; i < count; i++) {
-    if (strcasecmp(arg, table[i].name) == 0) {
-      *out_value = table[i].value;
-      return true;
-    }
-  }
-  return false;
-}
-
 static bool invalid_value(const char *name, const char *value,
                           const char *allowed, ls_err_t *err) {
   return ls_err_set(err, "Invalid value for %s: %s (use %s)", name,
@@ -170,13 +156,15 @@ static bool apply_duration(const char *name, const char *value, bool allow_zero,
 
 static bool apply_log_level(const char *name, const char *value,
                             ls_log_level_t *dest, ls_err_t *err) {
-  int parsed = 0;
-  if (!lookup_named(LOG_LEVEL_NAMES, LS_ARRAY_LEN(LOG_LEVEL_NAMES), value,
-                    &parsed)) {
-    return invalid_value(name, value, LS_LOG_LEVEL_VALUES, err);
+  if (value != nullptr) {
+    for (size_t i = 0; i < LS_ARRAY_LEN(LOG_LEVEL_NAMES); i++) {
+      if (strcasecmp(value, LOG_LEVEL_NAMES[i].name) == 0) {
+        *dest = (ls_log_level_t)LOG_LEVEL_NAMES[i].value;
+        return true;
+      }
+    }
   }
-  *dest = (ls_log_level_t)parsed;
-  return true;
+  return invalid_value(name, value, LS_LOG_LEVEL_VALUES, err);
 }
 
 /* Typed adapters binding an applier signature to one ls_opts_t field. */

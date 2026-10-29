@@ -48,8 +48,8 @@ Run them inside a user + network namespace with the recipe in `README.md`
 (without live tests: `Pass: 43   Fail: 0   Skip: 1`). The shell suite requires
 `python3` for its NOTIFY_SOCKET receiver. If you changed anything on the probe
 or event-loop path, run the live suite and say so explicitly. Never report a
-skipped test as a pass. CI runs `make check` on every push and pull request
-(`.github/workflows/ci.yml`).
+skipped test as a pass. There is no CI workflow: run `make check` and the live
+suite locally before committing.
 
 ## 3. Hard invariants
 
@@ -60,7 +60,7 @@ skipped test as a pass. CI runs `make check` on every push and pull request
   switch. Configuration comes only from `LINKSTAY_*` environment variables
   supplied by the unit and `/etc/linkstay.conf`.
 - **NOTIFY_SOCKET is required.** `ls_notify_init()` fails when
-  `NOTIFY_SOCKET` is absent or unusable, and `ls_app_init()` treats that as
+  `NOTIFY_SOCKET` is absent or unusable, and `app_init()` treats that as
   fatal. A broken notify channel must never silently run a service that systemd
   cannot supervise.
 - **journald owns timestamps and I/O.** Log lines are `[LEVEL] message`; there
@@ -69,7 +69,7 @@ skipped test as a pass. CI runs `make check` on every push and pull request
   `StandardInput=null`, `StandardOutput=null`, and `StandardError=journal`.
 - **Zero dynamic allocation.** No `malloc`/`calloc`/`realloc`/`free`, no
   `strdup`/`asprintf`/`open_memstream`. State lives in fixed-size structs
-  (`ls_app_t`, `ls_icmp_t`) or stack buffers. Adding a heap allocation is a
+  (`app_t`, `ls_icmp_t`) or stack buffers. Adding a heap allocation is a
   design change, not a refactor.
 - **Single thread, single process.** No `pthread_*`, no `fork`/`vfork`, no
   subprocess other than `posix_spawn` of `/usr/bin/systemctl --no-block
@@ -103,7 +103,7 @@ skipped test as a pass. CI runs `make check` on every push and pull request
 
 | Kind | Convention | Examples |
 |------|-----------|----------|
-| Public symbol (declared in a header) | `ls_` prefix | `ls_app_run`, `ls_icmp_send_echo` |
+| Public symbol (declared in a header) | `ls_` prefix | `ls_opts_resolve`, `ls_icmp_send_echo` |
 | Public inline helper (header-only) | `ls_` prefix, `static inline` | `ls_timer_step`, `ls_loop_now` |
 | Public type | `ls_*_t` | `ls_opts_t`, `ls_stats_t`, `ls_icmp_recv_status_t` |
 | `static` function in a `.c` file | plain verb-noun, no prefix | `probe_failed`, `reply_matches`, `notify_status` |
@@ -133,7 +133,7 @@ private.
   the operation. Syscall failures pass `strerror(errno)` through verbatim, so
   `app_fail()` and `main()` read as "<action>: <reason>".
 - Public entry points validate caller-owned arguments they can meaningfully
-  reject (`ls_app_init`, `ls_loop_add_fd`, `ls_opts_resolve`, ...). Pure value
+  reject (`ls_opts_resolve`, `ls_loop_add_fd`, ...). Pure value
   helpers (`ls_stats_*`, `ls_format_*`, `ls_timer_*`) and the app-owned
   `ls_notify_*` channel assume valid pointers. Private `static` helpers do not
   re-check pointers.
@@ -201,8 +201,7 @@ layer 1  log, addr, notify, stats                (base only)
 layer 2  opts   (base, log, addr)
          loop   (base, log)
          icmp   (base)
-layer 3  app                                     (all of the above)
-layer 4  main                                    (opts, app, log)
+layer 3  app                                     (all of the above; main)
 ```
 
 | File | Owns | Must not know about |
@@ -215,8 +214,7 @@ layer 4  main                                    (opts, app, log)
 | `src/icmp.h` `.c` | raw socket, best-effort BPF filter, echo construction, reply matching, send/receive status | address syntax, timers, configuration, log policy |
 | `src/notify.h` `.c` | the required `sd_notify` channel and protocol (READY/STATUS/WATCHDOG/STOPPING), NOTIFY_SOCKET/WATCHDOG_USEC/WATCHDOG_PID | when a message is appropriate (that is app policy) |
 | `src/stats.h` `.c` | cumulative probe counters, success rate, latency aggregates, uptime | probes, sockets, timers, configuration |
-| `src/app.h` `.c` | probe lifecycle, threshold action, startup/shutdown banners, message policy | nothing above it; it is the top of the stack |
-| `src/main.c` | entry point: resolve the environment, run the app, report a fatal startup error, map the result to an exit code | `loop`, `icmp`, `notify`, and every app-internal type; it uses only `opts`/`app` entry points plus `log` |
+| `src/app.c` | process entry, probe lifecycle, threshold action, startup/shutdown banners, message policy | nothing above it; it is the top of the stack |
 
 Rules:
 
@@ -371,7 +369,6 @@ tests/live.sh               live ICMP, signals, threshold cases
 tests/notify.sh             NOTIFY_SOCKET protocol cases (sourced by live.sh)
 systemd/linkstay.service    unit template (@BINDIR@/@CONFIG_PATH@)
 systemd/linkstay.conf       /etc/linkstay.conf example
-.github/workflows/ci.yml    CI: make check on push/pull_request
 ```
 
 `bin/` and `bin-sanitize/` are build outputs and are gitignored; `make clean`

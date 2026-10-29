@@ -1,17 +1,21 @@
 /*
- * app.c — application assembly: probe scheduling, threshold action, and
- * startup/shutdown banners.
+ * app.c — process entry and application assembly: probe scheduling, threshold
+ * action, startup/shutdown banners, and main().
  *
  * Sections are ordered so every helper is defined before its first use: no
- * forward declarations are needed. Everything here is private except the three
- * ls_app_* entry points declared in app.h. Mechanisms live in their own
- * modules (addr/log/notify/icmp/loop/stats); this file owns policy and
- * orchestration.
+ * forward declarations are needed. Everything here is private except main().
+ * Mechanisms live in their own modules (addr/log/notify/icmp/loop/stats);
+ * this file owns policy and orchestration.
  */
 
-#include "app.h"
-
 #include "addr.h"
+#include "base.h"
+#include "icmp.h"
+#include "log.h"
+#include "loop.h"
+#include "notify.h"
+#include "opts.h"
+#include "stats.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -53,6 +57,33 @@ typedef enum {
   LS_ACTION_TRIGGERED = 1,
   LS_ACTION_FAILED = 2,
 } action_result_t;
+
+typedef struct {
+  /* Resolved configuration (copied in by app_init). */
+  ls_opts_t opts;
+  ls_log_t log;
+
+  /* Runtime state. */
+  ls_stats_t stats;
+  ls_icmp_t icmp;
+  ls_notify_t notify;
+
+  struct sockaddr_storage dest;
+  socklen_t dest_len;
+  uint16_t identifier;
+
+  ls_loop_t loop;
+  ls_timer_t *ping_timer;
+  ls_timer_t *reply_timer;
+  ls_timer_t *watchdog_timer;
+
+  uint64_t probe_sent_ns;
+  uint16_t probe_sequence;
+  int consecutive_fails;
+
+  bool watchdog_last_failed;
+  bool signal_stop;
+} app_t;
 
 /* ---- Shutdown action (systemctl poweroff) ---- */
 
@@ -184,7 +215,7 @@ static action_result_t run_shutdown_action(bool poweroff,
 /* ---- Error path ---- */
 
 /* Logs, mirrors the message to the systemd status, and stops the loop. */
-static void app_fail(ls_app_t *app, const char *what, const ls_err_t *err) {
+static void app_fail(app_t *app, const char *what, const ls_err_t *err) {
   ls_error(&app->log, "%s: %s", what, err->msg);
   (void)ls_notify_statusf(&app->notify, "Error: %s: %s", what, err->msg);
   ls_loop_stop(&app->loop, LS_EXIT_FAILURE);
@@ -192,7 +223,7 @@ static void app_fail(ls_app_t *app, const char *what, const ls_err_t *err) {
 
 /* ---- Statistics reporting ---- */
 
-static void log_statistics(ls_app_t *app) {
+static void log_statistics(app_t *app) {
   const ls_stats_t *s = &app->stats;
   char uptime_str[32];
   ls_format_uptime(ls_stats_uptime_sec(s), uptime_str, sizeof(uptime_str));
@@ -222,7 +253,7 @@ static void log_statistics(ls_app_t *app) {
 
 /* ---- Probe lifecycle ---- */
 
-static void probe_reset(ls_app_t *app) {
+static void probe_reset(app_t *app) {
   app->probe_sent_ns = 0;
   app->probe_sequence = 0;
   ls_timer_disarm(app->reply_timer);
@@ -230,7 +261,7 @@ static void probe_reset(ls_app_t *app) {
 
 /* Records one failed probe (reply timeout or rejected send) and refreshes the
  * systemd status; callers run check_threshold() afterwards. */
-static void probe_failed(ls_app_t *app, const char *reason) {
+static void probe_failed(app_t *app, const char *reason) {
   app->consecutive_fails++;
   ls_stats_add_fail(&app->stats);
   ls_warn(&app->log, "Probe to %s failed: %s (failure %d of %d)",
@@ -242,7 +273,7 @@ static void probe_failed(ls_app_t *app, const char *reason) {
                           app->opts.fail_threshold);
 }
 
-static void probe_succeeded(ls_app_t *app, uint16_t sequence,
+static void probe_succeeded(app_t *app, uint16_t sequence,
                             double latency_ms) {
   app->consecutive_fails = 0;
   ls_stats_add_ok(&app->stats, latency_ms);
@@ -271,7 +302,7 @@ static void probe_succeeded(ls_app_t *app, uint16_t sequence,
 }
 
 /* Runs the threshold action once enough consecutive failures accumulate. */
-static void check_threshold(ls_app_t *app) {
+static void check_threshold(app_t *app) {
   if (app->consecutive_fails < app->opts.fail_threshold) {
     return;
   }
@@ -299,7 +330,7 @@ static void check_threshold(ls_app_t *app) {
  *
  * On receive errors this calls app_fail (which stops the loop), so the caller
  * must check ls_loop_stopping() after a false return. */
-static bool drain_and_match_reply(ls_app_t *app) {
+static bool drain_and_match_reply(app_t *app) {
   ls_err_t err = {};
   for (size_t i = 0; i < LS_MAX_REPLY_DRAIN_PER_WAKEUP; i++) {
     ls_icmp_recv_status_t status =
@@ -335,7 +366,7 @@ static bool drain_and_match_reply(ls_app_t *app) {
 /* ---- Loop callbacks ---- */
 
 static void on_ping_timer(ls_loop_t *loop, void *userdata) {
-  ls_app_t *app = userdata;
+  app_t *app = userdata;
   uint64_t now_ms = ls_loop_now(loop);
 
   /* Always keep the periodic schedule, but never overlap probes. With
@@ -369,7 +400,7 @@ static void on_ping_timer(ls_loop_t *loop, void *userdata) {
 }
 
 static void on_reply_timer([[maybe_unused]] ls_loop_t *loop, void *userdata) {
-  ls_app_t *app = userdata;
+  app_t *app = userdata;
 
   /* Last-chance non-blocking drain: the reply may have landed in the
    * socket buffer between the most recent poll wakeup and this timer
@@ -392,7 +423,7 @@ static void on_reply_timer([[maybe_unused]] ls_loop_t *loop, void *userdata) {
 }
 
 static void on_watchdog_timer(ls_loop_t *loop, void *userdata) {
-  ls_app_t *app = userdata;
+  app_t *app = userdata;
   bool sent = ls_notify_watchdog(&app->notify);
   ls_timer_step(app->watchdog_timer,
                 ls_notify_watchdog_interval_ms(&app->notify),
@@ -409,12 +440,12 @@ static void on_watchdog_timer(ls_loop_t *loop, void *userdata) {
 
 static void on_icmp_readable([[maybe_unused]] ls_loop_t *loop,
                              [[maybe_unused]] int fd, void *userdata) {
-  ls_app_t *app = userdata;
+  app_t *app = userdata;
   (void)drain_and_match_reply(app);
 }
 
 static void on_signal(ls_loop_t *loop, uint32_t signo, void *userdata) {
-  ls_app_t *app = userdata;
+  app_t *app = userdata;
   if (signo == SIGINT || signo == SIGTERM) {
     app->signal_stop = true;
     ls_loop_stop(loop, LS_EXIT_SUCCESS);
@@ -425,7 +456,7 @@ static void on_signal(ls_loop_t *loop, uint32_t signo, void *userdata) {
 
 /* ---- Startup / shutdown banners ---- */
 
-static void log_startup(ls_app_t *app) {
+static void log_startup(app_t *app) {
   uint64_t detection_ms = ls_mul_sat((uint64_t)app->opts.fail_threshold,
                                      app->opts.interval_ms);
   char interval_str[32];
@@ -465,7 +496,7 @@ static void log_startup(ls_app_t *app) {
   }
 }
 
-static void log_shutdown(ls_app_t *app, int exit_code) {
+static void log_shutdown(app_t *app, int exit_code) {
   if (app->signal_stop) {
     ls_info(&app->log, "Shutdown signal received, stopping gracefully");
   }
@@ -479,15 +510,14 @@ static void log_shutdown(ls_app_t *app, int exit_code) {
   }
 }
 
-/* ---- Public API ---- */
+/* ---- Application lifecycle ---- */
 
-bool ls_app_init(ls_app_t *restrict app, const ls_opts_t *restrict opts,
-                 ls_err_t *restrict err) {
+static bool app_init(app_t *app, const ls_opts_t *opts, ls_err_t *err) {
   if (app == nullptr || opts == nullptr) {
     return ls_err_set(err, "Invalid application init arguments");
   }
 
-  *app = (ls_app_t){
+  *app = (app_t){
       .opts = *opts,
       .identifier = (uint16_t)(getpid() & 0xFFFF),
       /* Keep destroy safe if init bails before the sockets are opened. */
@@ -552,16 +582,16 @@ bool ls_app_init(ls_app_t *restrict app, const ls_opts_t *restrict opts,
   return true;
 }
 
-void ls_app_destroy(ls_app_t *restrict app) {
+static void app_destroy(app_t *app) {
   if (app == nullptr) {
     return;
   }
   ls_notify_destroy(&app->notify);
   ls_icmp_close(&app->icmp);
-  *app = (ls_app_t){};
+  *app = (app_t){};
 }
 
-int ls_app_run(ls_app_t *restrict app) {
+static int app_run(app_t *app) {
   if (app == nullptr) {
     return LS_EXIT_FAILURE;
   }
@@ -614,4 +644,40 @@ int ls_app_run(ls_app_t *restrict app) {
   log_shutdown(app, exit_code);
   ls_loop_destroy(&app->loop);
   return exit_code;
+}
+
+/* ---- Process entry point ---- */
+
+/* Logs a fatal startup error. Before the environment resolves only the error
+ * level is known; afterwards the resolved level applies. */
+static void log_fatal_error(ls_log_level_t level, const char *message) {
+  ls_log_t log;
+  ls_log_init(&log, level);
+  ls_error(&log, LS_PROGRAM_NAME " failed: %s", message);
+}
+
+int main(void) {
+  ls_err_t err = {};
+  ls_opts_t opts;
+
+  if (!ls_opts_resolve(&opts, &err)) {
+    log_fatal_error(LS_LOG_ERROR, err.msg);
+    return LS_EXIT_FAILURE;
+  }
+
+  /* Zero-initialized so app_destroy() is safe even if app_init() fails
+   * before it finishes assigning *app. */
+  app_t app = {};
+  if (!app_init(&app, &opts, &err)) {
+    log_fatal_error(opts.log_level, err.msg);
+    app_destroy(&app);
+    return LS_EXIT_FAILURE;
+  }
+
+  int rc = app_run(&app);
+  if (rc != LS_EXIT_SUCCESS) {
+    ls_error(&app.log, LS_PROGRAM_NAME " exited with code %d", rc);
+  }
+  app_destroy(&app);
+  return rc;
 }

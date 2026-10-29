@@ -236,8 +236,7 @@ src/
 ├── icmp.h / icmp.c     # raw ICMP、BPF、校验和、回包匹配
 ├── notify.h / notify.c # 必需的 sd_notify 通道
 ├── stats.h / stats.c   # 累计计数与延迟聚合
-├── app.h / app.c       # probe 生命周期、阈值动作、启动/退出
-└── main.c              # 无参数入口：opts → app → loop
+└── app.c               # 进程入口与组装：probe、阈值、启动/退出
 systemd/
 ├── linkstay.service    # systemd unit（安装时替换路径占位符）
 └── linkstay.conf       # /etc/linkstay.conf 示例
