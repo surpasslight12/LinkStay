@@ -14,9 +14,10 @@ CLI、前台调试模式或 daemonize 逻辑：systemd 是唯一支持的运行�
 - **无命令行**：所有配置来自 unit 的 `Environment=` 与
   `/etc/linkstay.conf`，不存在 CLI 参数解析层。
 - **原生 ICMP**：raw socket + 内核 BPF 过滤，不依赖系统 `ping`。
+- **延迟启动**：首次探测前可等待一段时间，unit 默认 30s，便于等待链路稳定。
 - **真实关机**：unit 默认 `LINKSTAY_POWEROFF=true`；改为 `false` 可走
   dry-run。
-- **小体积**：LTO 构建，stripped 二进制约 34 KiB。
+- **小体积**：LTO 构建，stripped 二进制约 38 KiB。
 - **沙箱**：systemd unit 限制 capability、文件系统、地址族与系统调用。
 
 ## 构建与安装
@@ -56,11 +57,13 @@ unit 先设置一组默认 `Environment=`，随后读取可选的
 | `LINKSTAY_INTERVAL` | `10s` | `10s` | 探测间隔，必须带 `s`/`ms` 后缀 |
 | `LINKSTAY_THRESHOLD` | `5` | `5` | 连续失败次数 |
 | `LINKSTAY_TIMEOUT` | `3000ms` | `3000ms` | 回包超时，必须小于 interval |
+| `LINKSTAY_START_DELAY` | `0s` | `30s` | 首次探测前等待；`0s` 表示立即探测 |
 | `LINKSTAY_POWEROFF` | `false` | `true` | `true` 真实关机，`false` dry-run |
 | `LINKSTAY_LOG_LEVEL` | `info` | `info` | `silent`/`error`/`warn`/`info`/`debug` |
 
 时长只接受小写 `s` 或 `ms` 后缀；裸数字、前导 `+` 与大小写变体都会被拒绝。
-布尔值只接受大小写不敏感的 `true`/`false`。
+`LINKSTAY_START_DELAY` 额外接受 `0s`/`0ms`。布尔值只接受大小写不敏感的
+`true`/`false`。
 
 编辑配置后重启服务：
 
@@ -91,6 +94,21 @@ sudo systemctl restart linkstay
 - **测试**：shell 套件需要 `python3` 创建 NOTIFY_SOCKET 接收器；实网用例
   需要 root/CAP_NET_RAW，或使用用户+网络命名空间。
 
+## 延迟启动
+
+linkstay 在初始化完成后立即发送 `READY=1`，因此 systemd 启动超时不等同于首次
+探测延迟。首次探测由 `LINKSTAY_START_DELAY` 控制：
+
+- unit 默认 `30s`，适合 `network-online.target` 之后等待链路稳定；
+- 设置为 `0s` 可立即探测；
+- 等待期间 watchdog 心跳照常发送，服务不会被 `WatchdogSec` 误杀；
+- 启动日志与 `STATUS=` 会显示 `first probe in ...` / `Waiting ...`。
+
+```ini
+# /etc/linkstay.conf
+LINKSTAY_START_DELAY=0s
+```
+
 ## 探测与失败判定
 
 每个周期只进行一次探测，连续失败达到阈值后触发关机动作。以下情况都算一次
@@ -113,8 +131,9 @@ socket 本身不可用（权限、参数、短写等）才是致命错误，进�
 
 ## 日志与信号
 
-日志写入 stderr，由 journald 收集；每行只有 `[LEVEL] message`，**不包含
-时间戳**，避免与 journal 字段重复。
+服务不读取 stdin，stdout 被丢弃（unit 设置 `StandardInput=null`、
+`StandardOutput=null`），日志只写 stderr，并由 journald 收集。每行只有 `[LEVEL] message`，**不包含时间戳**，避免
+与 journal 字段重复。
 
 ```bash
 journalctl -fu linkstay
@@ -143,7 +162,7 @@ unit 通过 `EnvironmentFile=-/etc/linkstay.conf` 读取配置；如修改 unit 
 ## 测试
 
 ```bash
-make unit-test      # 138 项单元断言
+make unit-test      # 147 项单元断言
 make test           # 单元 + shell（实网用例按 capability 自动跳过）
 make check          # test + lint + shellcheck + sanitize-test
 ```

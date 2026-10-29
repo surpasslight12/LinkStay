@@ -26,6 +26,7 @@
 #define LS_DEFAULT_INTERVAL_MS UINT64_C(10000)
 #define LS_DEFAULT_FAIL_THRESHOLD 5
 #define LS_DEFAULT_TIMEOUT_MS UINT64_C(3000)
+#define LS_DEFAULT_START_DELAY_MS UINT64_C(0)
 #define LS_DEFAULT_POWEROFF false
 
 #define LS_BOOL_VALUES "true|false"
@@ -133,7 +134,7 @@ static bool invalid_duration(const char *name, const char *display,
                     name, display);
 }
 
-static bool apply_duration(const char *name, const char *value,
+static bool apply_duration(const char *name, const char *value, bool allow_zero,
                            uint64_t max_ms, uint64_t *out_ms, ls_err_t *err) {
   const char *display = value != nullptr ? value : "<empty>";
   if (!has_unsigned_shape(value)) {
@@ -142,7 +143,7 @@ static bool apply_duration(const char *name, const char *value,
   errno = 0;
   char *endptr = nullptr;
   unsigned long long parsed = strtoull(value, &endptr, 10);
-  if (errno != 0 || parsed == 0) {
+  if (errno != 0 || (parsed == 0 && !allow_zero)) {
     return invalid_duration(name, display, err);
   }
   uint64_t unit_ms = 0;
@@ -158,7 +159,7 @@ static bool apply_duration(const char *name, const char *value,
     return ls_err_set(err, "Invalid value for %s: %s (too large)", name,
                       display);
   }
-  if (result_ms == 0 || result_ms > max_ms) {
+  if ((result_ms == 0 && !allow_zero) || result_ms > max_ms) {
     return ls_err_set(err, "Invalid value for %s: %s (range 1..%" PRIu64
                            " ms)",
                       name, display, max_ms);
@@ -186,8 +187,9 @@ static bool apply_target(const char *name, const char *value, ls_opts_t *opts,
 
 static bool apply_interval(const char *name, const char *value, ls_opts_t *opts,
                            ls_err_t *err) {
-  return apply_duration(name, value, (uint64_t)INT_MAX * LS_MS_PER_SEC,
-                        &opts->interval_ms, err);
+  return apply_duration(name, value, false,
+                        (uint64_t)INT_MAX * LS_MS_PER_SEC, &opts->interval_ms,
+                        err);
 }
 
 static bool apply_threshold(const char *name, const char *value,
@@ -198,7 +200,14 @@ static bool apply_threshold(const char *name, const char *value,
 
 static bool apply_timeout(const char *name, const char *value, ls_opts_t *opts,
                           ls_err_t *err) {
-  return apply_duration(name, value, (uint64_t)INT_MAX, &opts->timeout_ms, err);
+  return apply_duration(name, value, false, (uint64_t)INT_MAX,
+                        &opts->timeout_ms, err);
+}
+
+static bool apply_start_delay(const char *name, const char *value,
+                              ls_opts_t *opts, ls_err_t *err) {
+  return apply_duration(name, value, true, (uint64_t)INT_MAX,
+                        &opts->start_delay_ms, err);
 }
 
 static bool apply_poweroff(const char *name, const char *value, ls_opts_t *opts,
@@ -223,6 +232,7 @@ static const env_spec_t ENV_SPECS[] = {
     {"LINKSTAY_INTERVAL", apply_interval},
     {"LINKSTAY_THRESHOLD", apply_threshold},
     {"LINKSTAY_TIMEOUT", apply_timeout},
+    {"LINKSTAY_START_DELAY", apply_start_delay},
     {"LINKSTAY_POWEROFF", apply_poweroff},
     {"LINKSTAY_LOG_LEVEL", apply_level},
 };
@@ -235,6 +245,7 @@ static void load_defaults(ls_opts_t *opts) {
       .interval_ms = LS_DEFAULT_INTERVAL_MS,
       .fail_threshold = LS_DEFAULT_FAIL_THRESHOLD,
       .timeout_ms = LS_DEFAULT_TIMEOUT_MS,
+      .start_delay_ms = LS_DEFAULT_START_DELAY_MS,
       .poweroff = LS_DEFAULT_POWEROFF,
       .log_level = LS_LOG_INFO,
   };
@@ -293,13 +304,17 @@ void ls_opts_dump(const ls_opts_t *restrict opts,
   }
   char interval_str[32];
   char timeout_str[32];
+  char start_delay_str[32];
   ls_format_duration(opts->interval_ms, interval_str, sizeof(interval_str));
   ls_format_duration(opts->timeout_ms, timeout_str, sizeof(timeout_str));
+  ls_format_duration(opts->start_delay_ms, start_delay_str,
+                     sizeof(start_delay_str));
   ls_debug(log, "Configuration:");
   ls_debug(log, "  Target: %s", opts->target);
   ls_debug(log, "  Interval: %s", interval_str);
   ls_debug(log, "  Threshold: %d", opts->fail_threshold);
   ls_debug(log, "  Timeout: %s", timeout_str);
+  ls_debug(log, "  Start Delay: %s", start_delay_str);
   ls_debug(log, "  Poweroff: %s", opts->poweroff ? "true" : "false");
   ls_debug(log, "  Log Level: %s", ls_log_level_name(opts->log_level));
 }

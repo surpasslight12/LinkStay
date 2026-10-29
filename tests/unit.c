@@ -189,8 +189,9 @@ static void test_timer_helpers(void) {
 }
 
 static const char *const OPT_ENV_NAMES[] = {
-    "LINKSTAY_TARGET",  "LINKSTAY_INTERVAL", "LINKSTAY_THRESHOLD",
-    "LINKSTAY_TIMEOUT", "LINKSTAY_POWEROFF", "LINKSTAY_LOG_LEVEL",
+    "LINKSTAY_TARGET",    "LINKSTAY_INTERVAL",  "LINKSTAY_THRESHOLD",
+    "LINKSTAY_TIMEOUT",   "LINKSTAY_START_DELAY",
+    "LINKSTAY_POWEROFF",  "LINKSTAY_LOG_LEVEL",
 };
 
 static void reset_opts_env(void) {
@@ -233,6 +234,7 @@ static void test_opts_defaults(void) {
   CHECK(opts.interval_ms == UINT64_C(10000));
   CHECK(opts.fail_threshold == 5);
   CHECK(opts.timeout_ms == UINT64_C(3000));
+  CHECK(opts.start_delay_ms == 0);
   CHECK(!opts.poweroff);
   CHECK(opts.log_level == LS_LOG_INFO);
 }
@@ -243,6 +245,7 @@ static void test_opts_env(void) {
   set_opts_env("LINKSTAY_INTERVAL", "5s");
   set_opts_env("LINKSTAY_THRESHOLD", "4");
   set_opts_env("LINKSTAY_TIMEOUT", "400ms");
+  set_opts_env("LINKSTAY_START_DELAY", "5s");
   set_opts_env("LINKSTAY_POWEROFF", "false");
   set_opts_env("LINKSTAY_LOG_LEVEL", "warn");
 
@@ -254,6 +257,7 @@ static void test_opts_env(void) {
   CHECK(opts.interval_ms == UINT64_C(5000));
   CHECK(opts.fail_threshold == 4);
   CHECK(opts.timeout_ms == UINT64_C(400));
+  CHECK(opts.start_delay_ms == UINT64_C(5000));
   CHECK(!opts.poweroff);
   CHECK(opts.log_level == LS_LOG_WARN);
 }
@@ -262,12 +266,14 @@ static void test_opts_duration_suffixes(void) {
   reset_opts_env();
   set_opts_env("LINKSTAY_INTERVAL", "1500ms");
   set_opts_env("LINKSTAY_TIMEOUT", "1s");
+  set_opts_env("LINKSTAY_START_DELAY", "0s");
 
   ls_opts_t opts;
   ls_err_t err = {};
   CHECK(resolve_opts(&opts, &err));
   CHECK(opts.interval_ms == UINT64_C(1500));
   CHECK(opts.timeout_ms == UINT64_C(1000));
+  CHECK(opts.start_delay_ms == 0);
 
   reset_opts_env();
   set_opts_env("LINKSTAY_INTERVAL", "2");
@@ -287,6 +293,9 @@ static void test_opts_invalid_values(void) {
       {"LINKSTAY_INTERVAL", "5S", "Invalid value for LINKSTAY_INTERVAL"},
       {"LINKSTAY_TIMEOUT", "1.5s", "Invalid value for LINKSTAY_TIMEOUT"},
       {"LINKSTAY_TIMEOUT", "1m", "Invalid value for LINKSTAY_TIMEOUT"},
+      {"LINKSTAY_START_DELAY", "5", "Invalid value for LINKSTAY_START_DELAY"},
+      {"LINKSTAY_START_DELAY", "-1s", "Invalid value for LINKSTAY_START_DELAY"},
+      {"LINKSTAY_START_DELAY", "1m", "Invalid value for LINKSTAY_START_DELAY"},
       {"LINKSTAY_THRESHOLD", "0", "Invalid value for LINKSTAY_THRESHOLD"},
       {"LINKSTAY_THRESHOLD", "xyz", "Invalid value for LINKSTAY_THRESHOLD"},
       {"LINKSTAY_POWEROFF", "1", "Invalid value for LINKSTAY_POWEROFF"},

@@ -68,6 +68,27 @@ else
   [[ "$hay" == *"Reply from ::1"* ]] && pass "IPv6 loopback received replies" || \
     fail "IPv6 loopback received replies" "no IPv6 reply line"
 
+  # 3b) A start delay defers the first probe but not READY/statistics startup.
+  spawn env LINKSTAY_TARGET=127.0.0.1 LINKSTAY_INTERVAL=1s \
+    LINKSTAY_TIMEOUT=500ms LINKSTAY_START_DELAY=2s \
+    LINKSTAY_LOG_LEVEL=debug LINKSTAY_POWEROFF=false "$BIN"
+  sleep 1.0
+  early="$(cat "$SPAWN_OUT" "$SPAWN_ERR" 2>/dev/null || true)"
+  [[ "$early" == *"first probe in 2s"* ]] && \
+    pass "startup banner reports the configured delay" || \
+    fail "startup banner reports the configured delay" \
+      "early tail=${early: -200}"
+  [[ "$early" != *"Reply from 127.0.0.1"* ]] && \
+    pass "start delay defers the first probe" || \
+    fail "start delay defers the first probe" "reply before delay"
+  sleep 1.5
+  kill -TERM "$PID" 2>/dev/null || true
+  await 3
+  hay="${STDOUT}${STDERR}"
+  [[ "$hay" == *"Reply from 127.0.0.1"* ]] && \
+    pass "first probe runs after the delay" || \
+    fail "first probe runs after the delay" "no delayed reply"
+
   # 4) SIGUSR1 dumps stats mid-run
   spawn env LINKSTAY_TARGET=127.0.0.1 LINKSTAY_INTERVAL=1s \
     LINKSTAY_TIMEOUT=500ms LINKSTAY_LOG_LEVEL=info \

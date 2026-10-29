@@ -10,14 +10,15 @@ StartLimitBurst=3
 Type=notify
 NotifyAccess=main
 SyslogIdentifier=linkstay
-StandardOutput=journal
+StandardInput=null
+StandardOutput=null
 StandardError=journal
 
 ExecStart=@BINDIR@/linkstay
 
-# TimeoutStartSec bounds how long systemd waits for READY=1. WatchdogSec is a
-# separate recurring deadline that starts only after READY=1; linkstay arms the
-# first WATCHDOG=1 timer after the startup banner.
+# READY=1 is sent before the first probe, so TimeoutStartSec does not include
+# LINKSTAY_START_DELAY. WatchdogSec is a separate recurring deadline that starts
+# after READY=1; linkstay arms WATCHDOG=1 while waiting for the first probe.
 TimeoutStartSec=30
 TimeoutStopSec=10
 WatchdogSec=30
@@ -32,6 +33,7 @@ Environment="LINKSTAY_TARGET=1.1.1.1"
 Environment="LINKSTAY_INTERVAL=10s"
 Environment="LINKSTAY_THRESHOLD=5"
 Environment="LINKSTAY_TIMEOUT=3000ms"
+Environment="LINKSTAY_START_DELAY=30s"
 Environment="LINKSTAY_POWEROFF=true"
 Environment="LINKSTAY_LOG_LEVEL=info"
 EnvironmentFile=-@CONFIG_PATH@

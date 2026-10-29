@@ -32,20 +32,20 @@ result. "It compiles" is not done.
 
 ```bash
 make                 # must produce zero compiler warnings
-make test            # unit suite + shell suite; shell baseline: 37 pass, 1 skip
+make test            # unit suite + shell suite; shell baseline: 43 pass, 1 skip
 make lint            # cppcheck + clang-tidy: zero findings
 make shellcheck      # ShellCheck tests/*.sh: zero findings
 make sanitize-test   # ASan+UBSan unit + shell suites
 make check           # runs test + lint + shellcheck + sanitize-test
 ```
 
-`tests/unit.c` currently runs 138 assertions over `base`/`addr`/`log`/`loop`/
+`tests/unit.c` currently runs 147 assertions over `base`/`addr`/`log`/`loop`/
 `stats` and the environment-only `opts` resolver. Live ICMP tests are skipped
 when the binary lacks `CAP_NET_RAW`.
 
 Run them inside a user + network namespace with the recipe in `README.md`
-("测试"); the full suite then reports `Pass: 61   Fail: 0   Skip: 0`
-(without live tests: `Pass: 37   Fail: 0   Skip: 1`). The shell suite requires
+("测试"); the full suite then reports `Pass: 70   Fail: 0   Skip: 0`
+(without live tests: `Pass: 43   Fail: 0   Skip: 1`). The shell suite requires
 `python3` for its NOTIFY_SOCKET receiver. If you changed anything on the probe
 or event-loop path, run the live suite and say so explicitly. Never report a
 skipped test as a pass. CI runs `make check` on every push and pull request
@@ -63,8 +63,10 @@ skipped test as a pass. CI runs `make check` on every push and pull request
   `NOTIFY_SOCKET` is absent or unusable, and `ls_app_init()` treats that as
   fatal. A broken notify channel must never silently run a service that systemd
   cannot supervise.
-- **journald owns timestamps.** Log lines are `[LEVEL] message`; there is no
-  timestamp formatting or timestamp configuration.
+- **journald owns timestamps and I/O.** Log lines are `[LEVEL] message`; there
+  is no timestamp formatting or timestamp configuration. stdin is `/dev/null`,
+  stdout is discarded, and stderr is the only output stream; the unit enforces
+  `StandardInput=null`, `StandardOutput=null`, and `StandardError=journal`.
 - **Zero dynamic allocation.** No `malloc`/`calloc`/`realloc`/`free`, no
   `strdup`/`asprintf`/`open_memstream`. State lives in fixed-size structs
   (`ls_app_t`, `ls_icmp_t`) or stack buffers. Adding a heap allocation is a
@@ -152,8 +154,9 @@ private.
 - The only duration parser is `apply_duration()` reached through `ENV_SPECS`:
   both `LINKSTAY_INTERVAL` and `LINKSTAY_TIMEOUT` require a lowercase `s` or
   `ms` suffix, and the result is always stored in milliseconds. Bare numbers
-  and a leading `+` are rejected. Only one cross-field rule exists:
-  `timeout_ms < interval_ms`.
+  and a leading `+` are rejected. `LINKSTAY_START_DELAY` uses the same parser
+  but additionally accepts `0s`/`0ms` for an immediate first probe. Only one
+  cross-field rule exists: `timeout_ms < interval_ms`.
 - Monotonic time (`CLOCK_MONOTONIC`/`CLOCK_MONOTONIC_COARSE`) is used for all
   logic. Wall-clock time is not read by the program.
 - Format user-visible durations with `ls_format_duration()` (whole seconds as
@@ -243,7 +246,8 @@ There is no CLI and no precedence layer: defaults, then present environment
 variables, then validation.
 
 - Variables: `LINKSTAY_TARGET`, `LINKSTAY_INTERVAL`, `LINKSTAY_THRESHOLD`,
-  `LINKSTAY_TIMEOUT`, `LINKSTAY_POWEROFF`, `LINKSTAY_LOG_LEVEL`.
+  `LINKSTAY_TIMEOUT`, `LINKSTAY_START_DELAY`, `LINKSTAY_POWEROFF`,
+  `LINKSTAY_LOG_LEVEL`.
 - Boolean values are `true` and `false` only, compared case-insensitively.
   Numeric and shell-style aliases (`1`, `0`, `yes`, `no`, `on`, `off`) are
   rejected on purpose: one spelling per state.
@@ -256,6 +260,11 @@ variables, then validation.
 
 ### 5.2 Probe accounting and the threshold action
 
+- READY=1 is sent before the first probe; `LINKSTAY_START_DELAY` only delays
+  the ping timer, so systemd's `TimeoutStartSec` does not include it. The
+  watchdog timer is armed before READY and keeps beating during the delay.
+  `LINKSTAY_START_DELAY=0s` means the first probe is immediate; the unit
+  default is `30s`.
 - One probe is outstanding at a time; the armed reply timer is the single
   source of truth for that state, so the ping timer never overlaps a live
   probe.
@@ -309,7 +318,8 @@ variables, then validation.
 ### 5.5 systemd integration
 
 - `systemd/linkstay.service` expects `Type=notify`, `NotifyAccess=main`,
-  `WatchdogSec=30`. Keep them consistent with the notifier.
+  `WatchdogSec=30`, `StandardInput=null`, `StandardOutput=null`, and
+  journal-backed stderr. Keep them consistent with the notifier.
 - `ls_notify_init()` returns `bool`: failure means `NOTIFY_SOCKET` is missing,
   malformed, or cannot be connected. The app treats it as fatal; do not
   reintroduce an "inactive but continue" fallback.

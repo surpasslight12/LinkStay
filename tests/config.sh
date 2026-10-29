@@ -12,6 +12,8 @@ expect_debug_contains "default threshold" "Threshold: 5" \
   env LINKSTAY_LOG_LEVEL=debug "$BIN"
 expect_debug_contains "default timeout" "Timeout: 3s" \
   env LINKSTAY_LOG_LEVEL=debug "$BIN"
+expect_debug_contains "default start delay" "Start Delay: 0ms" \
+  env LINKSTAY_LOG_LEVEL=debug "$BIN"
 expect_debug_contains "default poweroff" "Poweroff: false" \
   env LINKSTAY_LOG_LEVEL=debug "$BIN"
 expect_debug_contains "default log level" "Log Level: DEBUG" \
@@ -28,6 +30,8 @@ expect_debug_contains "threshold override" "Threshold: 3" \
   env LINKSTAY_THRESHOLD=3 LINKSTAY_LOG_LEVEL=debug "$BIN"
 expect_debug_contains "timeout override" "Timeout: 500ms" \
   env LINKSTAY_TIMEOUT=500ms LINKSTAY_LOG_LEVEL=debug "$BIN"
+expect_debug_contains "start-delay override" "Start Delay: 5s" \
+  env LINKSTAY_START_DELAY=5s LINKSTAY_LOG_LEVEL=debug "$BIN"
 expect_debug_contains "poweroff override" "Poweroff: true" \
   env LINKSTAY_POWEROFF=true LINKSTAY_LOG_LEVEL=debug "$BIN"
 expect_debug_contains "log-level debug enables the dump" "Log Level: DEBUG" \
@@ -69,6 +73,14 @@ expect_reject "timeout fraction rejected" "Invalid value for LINKSTAY_TIMEOUT" \
   env LINKSTAY_TIMEOUT=1.5s "$BIN"
 expect_reject "timeout unknown unit rejected" "Invalid value for LINKSTAY_TIMEOUT" \
   env LINKSTAY_TIMEOUT=1m "$BIN"
+expect_reject "bare start delay rejected" "Invalid value for LINKSTAY_START_DELAY" \
+  env LINKSTAY_START_DELAY=5 "$BIN"
+expect_reject "negative start delay rejected" "Invalid value for LINKSTAY_START_DELAY" \
+  env LINKSTAY_START_DELAY=-1s "$BIN"
+expect_reject "start delay unknown unit rejected" "Invalid value for LINKSTAY_START_DELAY" \
+  env LINKSTAY_START_DELAY=1m "$BIN"
+expect_accept "start delay zero accepted" \
+  env LINKSTAY_START_DELAY=0s LINKSTAY_LOG_LEVEL=silent "$BIN"
 expect_reject "threshold zero rejected" "Invalid value for LINKSTAY_THRESHOLD" \
   env LINKSTAY_THRESHOLD=0 "$BIN"
 expect_reject "threshold junk rejected" "Invalid value for LINKSTAY_THRESHOLD" \

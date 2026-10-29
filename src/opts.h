@@ -19,6 +19,7 @@ typedef struct {
   uint64_t interval_ms; /* probe interval in milliseconds */
   int fail_threshold;   /* consecutive failures before shutdown */
   uint64_t timeout_ms;  /* per-probe reply timeout in milliseconds */
+  uint64_t start_delay_ms; /* delay before the first probe */
   /* Shutdown */
   bool poweroff; /* false = simulate only (dry-run) */
   /* Logging */

@@ -431,21 +431,38 @@ static void log_startup(ls_app_t *app) {
   char interval_str[32];
   char timeout_str[32];
   char detection_str[32];
+  char delay_str[32];
+  char first_probe_str[64];
   ls_format_duration(app->opts.interval_ms, interval_str, sizeof(interval_str));
   ls_format_duration(app->opts.timeout_ms, timeout_str, sizeof(timeout_str));
   ls_format_duration(detection_ms, detection_str, sizeof(detection_str));
+  ls_format_duration(app->opts.start_delay_ms, delay_str, sizeof(delay_str));
+  if (app->opts.start_delay_ms == 0) {
+    (void)snprintf(first_probe_str, sizeof(first_probe_str), "immediate");
+  } else {
+    (void)snprintf(first_probe_str, sizeof(first_probe_str), "in %s",
+                   delay_str);
+  }
   ls_info(&app->log,
-          LS_PROGRAM_NAME " %s monitoring %s | interval %s, timeout %s, "
-          "threshold %d (detection ~%s), poweroff %s",
-          LS_VERSION, app->opts.target, interval_str, timeout_str,
-          app->opts.fail_threshold, detection_str,
+          LS_PROGRAM_NAME " %s monitoring %s | first probe %s | interval %s, "
+          "timeout %s, threshold %d (detection ~%s), poweroff %s",
+          LS_VERSION, app->opts.target, first_probe_str, interval_str,
+          timeout_str, app->opts.fail_threshold, detection_str,
           app->opts.poweroff ? "true" : "false (dry-run)");
   if (!ls_notify_ready(&app->notify)) {
     ls_warn(&app->log, "Failed to send systemd READY notification");
   }
-  (void)ls_notify_statusf(&app->notify, "Monitoring %s every %s; poweroff %s",
-                          app->opts.target, interval_str,
-                          app->opts.poweroff ? "true" : "false (dry-run)");
+  if (app->opts.start_delay_ms == 0) {
+    (void)ls_notify_statusf(&app->notify,
+                            "Monitoring %s every %s; poweroff %s",
+                            app->opts.target, interval_str,
+                            app->opts.poweroff ? "true" : "false (dry-run)");
+  } else {
+    (void)ls_notify_statusf(&app->notify,
+                            "Waiting %s before first probe; poweroff %s",
+                            delay_str,
+                            app->opts.poweroff ? "true" : "false (dry-run)");
+  }
 }
 
 static void log_shutdown(ls_app_t *app, int exit_code) {
@@ -586,7 +603,7 @@ int ls_app_run(ls_app_t *restrict app) {
     ls_loop_destroy(&app->loop);
     return LS_EXIT_FAILURE;
   }
-  ls_timer_arm_after(app->ping_timer, now_ms, 0); /* first probe is immediate */
+  ls_timer_arm_after(app->ping_timer, now_ms, app->opts.start_delay_ms);
   uint64_t watchdog_interval_ms = ls_notify_watchdog_interval_ms(&app->notify);
   if (watchdog_interval_ms > 0) {
     ls_timer_arm_after(app->watchdog_timer, now_ms, watchdog_interval_ms);
