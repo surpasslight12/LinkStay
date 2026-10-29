@@ -26,17 +26,10 @@ bool ls_err_set(ls_err_t *err, const char *fmt, ...) {
 
 uint64_t ls_now_ms(void) {
   struct timespec ts;
-#ifdef CLOCK_MONOTONIC_COARSE
-  if (LS_UNLIKELY(clock_gettime(CLOCK_MONOTONIC_COARSE, &ts) != 0 &&
-                  clock_gettime(CLOCK_MONOTONIC, &ts) != 0)) {
+  if (LS_UNLIKELY(clock_gettime(CLOCK_MONOTONIC_COARSE, &ts) != 0)) {
     return UINT64_MAX;
   }
-#else
-  if (LS_UNLIKELY(clock_gettime(CLOCK_MONOTONIC, &ts) != 0)) {
-    return UINT64_MAX;
-  }
-#endif
-  /* CLOCK_MONOTONIC is non-negative on Linux; direct multiplication is
+  /* CLOCK_MONOTONIC_COARSE is non-negative on Linux; direct multiplication is
    * safe for any realistic uptime. */
   uint64_t seconds_ms = (uint64_t)ts.tv_sec * LS_MS_PER_SEC;
   return ls_add_sat(seconds_ms, (uint64_t)ts.tv_nsec / LS_NS_PER_MS);

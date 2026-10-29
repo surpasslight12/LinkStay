@@ -1,28 +1,18 @@
 #ifndef LINKSTAY_BASE_H
 #define LINKSTAY_BASE_H
 
-#ifndef _POSIX_C_SOURCE
-#define _POSIX_C_SOURCE 200809L
-#endif
-
-#ifndef _DEFAULT_SOURCE
-#define _DEFAULT_SOURCE
-#endif
-
-/* C23 is a hard requirement: the code relies on bool/nullptr/static_assert/
- * alignas being keywords, on [[maybe_unused]], and on <stdckdint.h>. GCC 14
- * reports 202000L for -std=c23 and GCC 15 reports 202311L, so the test is
- * "newer than C17" rather than an exact revision. */
-#if !defined(__STDC_VERSION__) || __STDC_VERSION__ <= 201710L
-#error "linkstay requires C23; build with -std=c23 (see the Makefile)"
-#endif
-
 /*
  * base.h — dependency-free foundation: program identity, exit codes, the
  * unified error type, monotonic clock, saturating math, and duration
  * formatting. Everything here is stateless; leveled logging lives in log.h and
  * IP literal parsing in addr.h.
  */
+
+/* C23 is a hard requirement: the code relies on bool/nullptr/static_assert/
+ * alignas being keywords, on [[maybe_unused]], and on <stdckdint.h>. */
+#if !defined(__STDC_VERSION__) || __STDC_VERSION__ <= 201710L
+#error "linkstay requires C23; build with -std=c23 (see the Makefile)"
+#endif
 
 #include <stddef.h>
 #include <stdint.h>

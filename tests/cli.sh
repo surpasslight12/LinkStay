@@ -122,8 +122,8 @@ expect_accept "--timeout INT_MAX accepted with matching interval" \
 expect_reject "--timeout INT_MAX+1 rejected" "Invalid value for --timeout" \
   "$BIN" -t 1.1.1.1 -i 2147484s -w 2147483648ms
 
-# Leading zeros stay accepted; a leading '+' is a legacy spelling and is
-# rejected, as are leading whitespace and '-'.
+# Leading zeros stay accepted; a leading '+' is invalid, as are leading
+# whitespace and '-'.
 expect_reject "leading + rejected" "Invalid value for --interval" \
   "$BIN" -t 1.1.1.1 -i +5s -w 1000ms -sfalse -l silent
 expect_accept "leading zeros accepted" \
@@ -172,7 +172,7 @@ expect_accept "timeout just below interval accepted (no hidden margin)" \
 section "Poweroff parsing"
 
 # Boolean values are limited to true/false (case-insensitive); every other
-# historical spelling must be rejected with a message naming the accepted set.
+# spelling must be rejected with a message naming the accepted set.
 expect_accept "--poweroff=false" "$BIN" -t 1.1.1.1 --poweroff=false
 expect_accept "-pfalse (attached)" "$BIN" -t 1.1.1.1 -pfalse
 expect_accept "-pFALSE (case-insensitive)" "$BIN" -t 1.1.1.1 -pFALSE

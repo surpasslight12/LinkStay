@@ -265,6 +265,6 @@ tests/
 
 `bin/`（默认构建）与 `bin-sanitize/`（sanitizer 构建）是 `make` 生成的产物，已被 `.gitignore` 忽略，可随时用 `make clean` 删除。
 
-代码以 `-std=c23 -pedantic-errors` 构建，`base.h` 中有 `__STDC_VERSION__` 守卫，使用 C17 及更早标准会直接编译失败。
+代码以 `-std=c23 -pedantic-errors` 构建；`base.h` 在编译期拒绝不支持 C23 的编译器。
 
 工程约定（不变量、命名边界、模块依赖方向、测试与 lint 基线）集中记录在 `.github/copilot-instructions.md`，修改代码前请先阅读该文件。

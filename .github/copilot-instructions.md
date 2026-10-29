@@ -65,19 +65,18 @@ pull request (`.github/workflows/ci.yml`).
   `app.c`. Never add a sleep-loop or a signal handler that does work.
 - **Linux, libc, C23 only.** No third-party libraries, no vendored code, no
   code generation, no build system beyond the `Makefile`. Feature-test macros
-  (`_POSIX_C_SOURCE=200809L`, `_DEFAULT_SOURCE`) are defined in the Makefile and
-  fall back to the same values in `base.h`; keep both.
-- **Portable release defaults.** LTO is always enabled; `-march=native` stays
-  opt-in (`NATIVE=1`) so default
-  binaries remain deployable on other machines of the same architecture.
+  (`_POSIX_C_SOURCE=200809L`, `_DEFAULT_SOURCE`) are defined by the Makefile;
+  do not add header fallbacks for them.
+- **Release defaults.** LTO is always enabled; `-march=native` stays opt-in
+  (`NATIVE=1`) so default binaries remain deployable on other machines of the
+  same architecture.
 - **C23 is enforced, not assumed.** The Makefile compiles with
   `-std=c23 -pedantic-errors`, and `base.h` has a `__STDC_VERSION__` guard that
   fails the build under an older standard. Vendor extensions are limited to an
   explicit allow-list: `[[gnu::...]]` attributes (valid C23 attribute syntax
   with an implementation-defined namespace) and the GCC/Clang
   `__builtin_expect` used by `LS_LIKELY`/`LS_UNLIKELY`. The build targets
-  GCC/Clang; adding another compiler extension, or a C11/C17 compatibility
-  shim, is a design change.
+  GCC/Clang; adding another compiler extension is a design change.
 - **Prefer the standard facility.** `<stdckdint.h>` (`ckd_mul`) is used for
   overflow-checked arithmetic, `nullptr`/`bool`/`static_assert`/`alignas` are
   keywords, and unused parameters use `[[maybe_unused]]` instead of `(void)`
@@ -101,7 +100,7 @@ pull request (`.github/workflows/ci.yml`).
 
 The `ls_` prefix must mean "reachable from another translation unit". A helper
 that is `static` in a `.c` file never gets the prefix; a `static inline` helper
-published in a header does. Enum constants (`LS_PROBE_IDLE`,
+published in a header does. Enum constants (`LS_LOG_DEBUG`,
 `LS_ICMP_RECV_MATCHED`) follow the macro convention even when the enum type is
 private.
 
@@ -164,7 +163,7 @@ private.
 - Every `.h` and `.c` file carries a file header comment: `/*` alone on its own
   line, a ` * name — one-line boundary description.` line, optional further ` *`
   detail lines, and ` */` alone. `.c` files open with it; headers place it
-  directly after the include guard and feature-test macros.
+  directly after the include guard.
 - Section markers are single-line `/* ---- Name ---- */`. Other multi-line
   comments open on the `/*` line and close inline on the last text line; do not
   use `=`-rule separators or a `*/`-alone closer.
@@ -207,7 +206,7 @@ layer 4  main                                    (opts, app, log)
 | `src/icmp.h` `.c` | raw socket, best-effort BPF filter, echo construction, reply matching, send/receive status | address syntax, timers, configuration, log policy |
 | `src/notify.h` `.c` | the `sd_notify` channel and protocol (READY/STATUS/WATCHDOG/STOPPING), NOTIFY_SOCKET/WATCHDOG_USEC/WATCHDOG_PID | when a message is appropriate (that is app policy) |
 | `src/stats.h` `.c` | cumulative probe counters, success rate, latency aggregates, uptime | probes, sockets, timers, configuration |
-| `src/app.h` `.c` | probe state machine, threshold action, startup/shutdown banners, message policy | nothing above it; it is the top of the stack |
+| `src/app.h` `.c` | probe lifecycle, threshold action, startup/shutdown banners, message policy | nothing above it; it is the top of the stack |
 | `src/main.c` | entry point: resolve options, run the app, report a fatal startup error, map the result to an exit code | `loop`, `icmp`, `notify`, and every app-internal type; it uses only `opts`/`app` entry points plus `log` |
 
 Rules:
@@ -261,9 +260,9 @@ documents must be corrected.
 
 ### 5.2 Probe accounting and the threshold action
 
-- One probe is outstanding at a time (`LS_PROBE_IDLE` ↔
-  `LS_PROBE_AWAIT_REPLY`); the ping timer keeps its phase but never overlaps a
-  live probe.
+- One probe is outstanding at a time; the armed reply timer is the single
+  source of truth for that state, so the ping timer never overlaps a live
+  probe.
 - A **failure** is counted for a reply timeout *and* for routing/link-level
   send failures (`ENETUNREACH`, `EHOSTUNREACH`, `ENETDOWN`, `EHOSTDOWN`,
   `ENETRESET`, `ENOBUFS`, `EAGAIN`). Those paths must keep counting toward

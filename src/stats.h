@@ -13,7 +13,6 @@
 #include "base.h"
 
 typedef struct {
-  uint64_t total;
   uint64_t ok;
   uint64_t failed;
   uint64_t latency_sum_us;
@@ -28,6 +27,7 @@ void ls_stats_init(ls_stats_t *restrict stats);
 void ls_stats_add_ok(ls_stats_t *restrict stats, double latency_ms);
 void ls_stats_add_fail(ls_stats_t *restrict stats);
 
+[[nodiscard]] uint64_t ls_stats_total(const ls_stats_t *restrict stats);
 [[nodiscard]] double ls_stats_success_rate(const ls_stats_t *restrict stats);
 [[nodiscard]] double ls_stats_avg_latency_ms(const ls_stats_t *restrict stats);
 [[nodiscard]] double ls_stats_min_latency_ms(const ls_stats_t *restrict stats);

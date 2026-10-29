@@ -89,7 +89,7 @@ static bool apply_string(const char *name, const char *value, char *dest,
 }
 
 /* Rejects what strtoull() would otherwise accept silently: leading whitespace,
- * an empty string, a leading '+' (a legacy spelling), and a leading '-' (which
+ * an empty string, a leading '+', and a leading '-' (which
  * would wrap around to a huge unsigned value). */
 static bool has_unsigned_shape(const char *value) {
   return value != nullptr && value[0] >= '0' && value[0] <= '9';
@@ -227,7 +227,7 @@ static bool apply_level(const char *name, const char *value, ls_opts_t *opts,
  * than in print_usage) is what makes the table the single source of truth. */
 
 #define LS_HELP_DESCRIPTION_COLUMN 30
-#define LS_HELP_SYNOPSIS_WIDTH 27
+#define LS_HELP_SYNOPSIS_WIDTH (LS_HELP_DESCRIPTION_COLUMN - 3)
 
 static void print_help_cont(void) {
   printf("\n%*s", LS_HELP_DESCRIPTION_COLUMN, "");
@@ -316,11 +316,6 @@ static void help_help(void) {
  * the pre-scan so they win over invalid arguments or environment values. */
 
 typedef enum {
-  LS_ARG_NONE,     /* no argument: -v, -h */
-  LS_ARG_REQUIRED, /* -t <ip>, --target <ip> */
-} arg_kind_t;
-
-typedef enum {
   LS_GROUP_NETWORK,  /* Network Options */
   LS_GROUP_SHUTDOWN, /* Shutdown Options */
   LS_GROUP_LOGGING,  /* Logging Options */
@@ -332,32 +327,29 @@ typedef struct {
   const char *long_name; /* without the leading "--" */
   const char *env_name;  /* nullptr for CLI-only options */
   apply_fn_t apply;      /* nullptr for help/version */
-  arg_kind_t arg_kind;
-  char short_name;
-  const char *metavar;      /* required-argument placeholder */
-  usage_group_t group;      /* --help section */
+  const char *metavar;      /* nullptr means no argument */
   void (*print_help)(void); /* first description line printer */
+  usage_group_t group;      /* --help section */
+  char short_name;
 } opt_spec_t;
 
 static const opt_spec_t OPT_SPECS[] = {
-    {"target", "LINKSTAY_TARGET", apply_target, LS_ARG_REQUIRED, 't', "ip",
-     LS_GROUP_NETWORK, help_target},
-    {"interval", "LINKSTAY_INTERVAL", apply_interval, LS_ARG_REQUIRED, 'i',
-     "n[s|ms]", LS_GROUP_NETWORK, help_interval},
-    {"threshold", "LINKSTAY_THRESHOLD", apply_threshold, LS_ARG_REQUIRED, 'n',
-     "num", LS_GROUP_NETWORK, help_threshold},
-    {"timeout", "LINKSTAY_TIMEOUT", apply_timeout, LS_ARG_REQUIRED, 'w',
-     "n[s|ms]", LS_GROUP_NETWORK, help_timeout},
-    {"poweroff", "LINKSTAY_POWEROFF", apply_poweroff, LS_ARG_REQUIRED, 'p',
-     "true|false", LS_GROUP_SHUTDOWN, help_poweroff},
-    {"log-level", "LINKSTAY_LOG_LEVEL", apply_level, LS_ARG_REQUIRED, 'l',
-     "level", LS_GROUP_LOGGING, help_log_level},
-    {"systemd", "LINKSTAY_SYSTEMD", apply_systemd, LS_ARG_REQUIRED, 's',
-     "true|false", LS_GROUP_SYSTEM, help_systemd},
-    {"version", nullptr, nullptr, LS_ARG_NONE, 'v', nullptr, LS_GROUP_GENERAL,
-     help_version},
-    {"help", nullptr, nullptr, LS_ARG_NONE, 'h', nullptr, LS_GROUP_GENERAL,
-     help_help},
+    {"target", "LINKSTAY_TARGET", apply_target, "ip", help_target,
+     LS_GROUP_NETWORK, 't'},
+    {"interval", "LINKSTAY_INTERVAL", apply_interval, "n[s|ms]", help_interval,
+     LS_GROUP_NETWORK, 'i'},
+    {"threshold", "LINKSTAY_THRESHOLD", apply_threshold, "num", help_threshold,
+     LS_GROUP_NETWORK, 'n'},
+    {"timeout", "LINKSTAY_TIMEOUT", apply_timeout, "n[s|ms]", help_timeout,
+     LS_GROUP_NETWORK, 'w'},
+    {"poweroff", "LINKSTAY_POWEROFF", apply_poweroff, "true|false",
+     help_poweroff, LS_GROUP_SHUTDOWN, 'p'},
+    {"log-level", "LINKSTAY_LOG_LEVEL", apply_level, "level", help_log_level,
+     LS_GROUP_LOGGING, 'l'},
+    {"systemd", "LINKSTAY_SYSTEMD", apply_systemd, "true|false", help_systemd,
+     LS_GROUP_SYSTEM, 's'},
+    {"version", nullptr, nullptr, nullptr, help_version, LS_GROUP_GENERAL, 'v'},
+    {"help", nullptr, nullptr, nullptr, help_help, LS_GROUP_GENERAL, 'h'},
 };
 
 static const char *const GROUP_TITLES[] = {
@@ -366,7 +358,7 @@ static const char *const GROUP_TITLES[] = {
 };
 
 static void format_synopsis(const opt_spec_t *spec, char *buf, size_t size) {
-  if (spec->arg_kind == LS_ARG_NONE) {
+  if (spec->metavar == nullptr) {
     (void)snprintf(buf, size, "-%c, --%s", spec->short_name, spec->long_name);
   } else {
     (void)snprintf(buf, size, "-%c, --%s <%s>", spec->short_name,
@@ -411,10 +403,8 @@ static void build_getopt_tables(opt_tables_t *tables) {
   size_t pos = 0;
   for (size_t i = 0; i < LS_ARRAY_LEN(OPT_SPECS); i++) {
     const opt_spec_t *spec = &OPT_SPECS[i];
-    int has_arg = no_argument;
-    if (spec->arg_kind == LS_ARG_REQUIRED) {
-      has_arg = required_argument;
-    }
+    int has_arg =
+        spec->metavar != nullptr ? required_argument : no_argument;
     tables->long_opts[i] = (struct option){
         .name = spec->long_name,
         .has_arg = has_arg,
@@ -423,7 +413,7 @@ static void build_getopt_tables(opt_tables_t *tables) {
     };
 
     tables->optstring[pos++] = spec->short_name;
-    if (spec->arg_kind != LS_ARG_NONE) {
+    if (spec->metavar != nullptr) {
       tables->optstring[pos++] = ':';
     }
   }
@@ -459,7 +449,7 @@ static bool load_cli(ls_opts_t *opts, int argc, char **argv,
        * '?'. Only a known option whose argument is required turns the first
        * case into a message about the argument. */
       const opt_spec_t *failed = find_spec(optopt);
-      if (failed != nullptr && failed->arg_kind == LS_ARG_REQUIRED) {
+      if (failed != nullptr && failed->metavar != nullptr) {
         return ls_err_set(
             err, "Option requires an argument or has invalid value: -%c",
             optopt);

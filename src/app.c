@@ -1,5 +1,5 @@
 /*
- * app.c — application assembly: probe state machine, threshold action, and
+ * app.c — application assembly: probe scheduling, threshold action, and
  * startup/shutdown banners.
  *
  * Sections are ordered so every helper is defined before its first use: no
@@ -196,7 +196,8 @@ static void log_statistics(ls_app_t *app) {
   const ls_stats_t *s = &app->stats;
   char uptime_str[32];
   ls_format_uptime(ls_stats_uptime_sec(s), uptime_str, sizeof(uptime_str));
-  const char *plural = s->total == 1 ? "" : "s";
+  uint64_t total = ls_stats_total(s);
+  const char *plural = total == 1 ? "" : "s";
 
   if (s->ok > 0) {
     char min_str[32];
@@ -209,20 +210,19 @@ static void log_statistics(ls_app_t *app) {
             "Statistics: uptime %s | %" PRIu64 " ping%s, %" PRIu64
             " OK, %" PRIu64 " failed (%.2f%% success) | latency min %s, "
             "avg %s, max %s",
-            uptime_str, s->total, plural, s->ok, s->failed,
+            uptime_str, total, plural, s->ok, s->failed,
             ls_stats_success_rate(s), min_str, avg_str, max_str);
   } else {
     ls_info(&app->log,
             "Statistics: uptime %s | %" PRIu64 " ping%s, 0 OK, %" PRIu64
             " failed (0.00%% success) | latency N/A",
-            uptime_str, s->total, plural, s->failed);
+            uptime_str, total, plural, s->failed);
   }
 }
 
-/* ---- Probe state machine ---- */
+/* ---- Probe lifecycle ---- */
 
 static void probe_reset(ls_app_t *app) {
-  app->probe_state = LS_PROBE_IDLE;
   app->probe_sent_ns = 0;
   app->probe_sequence = 0;
   ls_timer_disarm(app->reply_timer);
@@ -256,16 +256,17 @@ static void probe_succeeded(ls_app_t *app, uint16_t sequence,
   ls_format_uptime(ls_stats_uptime_sec(&app->stats), uptime_str,
                    sizeof(uptime_str));
 
+  uint64_t total = ls_stats_total(&app->stats);
   ls_debug(&app->log,
            "Reply from %s: seq=%u time=%s avg=%s ok=%" PRIu64 "/%" PRIu64
            " (%.1f%%)",
            app->opts.target, (unsigned)sequence, latency_str, avg_str,
-           app->stats.ok, app->stats.total, ls_stats_success_rate(&app->stats));
+           app->stats.ok, total, ls_stats_success_rate(&app->stats));
   (void)ls_notify_statusf(&app->notify,
                           "Online: %s up %s, last %s, avg %s, %" PRIu64
                           "/%" PRIu64 " OK (%.1f%%)",
                           app->opts.target, uptime_str, latency_str, avg_str,
-                          app->stats.ok, app->stats.total,
+                          app->stats.ok, total,
                           ls_stats_success_rate(&app->stats));
 }
 
@@ -313,7 +314,7 @@ static bool drain_and_match_reply(ls_app_t *app) {
       return false;
     }
     if (status == LS_ICMP_RECV_MATCHED &&
-        app->probe_state == LS_PROBE_AWAIT_REPLY) {
+        ls_timer_armed(app->reply_timer)) {
       /* Sub-ms latency from the fine-grained clock; guard clock failure
        * and impossible skew by clamping to zero. */
       uint64_t now_ns = ls_now_ns();
@@ -341,7 +342,7 @@ static void on_ping_timer(ls_loop_t *loop, void *userdata) {
    * timeout < interval (validated in opts.c), an outstanding probe here is
    * unusual. */
   ls_timer_step(app->ping_timer, app->opts.interval_ms, now_ms);
-  if (app->probe_state == LS_PROBE_AWAIT_REPLY) {
+  if (ls_timer_armed(app->reply_timer)) {
     return;
   }
 
@@ -362,7 +363,6 @@ static void on_ping_timer(ls_loop_t *loop, void *userdata) {
     return;
   }
 
-  app->probe_state = LS_PROBE_AWAIT_REPLY;
   app->probe_sent_ns = ls_now_ns();
   app->probe_sequence = app->icmp.sequence;
   ls_timer_arm_after(app->reply_timer, now_ms, app->opts.timeout_ms);
@@ -370,14 +370,6 @@ static void on_ping_timer(ls_loop_t *loop, void *userdata) {
 
 static void on_reply_timer([[maybe_unused]] ls_loop_t *loop, void *userdata) {
   ls_app_t *app = userdata;
-
-  /* Defensive: bail if the probe was already resolved by another path
-   * (e.g. a late poll wakeup that raced with this timer firing). Disarm
-   * first: a fired timer that stays armed would spin the event loop. */
-  if (app->probe_state != LS_PROBE_AWAIT_REPLY) {
-    ls_timer_disarm(app->reply_timer);
-    return;
-  }
 
   /* Last-chance non-blocking drain: the reply may have landed in the
    * socket buffer between the most recent poll wakeup and this timer
@@ -402,7 +394,8 @@ static void on_reply_timer([[maybe_unused]] ls_loop_t *loop, void *userdata) {
 static void on_watchdog_timer(ls_loop_t *loop, void *userdata) {
   ls_app_t *app = userdata;
   bool sent = ls_notify_watchdog(&app->notify);
-  ls_timer_step(app->watchdog_timer, app->watchdog_interval_ms,
+  ls_timer_step(app->watchdog_timer,
+                ls_notify_watchdog_interval_ms(&app->notify),
                 ls_loop_now(loop));
   /* Log only on the failure/recovery edge so a persistently broken notify
    * socket does not spam the log every watchdog interval. */
@@ -529,12 +522,13 @@ bool ls_app_init(ls_app_t *restrict app, const ls_opts_t *restrict opts,
                "systemd integration inactive (NOTIFY_SOCKET not set)");
     }
   }
-  app->watchdog_interval_ms = ls_notify_watchdog_interval_ms(&app->notify);
   if (ls_notify_enabled(&app->notify)) {
-    if (app->watchdog_interval_ms > 0) {
+    uint64_t watchdog_interval_ms =
+        ls_notify_watchdog_interval_ms(&app->notify);
+    if (watchdog_interval_ms > 0) {
       ls_debug(&app->log,
                "systemd integration active, watchdog ping every %" PRIu64 "ms",
-               app->watchdog_interval_ms);
+               watchdog_interval_ms);
     } else {
       ls_debug(&app->log, "systemd integration active, watchdog disabled");
     }
@@ -605,8 +599,9 @@ int ls_app_run(ls_app_t *restrict app) {
     return LS_EXIT_FAILURE;
   }
   ls_timer_arm_after(app->ping_timer, now_ms, 0); /* first probe is immediate */
-  if (app->watchdog_interval_ms > 0) {
-    ls_timer_arm_after(app->watchdog_timer, now_ms, app->watchdog_interval_ms);
+  uint64_t watchdog_interval_ms = ls_notify_watchdog_interval_ms(&app->notify);
+  if (watchdog_interval_ms > 0) {
+    ls_timer_arm_after(app->watchdog_timer, now_ms, watchdog_interval_ms);
   }
 
   log_startup(app);

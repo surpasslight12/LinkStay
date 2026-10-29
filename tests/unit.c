@@ -430,7 +430,7 @@ static void test_opts_poweroff_runtime(void) {
 static void test_stats(void) {
   ls_stats_t stats;
   ls_stats_init(&stats);
-  CHECK(stats.total == 0);
+  CHECK(ls_stats_total(&stats) == 0);
   CHECK(stats.ok == 0);
   CHECK(stats.failed == 0);
   CHECK(ls_stats_success_rate(&stats) == 0.0);
@@ -440,7 +440,7 @@ static void test_stats(void) {
 
   ls_stats_add_ok(&stats, 10.0);
   ls_stats_add_ok(&stats, 20.0);
-  CHECK(stats.total == 2);
+  CHECK(ls_stats_total(&stats) == 2);
   CHECK(stats.ok == 2);
   CHECK(stats.failed == 0);
   CHECK(ls_stats_success_rate(&stats) == 100.0);
@@ -449,7 +449,7 @@ static void test_stats(void) {
   CHECK(ls_stats_max_latency_ms(&stats) == 20.0);
 
   ls_stats_add_fail(&stats);
-  CHECK(stats.total == 3);
+  CHECK(ls_stats_total(&stats) == 3);
   CHECK(stats.failed == 1);
   double rate = ls_stats_success_rate(&stats);
   CHECK(rate > 66.66 && rate < 66.67);
@@ -459,7 +459,6 @@ static void test_stats(void) {
   CHECK(ls_stats_min_latency_ms(&stats) == 0.0);
 
   ls_stats_t saturated = {
-      .total = UINT64_MAX,
       .ok = UINT64_MAX,
       .failed = UINT64_MAX,
       .latency_sum_us = UINT64_MAX,
@@ -468,7 +467,7 @@ static void test_stats(void) {
       .started_at_ms = 0,
   };
   ls_stats_add_ok(&saturated, 1.0);
-  CHECK(saturated.total == UINT64_MAX);
+  CHECK(ls_stats_total(&saturated) == UINT64_MAX);
   CHECK(saturated.ok == UINT64_MAX);
   CHECK(saturated.latency_sum_us == UINT64_MAX);
   ls_stats_add_fail(&saturated);

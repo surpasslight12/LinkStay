@@ -24,11 +24,6 @@
 
 /* ---- Application state ---- */
 
-typedef enum {
-  LS_PROBE_IDLE = 0,
-  LS_PROBE_AWAIT_REPLY,
-} ls_probe_state_t;
-
 typedef struct {
   /* Resolved configuration (copied in by ls_app_init). */
   ls_opts_t opts;
@@ -48,12 +43,10 @@ typedef struct {
   ls_timer_t *reply_timer;
   ls_timer_t *watchdog_timer;
 
-  ls_probe_state_t probe_state;
   uint64_t probe_sent_ns;
   uint16_t probe_sequence;
   int consecutive_fails;
 
-  uint64_t watchdog_interval_ms;
   bool watchdog_last_failed;
   bool signal_stop;
 } ls_app_t;

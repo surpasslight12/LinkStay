@@ -15,8 +15,6 @@ SYSTEMD_UNIT_DIR ?= $(SYSCONFDIR)/systemd/system
 INSTALL ?= install
 RM ?= rm -f
 STRIP ?= strip
-BIN ?= $(TARGET)
-
 WARN_CFLAGS := -Wall -Wextra -Wpedantic \
 	-Wshadow -Wnull-dereference -Wdouble-promotion \
 	-Wconversion -Wsign-conversion -Wundef \
@@ -136,7 +134,7 @@ shellcheck:
 	@shellcheck -S warning $(TEST_DIR)/*.sh
 
 test: unit-test $(TARGET)
-	BIN="$(BIN)" bash $(TEST_DIR)/run_tests.sh
+	BIN="$(TARGET)" bash $(TEST_DIR)/run_tests.sh
 
 # Everything a change must pass before it is considered done (see
 # .github/copilot-instructions.md).

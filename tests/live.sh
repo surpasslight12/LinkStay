@@ -26,8 +26,7 @@ else
   [[ "$hay" == *"time="*"ms avg="*"ms ok="* ]] && \
     pass "reply line reports latency and running totals" || \
     fail "reply line reports latency and running totals" "unexpected reply format"
-  # min <= avg <= max must hold for any set of samples; before the sentinel fix
-  # max stayed at "no sample" and printed 0.000ms.
+  # min <= avg <= max must hold for any set of samples.
   latency="$(grep -o 'latency min [0-9.]*ms, avg [0-9.]*ms, max [0-9.]*ms' <<<"$hay" | tail -1)"
   if awk -v line="$latency" 'BEGIN{
         gsub(/[^0-9. ]/, " ", line);
