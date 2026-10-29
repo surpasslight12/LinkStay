@@ -56,9 +56,9 @@ skipped test as a pass. CI runs `make check` on every push and pull request
 ### 3.1 Runtime shape
 
 - **systemd-only.** `linkstay` is a service, not a CLI. `main` has no
-  arguments; there is no option parser, `--help`, `--version`, daemonize, or
-  foreground/systemd switch. Configuration comes only from `LINKSTAY_*`
-  environment variables supplied by the unit and `/etc/linkstay.conf`.
+  arguments; there is no option parser, daemonize, or foreground/systemd
+  switch. Configuration comes only from `LINKSTAY_*` environment variables
+  supplied by the unit and `/etc/linkstay.conf`.
 - **NOTIFY_SOCKET is required.** `ls_notify_init()` fails when
   `NOTIFY_SOCKET` is absent or unusable, and `ls_app_init()` treats that as
   fatal. A broken notify channel must never silently run a service that systemd
@@ -328,8 +328,8 @@ variables, then validation.
   descriptor based only on `sockfd >= 0` (zero-initialized `sockfd` is `0`).
 - Notifier messages: `READY=1` at startup, `STATUS=` updates (deduplicated
   within 2 s and capped at `LS_NOTIFY_STATUS_SIZE`), `WATCHDOG=1` at
-  `WATCHDOG_USEC / 2000` ms (half the deadline), `STOPPING=1` on every exit
-  path. The watchdog stays disabled when `WATCHDOG_PID` does not match
+  `WATCHDOG_USEC / 2000` ms (half the deadline), `STOPPING=1` on every loop
+  exit path. The watchdog stays disabled when `WATCHDOG_PID` does not match
   `getpid()` or when `WATCHDOG_USEC` is missing or malformed (a leading `-`
   must not wrap around into a huge deadline).
 - The unit's sandboxing is part of the product: raw ICMP needs `CAP_NET_RAW`;

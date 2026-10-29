@@ -46,11 +46,7 @@ if [[ ! -x "$BIN" ]]; then
   exit 2
 fi
 
-# getcap may live in /sbin, which is not always in PATH
-GETCAP=""
-for p in getcap /sbin/getcap /usr/sbin/getcap; do
-  if command -v "$p" >/dev/null 2>&1; then GETCAP="$p"; break; fi
-done
+GETCAP="$(command -v getcap 2>/dev/null || true)"
 
 SYSTEMD_RUNTIME=0
 if [[ -x /usr/bin/systemctl && -d /run/systemd/system ]]; then

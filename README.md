@@ -7,6 +7,23 @@
 周期性探测目标 IP，连续失败达到阈值后调用 `systemctl poweroff`。项目没有
 CLI、前台调试模式或 daemonize 逻辑：systemd 是唯一支持的运行方式。
 
+## 快速导航
+
+- [核心特性](#核心特性)
+- [构建与安装](#构建与安装)
+- [配置](#配置)
+- [服务管理](#服务管理)
+- [运行要求](#运行要求)
+- [延迟启动](#延迟启动)
+- [探测与失败判定](#探测与失败判定)
+- [关机行为](#关机行为)
+- [日志与信号](#日志与信号)
+- [systemd 沙箱](#systemd-沙箱)
+- [测试](#测试)
+- [项目结构](#项目结构)
+- [排障](#排障)
+- [工程契约](#工程契约)
+
 ## 核心特性
 
 - **systemd 原生**：`Type=notify`，实现 `READY=1`、`STATUS=`、
@@ -21,6 +38,9 @@ CLI、前台调试模式或 daemonize 逻辑：systemd 是唯一支持的运行�
 - **沙箱**：systemd unit 限制 capability、文件系统、地址族与系统调用。
 
 ## 构建与安装
+
+前置条件：`make`、支持 C23 的 GCC/Clang。运行完整检查还需要
+`cppcheck`、`clang-tidy`、`shellcheck`、`python3`。
 
 ```bash
 make               # 构建 bin/linkstay
@@ -39,12 +59,19 @@ sudo systemctl enable --now linkstay
 | systemd unit | `/etc/systemd/system/linkstay.service` |
 | 配置 | `/etc/linkstay.conf` |
 
-`make install` 会用最终的 `BINDIR` 和 `LINKSTAY_CONFIG` 替换 unit 中的占位
+`make install` 会用最终的 `BINDIR` 和 `CONFIG_FILE` 替换 unit 中的占位
 路径；支持 `DESTDIR` staging。`PREFIX` 默认 `/usr/local`，unit 默认的
 `ExecStart` 与之一致。重复安装不会覆盖已存在的 `/etc/linkstay.conf`。
 
 `make uninstall` 删除二进制和 unit，但**保留** `/etc/linkstay.conf`，避免
 删除管理员修改过的配置。
+
+安装后确认服务状态：
+
+```bash
+systemctl status --no-pager linkstay
+journalctl -u linkstay -b --no-pager
+```
 
 ## 配置
 
@@ -60,6 +87,10 @@ unit 先设置一组默认 `Environment=`，随后读取可选的
 | `LINKSTAY_START_DELAY` | `0s` | `30s` | 首次探测前等待；`0s` 表示立即探测 |
 | `LINKSTAY_POWEROFF` | `false` | `true` | `true` 真实关机，`false` dry-run |
 | `LINKSTAY_LOG_LEVEL` | `info` | `info` | `silent`/`error`/`warn`/`info`/`debug` |
+
+“代码默认”用于测试或直接启动；“unit 默认”是安装后的生产配置。通过 systemd
+运行时以 unit 与 `/etc/linkstay.conf` 为准。因此默认安装会真实关机，并等待
+30s 再开始首次探测。
 
 时长只接受小写 `s` 或 `ms` 后缀；裸数字、前导 `+` 与大小写变体都会被拒绝。
 `LINKSTAY_START_DELAY` 额外接受 `0s`/`0ms`。布尔值只接受大小写不敏感的
@@ -81,6 +112,16 @@ sudo systemctl edit linkstay
 # Environment="LINKSTAY_POWEROFF=false"
 sudo systemctl daemon-reload
 sudo systemctl restart linkstay
+```
+
+## 服务管理
+
+```bash
+sudo systemctl daemon-reload          # unit 或 drop-in 变更后
+sudo systemctl restart linkstay
+sudo systemctl status --no-pager linkstay
+sudo systemctl disable --now linkstay # 停止并取消开机启动
+journalctl -fu linkstay
 ```
 
 ## 运行要求
@@ -132,8 +173,8 @@ socket 本身不可用（权限、参数、短写等）才是致命错误，进�
 ## 日志与信号
 
 服务不读取 stdin，stdout 被丢弃（unit 设置 `StandardInput=null`、
-`StandardOutput=null`），日志只写 stderr，并由 journald 收集。每行只有 `[LEVEL] message`，**不包含时间戳**，避免
-与 journal 字段重复。
+`StandardOutput=null`），日志只写 stderr，并由 journald 收集。每行只有
+`[LEVEL] message`，**不包含时间戳**，避免与 journal 字段重复。
 
 ```bash
 journalctl -fu linkstay
@@ -163,11 +204,13 @@ unit 通过 `EnvironmentFile=-/etc/linkstay.conf` 读取配置；如修改 unit 
 
 ```bash
 make unit-test      # 147 项单元断言
-make test           # 单元 + shell（实网用例按 capability 自动跳过）
+make test           # 单元 + shell（43 项通过、1 项实网跳过）
 make check          # test + lint + shellcheck + sanitize-test
 ```
 
-`make check` 需要 `cppcheck`、`clang-tidy`、`shellcheck`、`python3`。
+实网套件需要 root/CAP_NET_RAW；在用户+网络命名空间中运行时完整套件为
+70 项通过。`make check` 需要 `cppcheck`、`clang-tidy`、`shellcheck` 与
+`python3`。
 
 实网测试：
 

@@ -12,7 +12,7 @@ DESTDIR ?=
 BINDIR ?= $(PREFIX)/bin
 SYSCONFDIR ?= /etc
 SYSTEMD_UNIT_DIR ?= $(SYSCONFDIR)/systemd/system
-LINKSTAY_CONFIG ?= $(SYSCONFDIR)/linkstay.conf
+CONFIG_FILE ?= $(SYSCONFDIR)/linkstay.conf
 INSTALL ?= install
 RM ?= rm -f
 STRIP ?= strip
@@ -92,7 +92,8 @@ help:
 	@printf '  make sanitize-test   sanitizer build + both test suites\n'
 	@printf '  make install         install binary, unit, and /etc config\n'
 	@printf '  make clean           remove build directories\n'
-	@printf 'Variables: NATIVE=1 -march=native, SAN=<list>\n'
+	@printf 'Variables: PREFIX=/usr/local, CONFIG_FILE=/etc/linkstay.conf,\n'
+	@printf '           NATIVE=1 -march=native, SAN=<list>\n'
 
 release: $(TARGET)
 	$(STRIP) --strip-all $(TARGET)
@@ -164,22 +165,22 @@ install: $(TARGET)
 	$(INSTALL) -D -m 755 $(TARGET) $(DESTDIR)$(BINDIR)/linkstay
 	$(INSTALL) -d $(DESTDIR)$(SYSTEMD_UNIT_DIR)
 	sed -e 's|@BINDIR@|$(BINDIR)|g' \
-	    -e 's|@CONFIG_PATH@|$(LINKSTAY_CONFIG)|g' \
+	    -e 's|@CONFIG_PATH@|$(CONFIG_FILE)|g' \
 	    systemd/linkstay.service > \
 	    $(DESTDIR)$(SYSTEMD_UNIT_DIR)/linkstay.service
 	chmod 644 $(DESTDIR)$(SYSTEMD_UNIT_DIR)/linkstay.service
-	@if [ ! -e "$(DESTDIR)$(LINKSTAY_CONFIG)" ]; then \
+	@if [ ! -e "$(DESTDIR)$(CONFIG_FILE)" ]; then \
 		$(INSTALL) -D -m 644 systemd/linkstay.conf \
-			"$(DESTDIR)$(LINKSTAY_CONFIG)"; \
+			"$(DESTDIR)$(CONFIG_FILE)"; \
 	else \
-		echo "Preserving existing $(DESTDIR)$(LINKSTAY_CONFIG)"; \
+		echo "Preserving existing $(DESTDIR)$(CONFIG_FILE)"; \
 	fi
 	@echo "Run: systemctl daemon-reload && systemctl enable --now linkstay"
 
 uninstall:
 	$(RM) $(DESTDIR)$(BINDIR)/linkstay
 	$(RM) $(DESTDIR)$(SYSTEMD_UNIT_DIR)/linkstay.service
-	@echo "Preserved configuration: $(DESTDIR)$(LINKSTAY_CONFIG)"
+	@echo "Preserved configuration: $(DESTDIR)$(CONFIG_FILE)"
 	@echo "Run: systemctl daemon-reload"
 
 clean:

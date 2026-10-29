@@ -9,8 +9,9 @@
  */
 
 /* C23 is a hard requirement: the code relies on bool/nullptr/static_assert/
- * alignas being keywords, on [[maybe_unused]], and on <stdckdint.h>. */
-#if !defined(__STDC_VERSION__) || __STDC_VERSION__ <= 201710L
+ * alignas being keywords, on [[maybe_unused]], and on <stdckdint.h>. GCC 14
+ * reports 202000L for -std=c23; final C23 implementations report 202311L. */
+#if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 202000L
 #error "linkstay requires C23; build with -std=c23 (see the Makefile)"
 #endif
 

@@ -221,5 +221,5 @@ run_notify_case() {
   return 0
 }
 
-# getcap may live in /sbin, which is not always in PATH; the runner sets GETCAP.
+# Runner resolves GETCAP; an empty value means capability detection is unavailable.
 caps_str() { [[ -n "${GETCAP:-}" ]] && "$GETCAP" "$BIN" 2>/dev/null || true; }
