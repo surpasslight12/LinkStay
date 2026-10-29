@@ -189,9 +189,9 @@ static void test_timer_helpers(void) {
 }
 
 static const char *const OPT_ENV_NAMES[] = {
-    "LINKSTAY_TARGET",    "LINKSTAY_INTERVAL",  "LINKSTAY_THRESHOLD",
-    "LINKSTAY_TIMEOUT",   "LINKSTAY_START_DELAY",
-    "LINKSTAY_POWEROFF",  "LINKSTAY_LOG_LEVEL",
+    "LINKSTAY_TARGET", "LINKSTAY_INTERVAL", "LINKSTAY_THRESHOLD",
+    "LINKSTAY_TIMEOUT", "LINKSTAY_START_DELAY", "LINKSTAY_POWEROFF",
+    "LINKSTAY_LOG_LEVEL",
 };
 
 static void reset_opts_env(void) {

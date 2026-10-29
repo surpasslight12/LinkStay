@@ -1,43 +1,16 @@
-# .gitignore for linkstay
-
-# 构建输出 (Build Outputs)
+# Build outputs
 bin/
 bin-sanitize/
-build/
 *.o
-*.a
-*.so
-
-# 编译器生成 (Compiler Generated)
 *.d
-*.gch
-*.pch
-*.su
 
-# 编辑器和 IDE (Editors and IDEs)
+# Editor and local tooling state
 .vscode/
-.idea/
-.vs/
-*.code-workspace
-*.swp
-*.swo
-*~
-*.bak
-.DS_Store
-
-# 调试文件 (Debugging)
-vgcore.*
-core
-core.*
-
-# 日志 (Logs)
-*.log
-*.tmp
-*.pid
-
-# 本地工具和 AI 辅助文件 (Local Tooling and AI Helpers)
 .cache/
 compile_commands.json
+
+# Local AI overrides
+.github/copilot-instructions.local.md
 .copilot/
 .cursor/
 .claude/
@@ -45,9 +18,8 @@ compile_commands.json
 .windsurf/
 .roo/
 .aider*
-.github/copilot-instructions.local.md
 
-# 格式和风格 (Formatting and Style)
+# Formatting and analyzer configuration (contract-managed)
 .clang-format
 .clang-tidy
 .editorconfig

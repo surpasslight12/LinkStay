@@ -14,8 +14,8 @@ fi
 
 scrub_env() {
   unset LINKSTAY_TARGET LINKSTAY_INTERVAL LINKSTAY_THRESHOLD \
-        LINKSTAY_TIMEOUT LINKSTAY_POWEROFF LINKSTAY_LOG_LEVEL \
-        NOTIFY_SOCKET WATCHDOG_USEC WATCHDOG_PID
+        LINKSTAY_TIMEOUT LINKSTAY_START_DELAY LINKSTAY_POWEROFF \
+        LINKSTAY_LOG_LEVEL NOTIFY_SOCKET WATCHDOG_USEC WATCHDOG_PID
   if [[ -n "${TEST_NOTIFY_SOCKET:-}" ]]; then
     export NOTIFY_SOCKET="$TEST_NOTIFY_SOCKET"
   fi
@@ -75,8 +75,8 @@ expect_reject() {
   fi
 }
 
-# True when captured output contains none of the parser/validator error markers.
-no_parse_error() {
+# True when captured output contains no configuration/validation error markers.
+no_config_error() {
   local hay="$1"
   [[ "$hay" != *"Invalid value for"* ]] && \
   [[ "$hay" != *"Invalid IPv4/IPv6"* ]] && \
@@ -86,17 +86,17 @@ no_parse_error() {
 }
 
 # accepts: command should pass ls_opts_resolve. We wrap in `timeout` because a
-# successful resolve will enter the event loop and run forever; any non-parse
-# exit (incl. timeout SIGTERM) is fine. We assert the absence of the
-# parse/validation error markers in the captured output.
+# successful resolve will enter the event loop and run forever; any
+# non-validation exit (including timeout SIGTERM) is fine. We assert the absence
+# of configuration/validation error markers in the captured output.
 expect_accept() {
   local desc="$1"; shift
   scrub_env
   run_capture timeout --preserve-status -s TERM 1s "$@"
-  if no_parse_error "${STDOUT}${STDERR}"; then
+  if no_config_error "${STDOUT}${STDERR}"; then
     pass "$desc"
   else
-    fail "$desc" "validation/parse error surfaced"
+    fail "$desc" "configuration/validation error surfaced"
   fi
 }
 
@@ -108,7 +108,7 @@ expect_debug_contains() {
   scrub_env
   run_capture timeout --preserve-status -s TERM 1s "$@"
   local hay="${STDOUT}${STDERR}"
-  if no_parse_error "$hay" && [[ "$hay" == *"$needle"* ]]; then
+  if no_config_error "$hay" && [[ "$hay" == *"$needle"* ]]; then
     pass "$desc"
   else
     fail "$desc" "missing needle: \"$needle\""

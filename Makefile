@@ -4,7 +4,7 @@
 CC ?= gcc
 BIN_DIR ?= bin
 SRC_DIR ?= src
-INC_DIR ?= src
+INC_DIR ?= $(SRC_DIR)
 TEST_DIR ?= tests
 TARGET := $(BIN_DIR)/linkstay
 PREFIX ?= /usr/local
