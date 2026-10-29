@@ -83,7 +83,7 @@ static bool build_socket_addr(const char *path, struct sockaddr_un *addr,
 }
 
 static bool notify_send(ls_notify_t *notify, const char *message) {
-  if (LS_UNLIKELY(!notify->enabled)) {
+  if (LS_UNLIKELY(!notify->opened)) {
     return false;
   }
 
@@ -97,7 +97,7 @@ static bool notify_send(ls_notify_t *notify, const char *message) {
 /* STATUS= updates are deduplicated: an unchanged status within the window is
  * treated as already delivered. */
 static bool notify_status(ls_notify_t *notify, const char *status) {
-  if (!notify->enabled) {
+  if (!notify->opened) {
     return false;
   }
 
@@ -120,19 +120,21 @@ static bool notify_status(ls_notify_t *notify, const char *status) {
   return ok;
 }
 
-ls_notify_state_t ls_notify_init(ls_notify_t *restrict notify,
-                                 ls_err_t *restrict err) {
+bool ls_notify_init(ls_notify_t *restrict notify, ls_err_t *restrict err) {
   *notify = (ls_notify_t){.sockfd = -1};
 
   const char *socket_path = getenv("NOTIFY_SOCKET");
   if (socket_path == nullptr) {
-    return LS_NOTIFY_INACTIVE;
+    (void)ls_err_set(err,
+                     "NOTIFY_SOCKET is not set; linkstay must run under "
+                     "systemd");
+    return false;
   }
 
   int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
   if (fd < 0) {
     (void)ls_err_set(err, "Cannot create notify socket: %s", strerror(errno));
-    return LS_NOTIFY_FAILED;
+    return false;
   }
 
   struct sockaddr_un addr;
@@ -140,7 +142,7 @@ ls_notify_state_t ls_notify_init(ls_notify_t *restrict notify,
   if (!build_socket_addr(socket_path, &addr, &addr_len)) {
     close(fd);
     (void)ls_err_set(err, "Invalid NOTIFY_SOCKET path: %s", socket_path);
-    return LS_NOTIFY_FAILED;
+    return false;
   }
 
   if (connect(fd, (const struct sockaddr *)&addr, addr_len) != 0) {
@@ -148,11 +150,11 @@ ls_notify_state_t ls_notify_init(ls_notify_t *restrict notify,
     close(fd);
     (void)ls_err_set(err, "Cannot connect to NOTIFY_SOCKET %s: %s",
                      socket_path, strerror(connect_errno));
-    return LS_NOTIFY_FAILED;
+    return false;
   }
 
   notify->sockfd = fd;
-  notify->enabled = true;
+  notify->opened = true;
 
   const char *watchdog_str = getenv("WATCHDOG_USEC");
   if (watchdog_str != nullptr && watchdog_pid_matches_self()) {
@@ -161,22 +163,18 @@ ls_notify_state_t ls_notify_init(ls_notify_t *restrict notify,
       notify->watchdog_usec = usec;
     }
   }
-  return LS_NOTIFY_ACTIVE;
+  return true;
 }
 
 void ls_notify_destroy(ls_notify_t *restrict notify) {
   if (notify == nullptr) {
     return;
   }
-  if (notify->enabled && notify->sockfd >= 0) {
+  if (notify->opened && notify->sockfd >= 0) {
     close(notify->sockfd);
   }
   notify->sockfd = -1;
-  notify->enabled = false;
-}
-
-bool ls_notify_enabled(const ls_notify_t *restrict notify) {
-  return notify->enabled;
+  notify->opened = false;
 }
 
 bool ls_notify_ready(ls_notify_t *restrict notify) {
@@ -185,9 +183,6 @@ bool ls_notify_ready(ls_notify_t *restrict notify) {
 
 bool ls_notify_statusf(ls_notify_t *restrict notify, const char *restrict fmt,
                        ...) {
-  if (!notify->enabled) {
-    return false;
-  }
   char status[LS_NOTIFY_STATUS_SIZE];
   va_list args;
   va_start(args, fmt);
@@ -201,14 +196,14 @@ bool ls_notify_stopping(ls_notify_t *restrict notify) {
 }
 
 bool ls_notify_watchdog(ls_notify_t *restrict notify) {
-  if (LS_UNLIKELY(!notify->enabled || notify->watchdog_usec == 0)) {
+  if (LS_UNLIKELY(!notify->opened || notify->watchdog_usec == 0)) {
     return false;
   }
   return notify_send(notify, "WATCHDOG=1");
 }
 
 uint64_t ls_notify_watchdog_interval_ms(const ls_notify_t *restrict notify) {
-  if (!notify->enabled || notify->watchdog_usec == 0) {
+  if (!notify->opened || notify->watchdog_usec == 0) {
     return 0;
   }
   uint64_t interval_ms = notify->watchdog_usec / (LS_MS_PER_SEC * 2);

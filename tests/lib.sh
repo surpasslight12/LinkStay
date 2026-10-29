@@ -14,9 +14,11 @@ fi
 
 scrub_env() {
   unset LINKSTAY_TARGET LINKSTAY_INTERVAL LINKSTAY_THRESHOLD \
-        LINKSTAY_TIMEOUT LINKSTAY_POWEROFF \
-        LINKSTAY_LOG_LEVEL LINKSTAY_SYSTEMD \
+        LINKSTAY_TIMEOUT LINKSTAY_POWEROFF LINKSTAY_LOG_LEVEL \
         NOTIFY_SOCKET WATCHDOG_USEC WATCHDOG_PID
+  if [[ -n "${TEST_NOTIFY_SOCKET:-}" ]]; then
+    export NOTIFY_SOCKET="$TEST_NOTIFY_SOCKET"
+  fi
 }
 
 # Run "$@" capturing stdout/stderr/exit into RC/STDOUT/STDERR.
@@ -79,10 +81,8 @@ no_parse_error() {
   [[ "$hay" != *"Invalid value for"* ]] && \
   [[ "$hay" != *"Invalid IPv4/IPv6"* ]] && \
   [[ "$hay" != *"Target must be a valid IPv4 or IPv6"* ]] && \
-  [[ "$hay" != *"Unknown option"* ]] && \
-  [[ "$hay" != *"Unexpected argument"* ]] && \
-  [[ "$hay" != *"Option requires an argument"* ]] && \
-  [[ "$hay" != *"poweroff requires a systemd host"* ]]
+  [[ "$hay" != *"poweroff requires a systemd host"* ]] && \
+  [[ "$hay" != *"NOTIFY_SOCKET"* ]]
 }
 
 # accepts: command should pass ls_opts_resolve. We wrap in `timeout` because a
@@ -155,16 +155,16 @@ await() {
 # Requires python3; prints one received datagram per line to $out.
 NOTIFY_RECV_PID=""
 start_notify_receiver() {
-  local path="$1" out="$2"
+  local path="$1" out="$2" duration="${3:-4}"
   rm -f "$path"
-  python3 - "$path" >"$out" 2>"$out.err" <<'PY' &
+  python3 - "$path" "$duration" >"$out" 2>"$out.err" <<'PY' &
 import socket, sys, time, os
 path = sys.argv[1]
 sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
 try:
     sock.bind(path)
     sock.settimeout(0.2)
-    end = time.time() + 4.0
+    end = time.time() + float(sys.argv[2])
     while time.time() < end:
         try:
             data = sock.recv(1024)
@@ -191,7 +191,10 @@ PY
 }
 
 stop_notify_receiver() {
-  [[ -n "${NOTIFY_RECV_PID:-}" ]] && wait "$NOTIFY_RECV_PID" 2>/dev/null || true
+  if [[ -n "${NOTIFY_RECV_PID:-}" ]]; then
+    kill "$NOTIFY_RECV_PID" 2>/dev/null || true
+    wait "$NOTIFY_RECV_PID" 2>/dev/null || true
+  fi
   NOTIFY_RECV_PID=""
 }
 

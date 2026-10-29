@@ -6,8 +6,8 @@ editing this repository. It answers three questions: **what must not change**
 **how a change is proven done** (verification commands).
 
 User-facing behavior is documented in `README.md`. Structure and rules live
-here. Do not duplicate one into the other: keep `README.md` about what the
-program does, and this file about how the code must be built and changed.
+here. Keep `README.md` about what the service does, and this file about how the
+code must be built and changed.
 
 ## 1. Authority
 
@@ -32,27 +32,39 @@ result. "It compiles" is not done.
 
 ```bash
 make                 # must produce zero compiler warnings
-make test            # unit suite + shell suite; shell baseline: 180 pass, 1 skip
+make test            # unit suite + shell suite; shell baseline: 37 pass, 1 skip
 make lint            # cppcheck + clang-tidy: zero findings
 make shellcheck      # ShellCheck tests/*.sh: zero findings
-make sanitize-test   # ASan+UBSan unit + shell suites; required for loop/icmp/app changes
+make sanitize-test   # ASan+UBSan unit + shell suites
 make check           # runs test + lint + shellcheck + sanitize-test
 ```
 
-`tests/unit.c` currently runs 170 assertions over `base`/`addr`/`log`/`loop`/
-`stats` and the `opts` resolver. Live ICMP tests are skipped when the binary
-lacks `CAP_NET_RAW`.
+`tests/unit.c` currently runs 138 assertions over `base`/`addr`/`log`/`loop`/
+`stats` and the environment-only `opts` resolver. Live ICMP tests are skipped
+when the binary lacks `CAP_NET_RAW`.
+
 Run them inside a user + network namespace with the recipe in `README.md`
-("测试说明"); the full suite then reports `Pass: 208   Fail: 0   Skip: 0`
-(without live tests: `Pass: 180   Fail: 0   Skip: 1`). If you changed anything
-on the probe or event-loop path, run the live suite and say so explicitly.
-Never report a skipped test as a pass. CI runs `make check` on every push and
-pull request (`.github/workflows/ci.yml`).
+("测试"); the full suite then reports `Pass: 61   Fail: 0   Skip: 0`
+(without live tests: `Pass: 37   Fail: 0   Skip: 1`). The shell suite requires
+`python3` for its NOTIFY_SOCKET receiver. If you changed anything on the probe
+or event-loop path, run the live suite and say so explicitly. Never report a
+skipped test as a pass. CI runs `make check` on every push and pull request
+(`.github/workflows/ci.yml`).
 
 ## 3. Hard invariants
 
 ### 3.1 Runtime shape
 
+- **systemd-only.** `linkstay` is a service, not a CLI. `main` has no
+  arguments; there is no option parser, `--help`, `--version`, daemonize, or
+  foreground/systemd switch. Configuration comes only from `LINKSTAY_*`
+  environment variables supplied by the unit and `/etc/linkstay.conf`.
+- **NOTIFY_SOCKET is required.** `ls_notify_init()` fails when
+  `NOTIFY_SOCKET` is absent or unusable, and `ls_app_init()` treats that as
+  fatal. A broken notify channel must never silently run a service that systemd
+  cannot supervise.
+- **journald owns timestamps.** Log lines are `[LEVEL] message`; there is no
+  timestamp formatting or timestamp configuration.
 - **Zero dynamic allocation.** No `malloc`/`calloc`/`realloc`/`free`, no
   `strdup`/`asprintf`/`open_memstream`. State lives in fixed-size structs
   (`ls_app_t`, `ls_icmp_t`) or stack buffers. Adding a heap allocation is a
@@ -73,8 +85,7 @@ pull request (`.github/workflows/ci.yml`).
 - **C23 is enforced, not assumed.** The Makefile compiles with
   `-std=c23 -pedantic-errors`, and `base.h` has a `__STDC_VERSION__` guard that
   fails the build under an older standard. Vendor extensions are limited to an
-  explicit allow-list: `[[gnu::...]]` attributes (valid C23 attribute syntax
-  with an implementation-defined namespace) and the GCC/Clang
+  explicit allow-list: `[[gnu::...]]` attributes and the GCC/Clang
   `__builtin_expect` used by `LS_LIKELY`/`LS_UNLIKELY`. The build targets
   GCC/Clang; adding another compiler extension is a design change.
 - **Prefer the standard facility.** `<stdckdint.h>` (`ckd_mul`) is used for
@@ -95,7 +106,7 @@ pull request (`.github/workflows/ci.yml`).
 | Public type | `ls_*_t` | `ls_opts_t`, `ls_stats_t`, `ls_icmp_recv_status_t` |
 | `static` function in a `.c` file | plain verb-noun, no prefix | `probe_failed`, `reply_matches`, `notify_status` |
 | Preprocessor macro | `LS_` prefix, also when file-private | `LS_PACKET_SIZE`, `LS_DEFAULT_TARGET` |
-| `static const` data | `UPPER_SNAKE`, no prefix | `OPT_SPECS`, `SHUTDOWN_ARGV`, `WATCHED_SIGNALS` |
+| `static const` data | `UPPER_SNAKE`, no prefix | `ENV_SPECS`, `SHUTDOWN_ARGV`, `WATCHED_SIGNALS` |
 | Environment variable | `LINKSTAY_` + upper snake | `LINKSTAY_POWEROFF` |
 
 The `ls_` prefix must mean "reachable from another translation unit". A helper
@@ -110,46 +121,41 @@ private.
   `ls_err_t` via `ls_err_set()`. Never invent `(char *buf, size_t len)` error
   out-parameters, and never return `-errno` as the only signal.
 - Results with more than two meaningful states use a small enum, not a bool:
-  `ls_icmp_recv_status_t`, `ls_icmp_send_status_t`, `ls_notify_state_t`. Do not
-  overload `errno`.
+  `ls_icmp_recv_status_t`, `ls_icmp_send_status_t`. Do not overload `errno`.
 - Messages are complete sentences without a trailing period, name the offending
   source and value, and state the accepted form, e.g.
-  `Invalid value for --timeout: 1m (use a positive integer suffixed 's' or
-  'ms')`.
+  `Invalid value for LINKSTAY_TIMEOUT: 1m (use a positive integer suffixed 's'
+  or 'ms')`.
 - `ls_err_t` carries the *reason*; the caller supplies the action. A module
   message must not open with "Failed to ..." when its caller already prefixes
-  the operation (that produced "Failed to send ICMP echo: Failed to send
-  packet: Network is unreachable"). Syscall failures pass `strerror(errno)`
-  through verbatim, so `app_fail()` and `main()` read as
-  "<action>: <reason>".
+  the operation. Syscall failures pass `strerror(errno)` through verbatim, so
+  `app_fail()` and `main()` read as "<action>: <reason>".
 - Public entry points validate caller-owned arguments they can meaningfully
   reject (`ls_app_init`, `ls_loop_add_fd`, `ls_opts_resolve`, ...). Pure value
   helpers (`ls_stats_*`, `ls_format_*`, `ls_timer_*`) and the app-owned
   `ls_notify_*` channel assume valid pointers. Private `static` helpers do not
   re-check pointers.
-- Modules never write to stdio. `log.c` owns log output (`fprintf` to stderr)
-  and `opts.c` owns `--help`/`--version` printing; everything else reports
-  through an `ls_log_t` or an `ls_err_t`.
+- Modules never write to stdio. `log.c` owns log output (`fprintf` to stderr);
+  everything else reports through an `ls_log_t` or an `ls_err_t`.
 - `restrict` appears only on public declarations and the definitions that
   implement them. Private helpers never use it.
 
 ### 3.4 Time
 
 - Every internal duration is milliseconds in a `uint64_t` (`interval_ms`,
-  `timeout_ms`, timer deadlines). Nanoseconds are confined to the OS
-  boundary: `ls_now_ns` for latency, log timestamp fractions, and the
-  `nanosleep` conversion.
+  `timeout_ms`, timer deadlines). Nanoseconds are confined to the OS boundary:
+  `ls_now_ns` for latency and the `nanosleep` conversion.
 - Use the unit constants in `base.h` (`LS_NS_PER_MS`, `LS_NS_PER_SEC`,
   `LS_US_PER_MS`, `LS_MS_PER_SEC`). No ad-hoc `* 1000`, no raw nanosecond
   literals.
 - Derived durations use the saturating helpers `ls_add_sat` / `ls_mul_sat`.
-- The only user-facing duration parser is `apply_duration()` reached through
-  `OPT_SPECS`: both `--interval` and `--timeout` require a lowercase `s` or `ms`
-  suffix, and the result is always stored in milliseconds. Bare numbers and
-  a leading `+` are rejected. Only one cross-field rule exists:
+- The only duration parser is `apply_duration()` reached through `ENV_SPECS`:
+  both `LINKSTAY_INTERVAL` and `LINKSTAY_TIMEOUT` require a lowercase `s` or
+  `ms` suffix, and the result is always stored in milliseconds. Bare numbers
+  and a leading `+` are rejected. Only one cross-field rule exists:
   `timeout_ms < interval_ms`.
-- Monotonic time (`CLOCK_MONOTONIC`/`CLOCK_MONOTONIC_COARSE`) for all logic;
-  `CLOCK_REALTIME` only for log timestamps in `log.c`.
+- Monotonic time (`CLOCK_MONOTONIC`/`CLOCK_MONOTONIC_COARSE`) is used for all
+  logic. Wall-clock time is not read by the program.
 - Format user-visible durations with `ls_format_duration()` (whole seconds as
   `10s`, otherwise `1500ms`). Latency values use `ls_format_latency()` so
   sub-millisecond links do not collapse to `0.00ms`, and elapsed times use
@@ -199,15 +205,15 @@ layer 4  main                                    (opts, app, log)
 | File | Owns | Must not know about |
 |------|------|---------------------|
 | `src/base.h` `.c` | program identity, exit codes, error type, monotonic clock, saturating math, duration formatting | every other module; it is stateless and has no I/O beyond the clock |
-| `src/log.h` `.c` | `ls_log_t`, level filtering, timestamp formatting, the project's only stderr writer | any domain concept (probes, addresses, config) |
+| `src/log.h` `.c` | `ls_log_t`, level filtering, the project's only stderr writer | any domain concept (probes, addresses, config) |
 | `src/addr.h` `.c` | IPv4/IPv6 literal classification and conversion, the "DNS disabled" rule | sockets, configuration, timers |
-| `src/opts.h` `.c` | `ls_opts_t`, the `OPT_SPECS` table, defaults/CLI/env resolution, cross-field validation | raw sockets, timers, the event loop, ICMP details |
+| `src/opts.h` `.c` | `ls_opts_t`, the `ENV_SPECS` table, defaults/env resolution, cross-field validation | raw sockets, timers, the event loop, ICMP details |
 | `src/loop.h` `.c` | `poll(2)` loop, fixed fd slots, absolute-deadline timer slots, signalfd channel | probes, ICMP, addresses, configuration |
 | `src/icmp.h` `.c` | raw socket, best-effort BPF filter, echo construction, reply matching, send/receive status | address syntax, timers, configuration, log policy |
-| `src/notify.h` `.c` | the `sd_notify` channel and protocol (READY/STATUS/WATCHDOG/STOPPING), NOTIFY_SOCKET/WATCHDOG_USEC/WATCHDOG_PID | when a message is appropriate (that is app policy) |
+| `src/notify.h` `.c` | the required `sd_notify` channel and protocol (READY/STATUS/WATCHDOG/STOPPING), NOTIFY_SOCKET/WATCHDOG_USEC/WATCHDOG_PID | when a message is appropriate (that is app policy) |
 | `src/stats.h` `.c` | cumulative probe counters, success rate, latency aggregates, uptime | probes, sockets, timers, configuration |
 | `src/app.h` `.c` | probe lifecycle, threshold action, startup/shutdown banners, message policy | nothing above it; it is the top of the stack |
-| `src/main.c` | entry point: resolve options, run the app, report a fatal startup error, map the result to an exit code | `loop`, `icmp`, `notify`, and every app-internal type; it uses only `opts`/`app` entry points plus `log` |
+| `src/main.c` | entry point: resolve the environment, run the app, report a fatal startup error, map the result to an exit code | `loop`, `icmp`, `notify`, and every app-internal type; it uses only `opts`/`app` entry points plus `log` |
 
 Rules:
 
@@ -228,35 +234,25 @@ Rules:
 
 ## 5. Contracts
 
-### 5.1 CLI and environment (user-visible)
+### 5.1 Environment configuration
 
-`opts.c`'s `OPT_SPECS` table is the single source of truth: it generates the
-`getopt_long` tables (so the short option string can never drift from the long
-options), drives the environment layer, supplies the names used in error
-messages, and owns the per-option help printers used by `--help`. Adding an
-option means: one `OPT_SPECS` row, one `apply_*` adapter, one `help_*` printer,
-a `README.md` table row, and tests. The user-facing option table lives in
-`README.md`; if the two ever disagree, `OPT_SPECS` (the code) wins and both
-documents must be corrected.
+`opts.c`'s `ENV_SPECS` table is the single source of truth for the supported
+variables. Adding a setting means: one `ENV_SPECS` row, one `apply_*` adapter,
+one `README.md` table row, one `/etc/linkstay.conf` example line, and tests.
+There is no CLI and no precedence layer: defaults, then present environment
+variables, then validation.
 
-- Effective precedence: CLI > environment > defaults. The CLI is applied first
-  and an env var is consulted only when its option was not seen, so an invalid
-  env value can never defeat a valid CLI flag.
-- `--help`/`--version` are detected by a getopt pre-scan and win over invalid
-  arguments and invalid environment values. Keep that property.
-- `-p`/`-s` require an explicit `true`/`false` argument; bare flags are
-  rejected. `-sfalse`/`--systemd=false` and the `true` equivalents are the
-  documented forms. A separated value (`--systemd false`) is consumed as the
-  option argument by getopt.
+- Variables: `LINKSTAY_TARGET`, `LINKSTAY_INTERVAL`, `LINKSTAY_THRESHOLD`,
+  `LINKSTAY_TIMEOUT`, `LINKSTAY_POWEROFF`, `LINKSTAY_LOG_LEVEL`.
 - Boolean values are `true` and `false` only, compared case-insensitively.
   Numeric and shell-style aliases (`1`, `0`, `yes`, `no`, `on`, `off`) are
-  rejected on purpose: one spelling per state. Do not reintroduce aliases
-  without an explicit user request.
-- Exit codes: `0` for help/version, SIGTERM/SIGINT shutdown, and the completed
-  dry-run threshold path; `1` for every fatal error (option/validation error,
-  socket setup failure, event-loop failure, fatal send/receive error).
-- Log timestamps are derived, not configured: disabled when systemd integration
-  is enabled (journald already timestamps), enabled otherwise.
+  rejected on purpose: one spelling per state.
+- Exit codes: `0` for SIGTERM/SIGINT shutdown and the completed dry-run
+  threshold path; `1` for every fatal error (environment/validation error,
+  missing notify channel, socket setup failure, event-loop failure, fatal
+  send/receive error).
+- `NOTIFY_SOCKET` is required; there is no standalone fallback. Timestamps are
+  always omitted because journald adds them.
 
 ### 5.2 Probe accounting and the threshold action
 
@@ -266,23 +262,24 @@ documents must be corrected.
 - A **failure** is counted for a reply timeout *and* for routing/link-level
   send failures (`ENETUNREACH`, `EHOSTUNREACH`, `ENETDOWN`, `EHOSTDOWN`,
   `ENETRESET`, `ENOBUFS`, `EAGAIN`). Those paths must keep counting toward
-  `--threshold`; do not turn them back into fatal exits. Socket-misuse errors
-  (`EPERM`, `EBADF`, `EINVAL`, short sends, ...) stay fatal.
+  `LINKSTAY_THRESHOLD`; do not turn them back into fatal exits. Socket-misuse
+  errors (`EPERM`, `EBADF`, `EINVAL`, short sends, ...) stay fatal.
 - A success resets the consecutive-failure counter and updates statistics in
   `stats.c`.
-- On reaching the threshold: `poweroff=false` logs the dry-run and exits `0`;
-  `poweroff=true` runs `/usr/bin/systemctl --no-block poweroff` through
-  `posix_spawn` (stdio to `/dev/null`, explicit clean environment), observes
-  the child for at most 1 s, and on failure keeps monitoring with the failure
-  count preserved. `poweroff=true` requires `/usr/bin/systemctl` and
-  `/run/systemd/system`, validated in `opts.c`.
+- On reaching the threshold: `LINKSTAY_POWEROFF=false` logs the dry-run and
+  exits `0`; `LINKSTAY_POWEROFF=true` runs
+  `/usr/bin/systemctl --no-block poweroff` through `posix_spawn` (stdio to
+  `/dev/null`, explicit clean environment), observes the child for at most 1 s,
+  and on failure keeps monitoring with the failure count preserved.
+  `poweroff=true` requires `/usr/bin/systemctl` and `/run/systemd/system`,
+  validated in `opts.c`.
 - Statistics (SIGUSR1 and shutdown) report uptime, totals, success rate, and
-  min/avg/max latency from integral microsecond accumulators in
-  `ls_stats_t`, formatted with `ls_format_uptime()` / `ls_format_latency()`.
-  The accumulators must keep `min <= avg <= max`; the "no sample" sentinel is
-  `UINT64_MAX`, so the max accumulator has to clear it explicitly on the first
-  success (the live suite asserts the ordering, and the unit suite covers the
-  saturating counters and aggregates directly).
+  min/avg/max latency from integral microsecond accumulators in `ls_stats_t`,
+  formatted with `ls_format_uptime()` / `ls_format_latency()`. The accumulators
+  must keep `min <= avg <= max`; the "no sample" sentinel is `UINT64_MAX`, so
+  the max accumulator has to clear it explicitly on the first success (the live
+  suite asserts the ordering, and the unit suite covers the saturating counters
+  and aggregates directly).
 
 ### 5.3 Event loop and timers
 
@@ -313,31 +310,32 @@ documents must be corrected.
 
 - `systemd/linkstay.service` expects `Type=notify`, `NotifyAccess=main`,
   `WatchdogSec=30`. Keep them consistent with the notifier.
-- `ls_notify_init()` reports one of three states: `LS_NOTIFY_ACTIVE`,
-  `LS_NOTIFY_INACTIVE` (NOTIFY_SOCKET unset — systemd is not supervising), or
-  `LS_NOTIFY_FAILED` (NOTIFY_SOCKET set but unusable). Only FAILED is an error,
-  and even then it is non-fatal: `app.c` logs a warning and monitoring
-  continues. Keep that property — a broken notify channel must never abort a
-  network monitor.
+- `ls_notify_init()` returns `bool`: failure means `NOTIFY_SOCKET` is missing,
+  malformed, or cannot be connected. The app treats it as fatal; do not
+  reintroduce an "inactive but continue" fallback.
+- `ls_notify_t.opened` is the ownership flag that makes
+  `ls_notify_destroy()` safe on a zero-initialized struct. Do not close a
+  descriptor based only on `sockfd >= 0` (zero-initialized `sockfd` is `0`).
 - Notifier messages: `READY=1` at startup, `STATUS=` updates (deduplicated
   within 2 s and capped at `LS_NOTIFY_STATUS_SIZE`), `WATCHDOG=1` at
   `WATCHDOG_USEC / 2000` ms (half the deadline), `STOPPING=1` on every exit
   path. The watchdog stays disabled when `WATCHDOG_PID` does not match
   `getpid()` or when `WATCHDOG_USEC` is missing or malformed (a leading `-`
   must not wrap around into a huge deadline).
-- Without `NOTIFY_SOCKET` (or with `--systemd=false`) every notifier send is a
-  no-op; `app.c` may query `ls_notify_enabled()` for diagnostics, but need not
-  branch before sending.
 - The unit's sandboxing is part of the product: raw ICMP needs `CAP_NET_RAW`;
   `AF_NETLINK` is intentionally excluded. Do not weaken these settings without
   an explicit request.
+- `make install` installs the binary, unit, and `/etc/linkstay.conf`;
+  `make uninstall` preserves the configuration file. Keep the unit's
+  `@BINDIR@`/`@CONFIG_PATH@` placeholders substituted by the Makefile.
 
 ## 6. Change protocol
 
-**Ask the user first** before changing: CLI/env names, defaults, exit codes,
-shutdown/poweroff semantics, files or dependencies, the systemd unit's security
-posture, or anything else `README.md` documents. These are user-visible
-contracts, and `--poweroff=false` as the default is a safety property.
+**Ask the user first** before changing: environment variable names, defaults,
+exit codes, shutdown/poweroff semantics, the systemd unit's security posture,
+install paths, or anything else `README.md` documents. These are user-visible
+contracts, and the unit's `LINKSTAY_POWEROFF=true` default is a deliberate
+service behavior.
 
 **Free to do without asking:** internal refactors that preserve behavior, dead
 code removal, comment and documentation corrections that match the code, new
@@ -356,11 +354,13 @@ wrong and say which one you changed.
 ```
 src/                        flat C modules, one owner per responsibility (section 4)
 tests/unit.c                unit tests for base/addr/log/loop/stats/opts
-tests/run_tests.sh          shell-suite entry point
+tests/run_tests.sh          shell-suite entry point and global notify receiver
 tests/lib.sh                assertions, process/NOTIFY helpers
-tests/cli.sh                CLI/env/validation/precedence cases
+tests/config.sh             environment/validation/systemd-only cases
 tests/live.sh               live ICMP, signals, threshold cases
 tests/notify.sh             NOTIFY_SOCKET protocol cases (sourced by live.sh)
+systemd/linkstay.service    unit template (@BINDIR@/@CONFIG_PATH@)
+systemd/linkstay.conf       /etc/linkstay.conf example
 .github/workflows/ci.yml    CI: make check on push/pull_request
 ```
 

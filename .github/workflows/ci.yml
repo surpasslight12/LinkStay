@@ -16,6 +16,6 @@ jobs:
       - name: Install checkers
         run: |
           sudo apt-get update
-          sudo apt-get install -y cppcheck clang-tidy shellcheck
+          sudo apt-get install -y cppcheck clang-tidy shellcheck python3
       - name: Build, test, lint, and sanitize
         run: make check

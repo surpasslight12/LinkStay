@@ -1,5 +1,5 @@
 [Unit]
-Description=linkstay Network Monitor with optional auto-shutdown
+Description=LinkStay network monitor and auto-shutdown service
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=300
@@ -13,13 +13,11 @@ SyslogIdentifier=linkstay
 StandardOutput=journal
 StandardError=journal
 
-ExecStart=/usr/local/bin/linkstay
+ExecStart=@BINDIR@/linkstay
 
-# TimeoutStartSec bounds how long systemd waits for the READY=1 notification
-# sent from log_startup(); WatchdogSec is a separate recurring deadline that
-# only starts counting once the service is considered started (after READY).
-# The two do not race: linkstay sends READY during initialization, well
-# before the event loop schedules the first WATCHDOG=1 notification.
+# TimeoutStartSec bounds how long systemd waits for READY=1. WatchdogSec is a
+# separate recurring deadline that starts only after READY=1; linkstay arms the
+# first WATCHDOG=1 timer after the startup banner.
 TimeoutStartSec=30
 TimeoutStopSec=10
 WatchdogSec=30
@@ -28,22 +26,33 @@ WatchdogSec=30
 Restart=on-failure
 RestartSec=10
 
-# Configuration
+# Configuration. The unit defaults can be overridden per-host in
+# /etc/linkstay.conf, which is read after these Environment= lines.
 Environment="LINKSTAY_TARGET=1.1.1.1"
 Environment="LINKSTAY_INTERVAL=10s"
 Environment="LINKSTAY_THRESHOLD=5"
 Environment="LINKSTAY_TIMEOUT=3000ms"
-Environment="LINKSTAY_POWEROFF=false"
+Environment="LINKSTAY_POWEROFF=true"
 Environment="LINKSTAY_LOG_LEVEL=info"
-Environment="LINKSTAY_SYSTEMD=true"
+EnvironmentFile=-@CONFIG_PATH@
 
 # Privilege containment
 User=root
 NoNewPrivileges=true
 CapabilityBoundingSet=CAP_NET_RAW
 
-# Filesystem isolation
+# Filesystem, kernel, and identity isolation
 ProtectSystem=strict
+ProtectHome=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
 
 # Network and syscall restrictions
 # AF_NETLINK is intentionally not included: linkstay only opens raw ICMP

@@ -2,14 +2,12 @@
 #define LINKSTAY_NOTIFY_H
 
 /*
- * notify.h — sd_notify(3)-style integration backend.
+ * notify.h — sd_notify(3) channel for the systemd service manager.
  *
- * Owns the AF_UNIX datagram channel to the service manager and the
- * READY/STATUS/WATCHDOG/STOPPING protocol, including the NOTIFY_SOCKET,
- * WATCHDOG_USEC and WATCHDOG_PID environment contract. Every send operation is
- * a no-op unless the channel was established; app.c may query availability for
- * diagnostics, but need not branch before sending. This is an integration
- * backend, not policy: when to send which message stays in app.c.
+ * Owns the AF_UNIX datagram channel and the READY/STATUS/WATCHDOG/STOPPING
+ * protocol, including the NOTIFY_SOCKET, WATCHDOG_USEC and WATCHDOG_PID
+ * environment contract. The channel is required: linkstay is a systemd service,
+ * so ls_notify_init() fails when NOTIFY_SOCKET is absent.
  */
 
 #include "base.h"
@@ -17,32 +15,22 @@
 #define LS_NOTIFY_STATUS_SIZE 240U
 
 typedef struct {
-  bool enabled;
+  bool opened; /* ownership flag; false for a zero-initialized struct */
   int sockfd;
   uint64_t watchdog_usec;
   uint64_t last_status_ms;
   char last_status[LS_NOTIFY_STATUS_SIZE];
 } ls_notify_t;
 
-/* Outcome of starting the notifier. */
-typedef enum {
-  LS_NOTIFY_ACTIVE = 0, /* channel established; watchdog may still be off */
-  LS_NOTIFY_INACTIVE,   /* NOTIFY_SOCKET unset: systemd is not supervising */
-  LS_NOTIFY_FAILED,     /* NOTIFY_SOCKET set but unusable; err explains */
-} ls_notify_state_t;
+/* Connects to NOTIFY_SOCKET and reads WATCHDOG_USEC/WATCHDOG_PID. Returns false
+ * with err set when the process is not running under systemd or the channel is
+ * unusable. The struct is always left destroy-safe. */
+[[nodiscard]] bool ls_notify_init(ls_notify_t *restrict notify,
+                                  ls_err_t *restrict err);
 
-/* Connects to NOTIFY_SOCKET and reads WATCHDOG_USEC/WATCHDOG_PID. Only
- * LS_NOTIFY_FAILED is an error condition, and even then the monitor keeps
- * running — callers warn and continue. On any outcome the struct is left in a
- * destroy-safe state. */
-[[nodiscard]] ls_notify_state_t
-ls_notify_init(ls_notify_t *restrict notify, ls_err_t *restrict err);
-
-/* Closes the channel. Safe to call on a zero-initialized struct, and after a
- * failed ls_notify_init(). */
+/* Closes the channel. Safe on a zero-initialized struct and after a failed
+ * ls_notify_init(). */
 void ls_notify_destroy(ls_notify_t *restrict notify);
-
-[[nodiscard]] bool ls_notify_enabled(const ls_notify_t *restrict notify);
 
 [[nodiscard]] bool ls_notify_ready(ls_notify_t *restrict notify);
 [[nodiscard]] [[gnu::format(printf, 2, 3)]] bool ls_notify_statusf(

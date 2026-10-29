@@ -1,270 +1,221 @@
-# linkstay — 高性能网络监控工具
+# linkstay — systemd 网络监控与自动关机服务
 
 [![C23](https://img.shields.io/badge/C-23-blue.svg)](https://en.wikipedia.org/wiki/C23_(C_standard_revision))
-[![systemd](https://img.shields.io/badge/systemd-integrated-green.svg)](https://systemd.io/)
+[![systemd](https://img.shields.io/badge/systemd-native-green.svg)](https://systemd.io/)
 
-**linkstay** 是一个轻量级、高性能的 Linux 网络监控工具，通过周期性 ICMP ping 检测网络可达性，并在连续失败达到阈值后触发关机动作（默认仅模拟）。
+**linkstay** 是一个 C23 编写的 Linux systemd 服务。它通过 raw socket + BPF
+周期性探测目标 IP，连续失败达到阈值后调用 `systemctl poweroff`。项目没有
+CLI、前台调试模式或 daemonize 逻辑：systemd 是唯一支持的运行方式。
 
 ## 核心特性
 
-- **原生 ICMP 实现**：使用 raw socket + BPF 内核过滤，无需依赖系统 `ping` 命令
-- **可选的真实关机**：通过布尔参数 `--poweroff=true|false` 决定是否正式关机；`false` 仅模拟，`true` 达到阈值后立即执行关机
-- **systemd 深度集成**：支持 `sd_notify`、watchdog（由 `WatchdogSec` 驱动）与状态通知
-- **高性能**：LTO 构建，单一二进制文件 ≈ 42 KiB（strip 后），内存占用 < 5 MB，CPU 占用 < 1%
-- **安全加固**：编译期 Full RELRO、PIE、Stack Canary、NX、FORTIFY_SOURCE；运行期 systemd 沙箱
+- **systemd 原生**：`Type=notify`，实现 `READY=1`、`STATUS=`、
+  `WATCHDOG=1`、`STOPPING=1`；由 `WatchdogSec` 驱动。
+- **无命令行**：所有配置来自 unit 的 `Environment=` 与
+  `/etc/linkstay.conf`，不存在 CLI 参数解析层。
+- **原生 ICMP**：raw socket + 内核 BPF 过滤，不依赖系统 `ping`。
+- **真实关机**：unit 默认 `LINKSTAY_POWEROFF=true`；改为 `false` 可走
+  dry-run。
+- **小体积**：LTO 构建，stripped 二进制约 34 KiB。
+- **沙箱**：systemd unit 限制 capability、文件系统、地址族与系统调用。
 
-## 快速开始
-
-### 1. 构建
-
-```bash
-make               # 构建 bin/linkstay（LTO 构建）
-make release       # 构建后 strip
-make test          # 单元测试 + 功能测试
-make check         # test + lint + shellcheck + sanitize-test
-make sanitize-test # ASan/UBSan 构建并运行两套测试
-```
-
-### 2. 运行
+## 构建与安装
 
 ```bash
-# 查看帮助
-./bin/linkstay --help
+make               # 构建 bin/linkstay
+make check         # 单元 + shell + lint + shellcheck + sanitizer
 
-# 前台调试运行（不实际关机，仅模拟）
-sudo ./bin/linkstay --target 1.1.1.1 --interval 10s --timeout 3000ms \
-     --threshold 3 --log-level debug
-
-# 短选项示例：必选参数既可写成 “-i 5s”，也可写成 “-i5s”
-# 布尔参数必须显式给值：-pfalse/-ptrue、--poweroff=false/--poweroff=true（-s 同理）
-sudo ./bin/linkstay -t 1.1.1.1 -i 5s -w 1000ms -n 3 -l debug -sfalse
-```
-
-### 3. 可选：注册 systemd 服务
-
-```bash
-make
-sudo make install-systemd
+sudo make install  # 安装二进制、unit 与 /etc/linkstay.conf
 sudo systemctl daemon-reload
 sudo systemctl enable --now linkstay
 ```
 
-仓库内附带的示例 unit 默认使用 `LINKSTAY_POWEROFF=false`，这样只会模拟关机；确认行为后再显式切换到 `LINKSTAY_POWEROFF=true`。
+默认安装路径：
 
-服务启动后可通过 drop-in 覆盖 `Environment=` 行来修改配置，无需改动原始 unit 文件：
+| 内容 | 路径 |
+|------|------|
+| 二进制 | `/usr/local/bin/linkstay` |
+| systemd unit | `/etc/systemd/system/linkstay.service` |
+| 配置 | `/etc/linkstay.conf` |
+
+`make install` 会用最终的 `BINDIR` 和 `LINKSTAY_CONFIG` 替换 unit 中的占位
+路径；支持 `DESTDIR` staging。`PREFIX` 默认 `/usr/local`，unit 默认的
+`ExecStart` 与之一致。重复安装不会覆盖已存在的 `/etc/linkstay.conf`。
+
+`make uninstall` 删除二进制和 unit，但**保留** `/etc/linkstay.conf`，避免
+删除管理员修改过的配置。
+
+## 配置
+
+unit 先设置一组默认 `Environment=`，随后读取可选的
+`/etc/linkstay.conf`（`EnvironmentFile=-/etc/linkstay.conf`）。后者覆盖前者。
+
+| 环境变量 | 默认值（代码） | unit 默认 | 说明 |
+|----------|----------------|-----------|------|
+| `LINKSTAY_TARGET` | `1.1.1.1` | `1.1.1.1` | 目标 IP 字面量，不解析 DNS |
+| `LINKSTAY_INTERVAL` | `10s` | `10s` | 探测间隔，必须带 `s`/`ms` 后缀 |
+| `LINKSTAY_THRESHOLD` | `5` | `5` | 连续失败次数 |
+| `LINKSTAY_TIMEOUT` | `3000ms` | `3000ms` | 回包超时，必须小于 interval |
+| `LINKSTAY_POWEROFF` | `false` | `true` | `true` 真实关机，`false` dry-run |
+| `LINKSTAY_LOG_LEVEL` | `info` | `info` | `silent`/`error`/`warn`/`info`/`debug` |
+
+时长只接受小写 `s` 或 `ms` 后缀；裸数字、前导 `+` 与大小写变体都会被拒绝。
+布尔值只接受大小写不敏感的 `true`/`false`。
+
+编辑配置后重启服务：
+
+```bash
+sudoedit /etc/linkstay.conf
+sudo systemctl restart linkstay
+```
+
+也可以使用 drop-in：
 
 ```bash
 sudo systemctl edit linkstay
-# 在弹出的编辑器里写入：
 # [Service]
 # Environment="LINKSTAY_TARGET=192.168.1.1"
-# Environment="LINKSTAY_POWEROFF=true"
-
+# Environment="LINKSTAY_POWEROFF=false"
 sudo systemctl daemon-reload
 sudo systemctl restart linkstay
 ```
 
-查看实时日志：
+## 运行要求
+
+- **必须由 systemd 启动**：`NOTIFY_SOCKET` 缺失或不可连接时，进程立即以
+  退出码 1 失败；没有“脱离 systemd 继续运行”的兼容模式。
+- **raw ICMP**：需要 root 或 `CAP_NET_RAW`；unit 以 root 运行，并通过
+  `CapabilityBoundingSet=CAP_NET_RAW` 移除其余 capability。
+- **真实关机**：`LINKSTAY_POWEROFF=true` 还要求
+  `/usr/bin/systemctl` 与 `/run/systemd/system` 可用。
+- **测试**：shell 套件需要 `python3` 创建 NOTIFY_SOCKET 接收器；实网用例
+  需要 root/CAP_NET_RAW，或使用用户+网络命名空间。
+
+## 探测与失败判定
+
+每个周期只进行一次探测，连续失败达到阈值后触发关机动作。以下情况都算一次
+失败：
+
+- **回包超时**：请求已发出，但在 `LINKSTAY_TIMEOUT` 内没有匹配回包。
+- **发送被拒**：内核直接拒绝发送，例如 `ENETUNREACH`、`ENETDOWN`、
+  `ENOBUFS`。这类失败同样计入阈值，避免断网时服务被 systemd 反复重启。
+
+socket 本身不可用（权限、参数、短写等）才是致命错误，进程以退出码 1 退出，
+由 `Restart=on-failure` 交给 systemd 处理。
+
+## 关机行为
+
+- `LINKSTAY_POWEROFF=false`：达到阈值后记录 dry-run 日志并退出 0；不执行
+  关机，也不触发自动重启。
+- `LINKSTAY_POWEROFF=true`：unit 默认行为，调用
+  `/usr/bin/systemctl --no-block poweroff`。若调用失败，进程记录错误并继续
+  监控，连续失败计数保持不变。
+
+## 日志与信号
+
+日志写入 stderr，由 journald 收集；每行只有 `[LEVEL] message`，**不包含
+时间戳**，避免与 journal 字段重复。
 
 ```bash
 journalctl -fu linkstay
 ```
 
-### 4. Make 目标
-
-| 目标 | 说明 |
+| 信号 | 行为 |
 |------|------|
-| `make` | 构建 `bin/linkstay`（LTO 构建） |
-| `make release` | 构建后 strip |
-| `make help` | 列出全部目标和可覆盖变量 |
-| `make unit-test` | 构建并运行 `tests/unit.c` 单元测试 |
-| `make test` | 单元测试 + `tests/run_tests.sh` 功能测试 |
-| `make lint` | cppcheck + clang-tidy，基线为零告警 |
-| `make shellcheck` | 对 `tests/*.sh` 运行 ShellCheck，基线为零告警 |
-| `make check` | 执行 `test` + `lint` + `shellcheck` + `sanitize-test`（提交前的最小验证集） |
-| `make sanitize` | 以 ASan/UBSan 构建到 `bin-sanitize/`（可用 `SAN=` 覆盖） |
-| `make sanitize-test` | sanitizer 构建并运行单元测试与功能测试 |
-| `make install` | 安装二进制到 `$(PREFIX)/bin/linkstay`，默认 `PREFIX=/usr/local` |
-| `make install-systemd` | 安装二进制和 `systemd/linkstay.service` |
-| `make uninstall` | 删除已安装的二进制和 systemd unit |
-| `make clean` | 清理 `bin/` 与 `bin-sanitize/` |
+| `SIGTERM` | 优雅停止，发送 `STOPPING=1`，输出最终统计后退出 |
+| `SIGINT` | 同 `SIGTERM` |
+| `SIGUSR1` | 立即输出当前统计，不中断监控 |
 
-安装目标支持 staging，例如：
+## systemd 沙箱
+
+`systemd/linkstay.service` 启用了：
+
+- `Type=notify`、`NotifyAccess=main`、`WatchdogSec=30`；
+- `User=root` + `CapabilityBoundingSet=CAP_NET_RAW`；
+- `ProtectSystem=strict`、`ProtectHome=true`、内核/时钟/主机名保护；
+- `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`（不需要 DNS/netlink）；
+- `SystemCallFilter=@system-service @network-io @process`；
+- `MemoryMax=50M`、`TasksMax=10`、`OOMScoreAdjust=-100`。
+
+unit 通过 `EnvironmentFile=-/etc/linkstay.conf` 读取配置；如修改 unit 本身，
+记得 `systemctl daemon-reload`。
+
+## 测试
 
 ```bash
-make install-systemd DESTDIR=/tmp/linkstay-stage PREFIX=/usr/local
+make unit-test      # 138 项单元断言
+make test           # 单元 + shell（实网用例按 capability 自动跳过）
+make check          # test + lint + shellcheck + sanitize-test
 ```
 
-默认构建不启用 `-march=native`，产物可在同架构其他机器上运行；如需为本机 CPU 调优，可使用 `make NATIVE=1`。构建始终启用 `-flto`；切换 `NATIVE`/警告选项会自动触发重建（Makefile 用配置戳记）。`make check` 需要 `cppcheck`、`clang-tidy` 与 `shellcheck`。
+`make check` 需要 `cppcheck`、`clang-tidy`、`shellcheck`、`python3`。
 
-### 5. 测试说明
-
-`make test` 先运行 `tests/unit.c`（170 项单元断言，覆盖 base/addr/log/loop/stats/opts），再由 `tests/run_tests.sh` 驱动 shell 套件，覆盖参数/环境变量解析、优先级、错误信息、NOTIFY_SOCKET 协议与实网 ICMP（loopback、信号、阈值模拟关机）。shell 套件拆分为 `tests/lib.sh`（断言与进程/通知辅助）、`tests/cli.sh`（静态用例）、`tests/live.sh`（实网用例）和 `tests/notify.sh`（sd_notify 协议用例）。实网用例需要 `bin/linkstay` 具备 `cap_net_raw`，缺失时该组用例自动跳过并计入 `Skip`。
-
-容器或普通用户无法用 `setcap` 时，可在用户+网络命名空间内运行完整实网用例（无需 root）：
+实网测试：
 
 ```bash
 unshare -Urn --map-root-user bash -c \
   'ip link set lo up; LINKSTAY_TEST_LIVE=1 LINKSTAY_TEST_UNREACHABLE_TARGET=203.0.113.1 make test'
 ```
 
-`LINKSTAY_TEST_LIVE=1` 强制启用实网用例；`LINKSTAY_TEST_UNREACHABLE_TARGET` 指定“不可达目标”用例的目标地址——裸网络命名空间没有默认路由，指向不可路由地址即可覆盖 `ENETUNREACH` 发送失败路径。
-
-## 参数一览
-
-| 参数 | CLI 选项 | 环境变量 | 默认值 | 说明 |
-|------|----------|----------|--------|------|
-| 监控目标 | `-t, --target` | `LINKSTAY_TARGET` | `1.1.1.1` | 目标 IP 字面量（仅支持 IPv4/IPv6，不解析域名） |
-| 检测间隔 | `-i, --interval` | `LINKSTAY_INTERVAL` | `10s` | 两次 ping 之间的间隔；必须带 `s`/`ms` 后缀 |
-| 失败阈值 | `-n, --threshold` | `LINKSTAY_THRESHOLD` | `5` | 连续失败次数触发关机 |
-| 超时时间 | `-w, --timeout` | `LINKSTAY_TIMEOUT` | `3000ms` | 单次 ping 等待回包的超时；必须带 `s`/`ms` 后缀，且小于 `--interval` |
-| 是否关机 | `-p, --poweroff <true\|false>` | `LINKSTAY_POWEROFF` | `false` | `true` 实际执行关机，`false` 仅模拟；必须显式给 `true`/`false`（大小写不敏感） |
-| 日志级别 | `-l, --log-level` | `LINKSTAY_LOG_LEVEL` | `info` | 取值为 `silent` / `error` / `warn` / `info` / `debug` |
-| systemd 集成 | `-s, --systemd <true\|false>` | `LINKSTAY_SYSTEMD` | `true` | 启用 `sd_notify`、watchdog 与状态通知；必须显式给 `true`/`false`（大小写不敏感），例如 `--systemd=false` 或 `-sfalse` |
-| 版本信息 | `-v, --version` | — | — | 打印版本后退出（退出码 0） |
-| 帮助信息 | `-h, --help` | — | — | 打印用法与全部选项后退出（退出码 0） |
-
-优先级：CLI 参数 > 环境变量 > 编译期默认值。`--interval` 与 `--timeout` 必须带 `s`/`ms` 后缀（仅小写，如 `-i 500ms`、`-w 1s`），不再接受裸数字或前导 `+`；内部统一以毫秒处理，唯一跨参数约束是 `timeout_ms < interval_ms`。日志与 `--help` 的时长统一由 `ls_format_duration()` 格式化（整秒显示为 `10s`，否则显示为 `1500ms`）。
-
-短选项：必选参数既支持分开写法（如 `-i 5s`），也支持粘连写法（如 `-i5s`）；`-p`/`-s` 必须显式带布尔值（`-pfalse`/`-ptrue`、`-sfalse`/`-strue`），裸 `-p`/`-s` 会被拒绝。
-
-## 探测与失败判定
-
-每个周期只进行一次探测，连续失败达到 `--threshold` 后触发关机动作。以下两种情况都算一次失败：
-
-- **回包超时**：请求已发出，但在 `--timeout` 内没有收到匹配的回包
-- **发送被拒**：内核直接拒绝发送，属于路由/链路/缓冲类问题，例如接口断开导致的 `ENETUNREACH`、`ENETDOWN`、`ENOBUFS`
-
-第二类失败同样计入连续失败计数，因此断网导致路由消失时监控仍会按阈值走完关机流程，而不是直接退出被 systemd 反复重启。只有套接字本身的错误（权限不足、参数非法、短写等）才会以退出码 1 终止进程。
-
-## 关机行为说明
-
-是否正式关机由布尔参数 `--poweroff=true|false` / `LINKSTAY_POWEROFF` 控制：
-
-### `--poweroff=false`（默认）
-达到阈值后模拟关机流程，但不实际执行关机命令；**模拟动作完成后进程会退出**，以保持与真实关机路径一致。
-
-### `--poweroff=true`
-达到阈值后立即执行真正关机。
-关机后端仅有一个：统一调用 `systemctl --no-block poweroff`。
-该模式要求主机存在可用的 systemd 环境（`/usr/bin/systemctl` 与 `/run/systemd/system`）。若 `systemctl` 调用失败，进程会记录错误并继续监控，连续失败计数保持不变。
-
-## 日志时间戳行为
-
-时间戳行为为**派生行为**：
-
-- `--systemd=true`：linkstay 自动**关闭**前缀时间戳（假定日志由 journald 收集，避免与 journal 时间字段重复）；在 systemd 之外前台运行时建议配合 `--systemd=false`
-- `--systemd=false`：linkstay 自动**开启**时间戳，便于前台运行、重定向文件和手工排障
-
-## 日志输出
-
-每行为 `[时间戳] [级别] 消息`（时间戳是否出现取决于上一节），级别为 `ERROR` / `WARN` / `INFO` / `DEBUG`。常见行：
-
-| 场景 | 级别 | 示例 |
-|------|------|------|
-| 启动横幅 | INFO | `linkstay 1.0 monitoring 1.1.1.1 \| interval 10s, timeout 3s, threshold 5 (detection ~50s), poweroff false (dry-run)` |
-| 探测成功 | DEBUG | `Reply from 1.1.1.1: seq=7 time=12.34ms avg=13.02ms ok=7/7 (100.0%)` |
-| 探测失败 | WARN | `Probe to 1.1.1.1 failed: no reply within 3s (failure 2 of 5)` |
-| 统计信息 | INFO | `Statistics: uptime 1h2m3s \| 42 pings, 42 OK, 0 failed (100.00% success) \| latency min 0.004ms, avg 12.34ms, max 88.10ms` |
-| 阈值动作 | WARN | `Failure threshold reached; poweroff is disabled (dry-run)` 后接 `[DRY-RUN] Would run /usr/bin/systemctl --no-block poweroff` |
-
-显示细节：
-
-- **延迟自适应精度**：小于 1ms 保留三位小数（如 `0.004ms`），1–100ms 两位，100ms 及以上一位；因此 loopback 这类亚毫秒链路不会再显示成 `0.00ms`
-- **运行时长**以 `1h2m3s` / `3d2h1m5s` 形式显示，而不是累计秒数
-- **单复数正确**：`1 ping` / `2 pings`
-- `--poweroff=false` 时启动横幅与 `systemd` 状态里会标注 `(dry-run)`
-- 探测失败原因使用系统错误文本（如 `Network is unreachable`）或超时描述（`no reply within 3s`），不再出现 `failed: Failed to ...` 这类重复措辞
-
-## 信号处理
-
-| 信号 | 行为 |
-|------|------|
-| `SIGTERM` | 优雅停止，输出最终统计后退出 |
-| `SIGINT` | 同 `SIGTERM` |
-| `SIGUSR1` | 立即输出当前统计信息（成功率、平均延迟、运行时间），不中断监控 |
-
-## 排障示例
-
-### `Timeout (...) must be smaller than interval (...)`
-
-`--interval` 与 `--timeout` 内部均以毫秒处理，二者必须满足 `timeout_ms < interval_ms`：
-
-```bash
-# 错误：5000 ms 并不小于 5 s = 5000 ms
-./bin/linkstay --target 1.1.1.1 --interval 5s --timeout 5000ms
-
-# 正确：3000 ms 小于 5000 ms
-./bin/linkstay --target 1.1.1.1 --interval 5s --timeout 3000ms
-./bin/linkstay --target 1.1.1.1 --interval 5s --timeout 3s
-```
-
-### `Operation not permitted (root or CAP_NET_RAW required)`
-
-linkstay 使用 raw socket 发送 ICMP，因此需要 `root` 权限或 `CAP_NET_RAW`：
-
-```bash
-sudo ./bin/linkstay --target 1.1.1.1
-```
-
-若以 systemd 运行，请确认 unit 文件中的 `CapabilityBoundingSet=CAP_NET_RAW`、`RestrictAddressFamilies=AF_UNIX ...` 等设置未被额外覆盖。
-
-## systemd 服务单元
-
-`systemd/linkstay.service` 启用了核心沙箱隔离：
-
-### 进程能力
-
-| 能力 | 用途 |
-|------|------|
-| `CAP_NET_RAW` | ICMP raw socket |
-
-### 安全隔离
-
-| 指令 | 用途 |
-|------|------|
-| `NoNewPrivileges=true` | 禁止提权 |
-| `ProtectSystem=strict` | 文件系统整体只读（/dev、/proc、/sys 等 API 文件系统除外） |
-| `RestrictAddressFamilies` | 仅允许 AF_UNIX、AF_INET、AF_INET6（无 DNS/netlink 需求，不含 AF_NETLINK） |
-| `SystemCallFilter` | 白名单 @system-service @network-io @process |
-
-### 资源限制
-
-`MemoryMax=50M`、`TasksMax=10`、`OOMScoreAdjust=-100`（降低被 OOM killer 杀死的概率）
+测试套件会在启动时创建一个全局 NOTIFY_SOCKET 接收器，因此每个服务实例都
+满足“必须由 systemd 启动”的约束；协议用例会为单次运行创建独立接收器。
 
 ## 项目结构
 
 ```
-Makefile                # 构建、release、test、unit-test、lint、shellcheck、check 等入口
-README.md               # 使用说明（面向用户的行为契约）
-.gitignore              # 忽略构建产物、编辑器状态与本地 AI 工具目录
-src/                    # 头文件与实现同目录，flat layout
-├── base.h / base.c     # 无状态基础层：错误类型、单调时钟、饱和运算、时长格式化
-├── log.h / log.c       # 分级日志：项目内唯一的 stderr 输出点
-├── addr.h / addr.c     # IPv4/IPv6 字面量解析（opts 校验与 app 解析共用同一实现）
-├── opts.h / opts.c     # 配置解析：默认值 → CLI → 环境变量 → 校验
-├── loop.h / loop.c     # poll(2) 事件循环、绝对 deadline 定时器、signalfd
-├── icmp.h / icmp.c     # ICMP raw socket、BPF 过滤、校验和、回包匹配
-├── notify.h / notify.c # systemd sd_notify 后端：READY/STATUS/WATCHDOG/STOPPING
-├── stats.h / stats.c   # 累计计数与延迟聚合：成功率、平均/最小/最大、运行时长
-├── app.h / app.c       # 组装层：probe 状态机、阈值动作、启动/退出横幅
-└── main.c              # 薄入口：opts → app → loop
+Makefile                # 构建、测试、lint、sanitize、安装
+README.md               # 使用说明与行为契约
+src/
+├── base.h / base.c     # 错误类型、单调时钟、饱和运算、时长格式化
+├── log.h / log.c       # journald 友好的分级 stderr 日志
+├── addr.h / addr.c     # IPv4/IPv6 字面量解析
+├── opts.h / opts.c     # 默认值 + LINKSTAY_* 环境变量 + 校验
+├── loop.h / loop.c     # poll(2)、绝对 deadline 定时器、signalfd
+├── icmp.h / icmp.c     # raw ICMP、BPF、校验和、回包匹配
+├── notify.h / notify.c # 必需的 sd_notify 通道
+├── stats.h / stats.c   # 累计计数与延迟聚合
+├── app.h / app.c       # probe 生命周期、阈值动作、启动/退出
+└── main.c              # 无参数入口：opts → app → loop
 systemd/
-└── linkstay.service  # systemd unit 示例文件
+├── linkstay.service    # systemd unit（安装时替换路径占位符）
+└── linkstay.conf       # /etc/linkstay.conf 示例
 tests/
-├── unit.c            # 单元断言（base / addr / log / loop / stats / opts）
-├── run_tests.sh      # shell 套件入口：加载辅助模块、执行并汇总
-├── lib.sh            # 断言、进程控制、NOTIFY 接收器辅助
-├── cli.sh            # 参数/环境变量解析、优先级、调试输出
-├── live.sh           # 实网 ICMP、信号、阈值动作
-└── notify.sh         # NOTIFY_SOCKET 协议用例（由 live.sh 加载）
-.github/
-├── copilot-instructions.md  # 工程契约：不变量、模块边界、验证流程
-└── workflows/ci.yml         # CI：安装检查工具并执行 make check
+├── unit.c              # 单元断言
+├── run_tests.sh        # shell 套件入口与全局 notify 接收器
+├── lib.sh              # 断言、进程、notify 辅助
+├── config.sh           # 环境配置与 systemd-only 启动
+├── live.sh             # 实网 ICMP、信号、阈值
+└── notify.sh           # READY/STATUS/WATCHDOG/STOPPING
 ```
 
-`bin/`（默认构建）与 `bin-sanitize/`（sanitizer 构建）是 `make` 生成的产物，已被 `.gitignore` 忽略，可随时用 `make clean` 删除。
+## 排障
 
-代码以 `-std=c23 -pedantic-errors` 构建；`base.h` 在编译期拒绝不支持 C23 的编译器。
+### `NOTIFY_SOCKET is not set`
 
-工程约定（不变量、命名边界、模块依赖方向、测试与 lint 基线）集中记录在 `.github/copilot-instructions.md`，修改代码前请先阅读该文件。
+说明进程不是由 systemd 启动的。使用：
+
+```bash
+sudo systemctl restart linkstay
+journalctl -u linkstay -n 50
+```
+
+### `poweroff requires a systemd host`
+
+`LINKSTAY_POWEROFF=true` 时要求 `/usr/bin/systemctl` 和
+`/run/systemd/system`。若只想测试监控，改为 `LINKSTAY_POWEROFF=false`。
+
+### `Operation not permitted (root or CAP_NET_RAW required)`
+
+确认 unit 的 `CapabilityBoundingSet=CAP_NET_RAW` 未被覆盖；手工运行二进制时
+需要 root。
+
+### `Timeout (...) must be smaller than interval (...)`
+
+调整 `/etc/linkstay.conf` 中的 `LINKSTAY_TIMEOUT`/`LINKSTAY_INTERVAL`，确保
+前者严格小于后者。
+
+## 工程契约
+
+不变量、模块边界、命名规则、测试与 lint 基线记录在
+[.github/copilot-instructions.md](.github/copilot-instructions.md)。修改代码前
+请先阅读该文件。

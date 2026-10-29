@@ -9,7 +9,9 @@ if [[ "$caps" != *cap_net_raw* && "${LINKSTAY_TEST_LIVE:-0}" != "1" ]]; then
   skip "Live ICMP suite" "$BIN lacks cap_net_raw — run: sudo setcap cap_net_raw=eip $BIN (or LINKSTAY_TEST_LIVE=1 inside 'unshare -Urn')"
 else
   # 1) Successful ping to loopback, SIGTERM after ~2.5s, expect clean exit + replies
-  spawn "$BIN" -t 127.0.0.1 -i 1s -w 500ms -l debug -sfalse
+  spawn env LINKSTAY_TARGET=127.0.0.1 LINKSTAY_INTERVAL=1s \
+    LINKSTAY_TIMEOUT=500ms LINKSTAY_LOG_LEVEL=debug \
+    LINKSTAY_POWEROFF=false "$BIN"
   sleep 2.5
   kill -TERM "$PID" 2>/dev/null || true
   await 3
@@ -39,36 +41,11 @@ else
   fi
   [[ "$hay" == *"ICMP BPF filter active"* ]] && pass "IPv4 BPF filter attached" || \
     fail "IPv4 BPF filter attached" "no BPF debug line"
-  [[ "$hay" == *"systemd integration inactive (disabled by configuration)"* ]] && \
-    pass "systemd integration reports the configured disable" || \
-    fail "systemd integration reports the configured disable" "no inactive debug line"
-
-  # 1b) systemd integration on but NOTIFY_SOCKET unset: inactive, not an error
-  spawn "$BIN" -t 127.0.0.1 -i 1s -w 500ms -l debug
-  sleep 1.2
-  kill -TERM "$PID" 2>/dev/null || true
-  await 3
-  hay="${STDOUT}${STDERR}"
-  [[ "$hay" == *"systemd integration inactive (NOTIFY_SOCKET not set)"* ]] && \
-    pass "unset NOTIFY_SOCKET reported as inactive" || \
-    fail "unset NOTIFY_SOCKET reported as inactive" "hay tail=${hay: -300}"
-
-  # 1c) NOTIFY_SOCKET set but unusable: warn once, keep monitoring
-  spawn env NOTIFY_SOCKET="$TMP/absent-notify.sock" \
-    "$BIN" -t 127.0.0.1 -i 1s -w 500ms -l debug
-  sleep 1.5
-  kill -TERM "$PID" 2>/dev/null || true
-  await 3
-  hay="${STDOUT}${STDERR}"
-  [[ "$hay" == *"systemd integration unavailable"* ]] && \
-    pass "unusable NOTIFY_SOCKET warns instead of failing" || \
-    fail "unusable NOTIFY_SOCKET warns instead of failing" "hay tail=${hay: -300}"
-  [[ "$hay" == *"Reply from 127.0.0.1"* ]] && \
-    pass "monitoring continues without a notify channel" || \
-    fail "monitoring continues without a notify channel" "no reply line"
 
   # 2) SIGINT is treated like SIGTERM
-  spawn "$BIN" -t 127.0.0.1 -i 1s -w 500ms -l info -sfalse
+  spawn env LINKSTAY_TARGET=127.0.0.1 LINKSTAY_INTERVAL=1s \
+    LINKSTAY_TIMEOUT=500ms LINKSTAY_LOG_LEVEL=info \
+    LINKSTAY_POWEROFF=false "$BIN"
   sleep 1.5
   kill -INT "$PID" 2>/dev/null || true
   await 3
@@ -79,7 +56,9 @@ else
     fail "SIGINT logs shutdown" "no shutdown banner"
 
   # 3) IPv6 loopback ping
-  spawn "$BIN" -t ::1 -i 1s -w 500ms -l debug -sfalse
+  spawn env LINKSTAY_TARGET=::1 LINKSTAY_INTERVAL=1s \
+    LINKSTAY_TIMEOUT=500ms LINKSTAY_LOG_LEVEL=debug \
+    LINKSTAY_POWEROFF=false "$BIN"
   sleep 1.5
   kill -TERM "$PID" 2>/dev/null || true
   await 3
@@ -90,28 +69,32 @@ else
     fail "IPv6 loopback received replies" "no IPv6 reply line"
 
   # 4) SIGUSR1 dumps stats mid-run
-  spawn "$BIN" -t 127.0.0.1 -i 1s -w 500ms -l info -sfalse
+  spawn env LINKSTAY_TARGET=127.0.0.1 LINKSTAY_INTERVAL=1s \
+    LINKSTAY_TIMEOUT=500ms LINKSTAY_LOG_LEVEL=info \
+    LINKSTAY_POWEROFF=false "$BIN"
   sleep 2.5
   kill -USR1 "$PID" 2>/dev/null || true
   sleep 0.3
   kill -TERM "$PID" 2>/dev/null || true
   await 3
-  # The startup line is at INFO; mid-run stats triggered by SIGUSR1 are at INFO
-  # too. Count "Statistics:" lines — should be >= 2 (mid-run + shutdown).
+  # The startup line is at INFO; mid-run stats triggered by SIGUSR1 are at
+  # INFO too. Count "Statistics:" lines — should be >= 2 (mid-run + shutdown).
   count=$(grep -c "Statistics:" <<<"${STDOUT}${STDERR}" || true)
   [[ "$count" -ge 2 ]] && pass "SIGUSR1 dumps stats (count=$count)" || \
     fail "SIGUSR1 dumps stats" "Statistics: count=$count"
 
-
-  # NOTIFY protocol cases live in their own file but run as part of the live suite.
+  # NOTIFY protocol cases live in their own file but run as part of this suite.
   # shellcheck source=notify.sh
   . "$TEST_DIR/notify.sh"
-  # 7) Unreachable target with poweroff disabled reaches threshold and exits.
+
+  # 5) Unreachable target with poweroff disabled reaches threshold and exits.
   # Both a silent timeout (routable TEST-NET) and an immediate send failure
   # (no route in a bare namespace) must count toward the failure threshold.
   scrub_env
   unreachable="${LINKSTAY_TEST_UNREACHABLE_TARGET:-192.0.2.1}"
-  run_capture timeout 10s "$BIN" -t "$unreachable" -i 1s -w 300ms -n 2 -l info -sfalse
+  run_capture timeout 10s env LINKSTAY_TARGET="$unreachable" \
+    LINKSTAY_INTERVAL=1s LINKSTAY_TIMEOUT=300ms LINKSTAY_THRESHOLD=2 \
+    LINKSTAY_POWEROFF=false LINKSTAY_LOG_LEVEL=info "$BIN"
   hay="${STDOUT}${STDERR}"
   if [[ "$RC" == "0" && "$hay" == *"Dry-run complete"* ]]; then
     pass "dry-run threshold trigger exits cleanly"

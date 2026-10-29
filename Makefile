@@ -12,6 +12,7 @@ DESTDIR ?=
 BINDIR ?= $(PREFIX)/bin
 SYSCONFDIR ?= /etc
 SYSTEMD_UNIT_DIR ?= $(SYSCONFDIR)/systemd/system
+LINKSTAY_CONFIG ?= $(SYSCONFDIR)/linkstay.conf
 INSTALL ?= install
 RM ?= rm -f
 STRIP ?= strip
@@ -73,7 +74,7 @@ SAN_CFLAGS := $(WARN_CFLAGS) -O1 -g -fno-omit-frame-pointer \
 SAN_LDFLAGS := -fsanitize=$(SAN) -fno-sanitize-recover=all
 
 .PHONY: all clean release lint shellcheck test unit-test check sanitize \
-        sanitize-unit-test sanitize-test install install-systemd uninstall \
+        sanitize-unit-test sanitize-test install uninstall \
         help FORCE
 
 all: $(TARGET)
@@ -89,8 +90,7 @@ help:
 	@printf '  make check           test + lint + shellcheck + sanitize-test\n'
 	@printf '  make sanitize        ASan/UBSan build into bin-sanitize/\n'
 	@printf '  make sanitize-test   sanitizer build + both test suites\n'
-	@printf '  make install         install binary to $(BINDIR)\n'
-	@printf '  make install-systemd install binary and systemd unit\n'
+	@printf '  make install         install binary, unit, and /etc config\n'
 	@printf '  make clean           remove build directories\n'
 	@printf 'Variables: NATIVE=1 -march=native, SAN=<list>\n'
 
@@ -162,14 +162,25 @@ sanitize-test: sanitize-unit-test
 
 install: $(TARGET)
 	$(INSTALL) -D -m 755 $(TARGET) $(DESTDIR)$(BINDIR)/linkstay
-
-install-systemd: install
-	$(INSTALL) -D -m 644 systemd/linkstay.service \
-		$(DESTDIR)$(SYSTEMD_UNIT_DIR)/linkstay.service
+	$(INSTALL) -d $(DESTDIR)$(SYSTEMD_UNIT_DIR)
+	sed -e 's|@BINDIR@|$(BINDIR)|g' \
+	    -e 's|@CONFIG_PATH@|$(LINKSTAY_CONFIG)|g' \
+	    systemd/linkstay.service > \
+	    $(DESTDIR)$(SYSTEMD_UNIT_DIR)/linkstay.service
+	chmod 644 $(DESTDIR)$(SYSTEMD_UNIT_DIR)/linkstay.service
+	@if [ ! -e "$(DESTDIR)$(LINKSTAY_CONFIG)" ]; then \
+		$(INSTALL) -D -m 644 systemd/linkstay.conf \
+			"$(DESTDIR)$(LINKSTAY_CONFIG)"; \
+	else \
+		echo "Preserving existing $(DESTDIR)$(LINKSTAY_CONFIG)"; \
+	fi
+	@echo "Run: systemctl daemon-reload && systemctl enable --now linkstay"
 
 uninstall:
 	$(RM) $(DESTDIR)$(BINDIR)/linkstay
 	$(RM) $(DESTDIR)$(SYSTEMD_UNIT_DIR)/linkstay.service
+	@echo "Preserved configuration: $(DESTDIR)$(LINKSTAY_CONFIG)"
+	@echo "Run: systemctl daemon-reload"
 
 clean:
 	rm -rf $(BIN_DIR) $(SANITIZE_BIN_DIR)

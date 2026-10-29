@@ -440,7 +440,7 @@ static void log_startup(ls_app_t *app) {
           LS_VERSION, app->opts.target, interval_str, timeout_str,
           app->opts.fail_threshold, detection_str,
           app->opts.poweroff ? "true" : "false (dry-run)");
-  if (ls_notify_enabled(&app->notify) && !ls_notify_ready(&app->notify)) {
+  if (!ls_notify_ready(&app->notify)) {
     ls_warn(&app->log, "Failed to send systemd READY notification");
   }
   (void)ls_notify_statusf(&app->notify, "Monitoring %s every %s; poweroff %s",
@@ -455,9 +455,7 @@ static void log_shutdown(ls_app_t *app, int exit_code) {
   /* Notify systemd we are stopping on every exit path (signal, threshold
    * dry-run, or real poweroff) so the service manager always sees a clean
    * transition. */
-  if (ls_notify_enabled(&app->notify)) {
-    (void)ls_notify_stopping(&app->notify);
-  }
+  (void)ls_notify_stopping(&app->notify);
   log_statistics(app);
   if (exit_code == LS_EXIT_SUCCESS) {
     ls_info(&app->log, LS_PROGRAM_NAME " monitor stopped");
@@ -483,13 +481,19 @@ bool ls_app_init(ls_app_t *restrict app, const ls_opts_t *restrict opts,
     app->identifier = 1;
   }
 
-  ls_log_init(&app->log, app->opts.log_level, ls_opts_timestamps(&app->opts));
+  ls_log_init(&app->log, app->opts.log_level);
   if (app->opts.log_level == LS_LOG_DEBUG) {
     ls_opts_dump(&app->opts, &app->log);
   }
 
   app->dest_len = sizeof(app->dest);
   if (!ls_addr_parse(app->opts.target, &app->dest, &app->dest_len, err)) {
+    return false;
+  }
+
+  /* systemd is the only supported runtime: establish NOTIFY_SOCKET before
+   * opening the ICMP socket so a manual invocation fails immediately. */
+  if (!ls_notify_init(&app->notify, err)) {
     return false;
   }
 
@@ -510,28 +514,12 @@ bool ls_app_init(ls_app_t *restrict app, const ls_opts_t *restrict opts,
 
   ls_stats_init(&app->stats);
 
-  if (!app->opts.systemd) {
-    ls_debug(&app->log,
-             "systemd integration inactive (disabled by configuration)");
+  uint64_t watchdog_interval_ms = ls_notify_watchdog_interval_ms(&app->notify);
+  if (watchdog_interval_ms > 0) {
+    ls_debug(&app->log, "systemd watchdog ping every %" PRIu64 "ms",
+             watchdog_interval_ms);
   } else {
-    ls_notify_state_t state = ls_notify_init(&app->notify, err);
-    if (state == LS_NOTIFY_FAILED) {
-      ls_warn(&app->log, "systemd integration unavailable: %s", err->msg);
-    } else if (state == LS_NOTIFY_INACTIVE) {
-      ls_debug(&app->log,
-               "systemd integration inactive (NOTIFY_SOCKET not set)");
-    }
-  }
-  if (ls_notify_enabled(&app->notify)) {
-    uint64_t watchdog_interval_ms =
-        ls_notify_watchdog_interval_ms(&app->notify);
-    if (watchdog_interval_ms > 0) {
-      ls_debug(&app->log,
-               "systemd integration active, watchdog ping every %" PRIu64 "ms",
-               watchdog_interval_ms);
-    } else {
-      ls_debug(&app->log, "systemd integration active, watchdog disabled");
-    }
+    ls_debug(&app->log, "systemd watchdog disabled");
   }
 
   /* ---- Parameter safety warnings ---- */

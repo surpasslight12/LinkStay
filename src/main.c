@@ -1,6 +1,7 @@
 /*
- * main.c — process entry point: resolve options, run the application, and map
- * the result to an exit code. It owns no monitoring logic.
+ * main.c — systemd process entry point: resolve the service environment, run
+ * the application, and map the result to an exit code. It owns no monitoring
+ * logic and accepts no command-line arguments.
  */
 
 #include "app.h"
@@ -8,36 +9,31 @@
 #include "log.h"
 
 /* ---- Fatal-error logging ---- */
-/* Logs a fatal startup error. Before options resolve only the error level is
- * known; afterwards the resolved level and timestamp policy apply. */
+/* Logs a fatal startup error. Before the environment resolves only the error
+ * level is known; afterwards the resolved level applies. */
 
-static void log_fatal_error(ls_log_level_t level, bool timestamps,
-                            const char *message) {
+static void log_fatal_error(ls_log_level_t level, const char *message) {
   ls_log_t log;
-  ls_log_init(&log, level, timestamps);
+  ls_log_init(&log, level);
   ls_error(&log, LS_PROGRAM_NAME " failed: %s", message);
 }
 
 /* ---- Entry point ---- */
 
-int main(int argc, char **argv) {
+int main(void) {
   ls_err_t err = {};
-  bool exit_requested = false;
   ls_opts_t opts;
 
-  if (!ls_opts_resolve(&opts, argc, argv, &exit_requested, &err)) {
-    log_fatal_error(LS_LOG_ERROR, false, err.msg);
+  if (!ls_opts_resolve(&opts, &err)) {
+    log_fatal_error(LS_LOG_ERROR, err.msg);
     return LS_EXIT_FAILURE;
-  }
-  if (exit_requested) {
-    return LS_EXIT_SUCCESS;
   }
 
   /* Zero-initialized so ls_app_destroy() is safe even if ls_app_init() fails
    * before it finishes assigning *app. */
   ls_app_t app = {};
   if (!ls_app_init(&app, &opts, &err)) {
-    log_fatal_error(opts.log_level, ls_opts_timestamps(&opts), err.msg);
+    log_fatal_error(opts.log_level, err.msg);
     ls_app_destroy(&app);
     return LS_EXIT_FAILURE;
   }

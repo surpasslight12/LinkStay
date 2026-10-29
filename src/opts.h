@@ -2,13 +2,12 @@
 #define LINKSTAY_OPTS_H
 
 /*
- * opts.h — resolved runtime options.
+ * opts.h — environment-resolved service configuration.
  *
- * Effective precedence, highest first: CLI arguments, LINKSTAY_* environment
- * variables, built-in defaults. opts.c applies defaults, then the CLI, then
- * every environment variable whose CLI counterpart was not given (tracked in a
- * seen[] flag array), so an invalid env value can never defeat a valid CLI
- * override. Cross-field validation runs last.
+ * linkstay is a systemd service, not a CLI: the unit (and optional
+ * /etc/linkstay.conf) supplies LINKSTAY_* environment variables. Defaults are
+ * applied first, then every present LINKSTAY_* variable, then cross-field
+ * validation.
  */
 
 #include "base.h"
@@ -24,21 +23,12 @@ typedef struct {
   bool poweroff; /* false = simulate only (dry-run) */
   /* Logging */
   ls_log_level_t log_level;
-  /* Integration */
-  bool systemd;
 } ls_opts_t;
 
-/* Resolves defaults, CLI, and environment, then validates. On success returns
- * true; *exit_requested is set when --help/--version was handled (caller
- * should exit 0 without starting the monitor). */
-[[nodiscard]] bool ls_opts_resolve(ls_opts_t *restrict opts, int argc,
-                                   char **restrict argv,
-                                   bool *restrict exit_requested,
+/* Resolves defaults and environment, then validates. On failure returns false
+ * with err set. */
+[[nodiscard]] bool ls_opts_resolve(ls_opts_t *restrict opts,
                                    ls_err_t *restrict err);
-
-/* Log timestamps are tied to systemd integration: journald already
- * timestamps every line, so they are enabled only when systemd is off. */
-[[nodiscard]] bool ls_opts_timestamps(const ls_opts_t *restrict opts);
 
 /* Dumps the resolved configuration at debug level. */
 void ls_opts_dump(const ls_opts_t *restrict opts, const ls_log_t *restrict log);

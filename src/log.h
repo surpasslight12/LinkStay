@@ -2,12 +2,12 @@
 #define LINKSTAY_LOG_H
 
 /*
- * log.h — leveled logging to stderr.
+ * log.h — leveled logging to stderr for journald.
  *
  * The only module in the project that writes log output. Callers own an
  * ls_log_t and pass it by pointer; the per-level inline wrappers compare the
  * configured level before touching varargs, so a disabled line costs one
- * comparison at the call site.
+ * comparison at the call site. Lines carry no timestamp: journald adds one.
  */
 
 #include "base.h"
@@ -26,14 +26,12 @@ typedef enum {
 
 typedef struct {
   ls_log_level_t level;
-  bool timestamps;
 } ls_log_t;
 
 /* Cold-path marker for the error and warning loggers. */
 #define LS_COLD [[gnu::cold]]
 
-void ls_log_init(ls_log_t *restrict log, ls_log_level_t level,
-                 bool timestamps);
+void ls_log_init(ls_log_t *restrict log, ls_log_level_t level);
 void ls_log_va(const ls_log_t *restrict log, ls_log_level_t level,
                const char *restrict fmt, va_list ap);
 const char *ls_log_level_name(ls_log_level_t level);
