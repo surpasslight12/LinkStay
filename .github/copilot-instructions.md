@@ -339,7 +339,8 @@ variables, then validation.
 - Notifier messages: `READY=1` at startup, `STATUS=` updates (deduplicated
   within 2 s and capped at `LS_NOTIFY_STATUS_SIZE`), `WATCHDOG=1` at
   `WATCHDOG_USEC / 2000` ms (half the deadline), `STOPPING=1` on every loop
-  exit path. The watchdog stays disabled when `WATCHDOG_PID` does not match
+  exit path. A failed `READY=1` is fatal before the loop starts. The watchdog
+  stays disabled when `WATCHDOG_PID` does not match
   `getpid()` or when `WATCHDOG_USEC` is missing or malformed (a leading `-`
   must not wrap around into a huge deadline).
 - The unit's sandboxing is part of the product: raw ICMP needs `CAP_NET_RAW`;

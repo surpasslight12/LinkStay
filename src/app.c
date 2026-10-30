@@ -87,7 +87,7 @@ typedef struct {
 /* ---- Shutdown action (systemctl poweroff) ---- */
 
 static char *const SHUTDOWN_ENVP[] = {
-    "PATH=/usr/bin:/usr/sbin:/bin:/sbin", "LANG=C", "LC_ALL=C", nullptr};
+    "PATH=/usr/bin:/usr/sbin:/bin:/sbin", "LC_ALL=C", nullptr};
 
 static char *const SHUTDOWN_ARGV[] = {
     (char *)LS_SYSTEMCTL_PATH, "--no-block", "poweroff", nullptr};
@@ -458,7 +458,7 @@ static void on_signal(ls_loop_t *loop, uint32_t signo, void *userdata) {
 
 /* ---- Startup / shutdown banners ---- */
 
-static void log_startup(app_t *app) {
+static bool log_startup(app_t *app) {
   uint64_t detection_ms = ls_mul_sat((uint64_t)app->config.fail_threshold,
                                      app->config.interval_ms);
   char interval_str[32];
@@ -484,7 +484,8 @@ static void log_startup(app_t *app) {
           timeout_str, app->config.fail_threshold, detection_str,
           app->config.poweroff ? "true" : "false (dry-run)");
   if (!ls_notify_ready(&app->notify)) {
-    ls_warn(&app->log, "Failed to send systemd READY notification");
+    ls_error(&app->log, "Failed to send systemd READY notification");
+    return false;
   }
   if (app->config.start_delay_ms == 0) {
     (void)ls_notify_statusf(&app->notify,
@@ -497,6 +498,7 @@ static void log_startup(app_t *app) {
                             delay_str,
                             app->config.poweroff ? "true" : "false (dry-run)");
   }
+  return true;
 }
 
 static void log_shutdown(app_t *app, int exit_code) {
@@ -628,7 +630,10 @@ static int app_run(app_t *app) {
     ls_timer_arm_after(app->watchdog_timer, now_ms, watchdog_interval_ms);
   }
 
-  log_startup(app);
+  if (!log_startup(app)) {
+    ls_loop_destroy(&app->loop);
+    return LS_EXIT_FAILURE;
+  }
   int exit_code = ls_loop_run(&app->loop);
   log_shutdown(app, exit_code);
   ls_loop_destroy(&app->loop);

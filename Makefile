@@ -64,7 +64,8 @@ CONFIG_STAMP := $(BIN_DIR)/.build-config
 UNIT_TEST := $(BIN_DIR)/unit-tests
 UNIT_SRCS := $(TEST_DIR)/unit.c $(SRC_DIR)/base.c $(SRC_DIR)/addr.c \
              $(SRC_DIR)/log.c $(SRC_DIR)/config.c $(SRC_DIR)/stats.c
-UNIT_HEADERS := $(wildcard $(INC_DIR)/*.h)
+UNIT_HEADERS := $(INC_DIR)/base.h $(INC_DIR)/addr.h \
+                $(INC_DIR)/log.h $(INC_DIR)/config.h $(INC_DIR)/stats.h
 UNIT_CFLAGS := $(filter-out -MMD -MP,$(CFLAGS))
 
 SAN ?= address,undefined
@@ -91,6 +92,7 @@ help:
 	@printf '  make sanitize        ASan/UBSan build into bin-sanitize/\n'
 	@printf '  make sanitize-test   sanitizer build + both test suites\n'
 	@printf '  make install         install binary, unit, and /etc config\n'
+	@printf '  make uninstall       remove binary and unit, preserve config\n'
 	@printf '  make clean           remove build directories\n'
 	@printf 'Variables: PREFIX=/usr/local, CONFIG_FILE=/etc/linkstay.conf,\n'
 	@printf '           NATIVE=1 -march=native, SAN=<list>\n'
