@@ -193,6 +193,7 @@ journalctl -fu linkstay
 - `Type=notify`、`NotifyAccess=main`、`WatchdogSec=30`；
 - `User=root` + `CapabilityBoundingSet=CAP_NET_RAW`；
 - `ProtectSystem=strict`、`ProtectHome=true`、内核/时钟/主机名保护；
+- `PrivateTmp=true`、`UMask=0077`、`MemoryDenyWriteExecute=true`；
 - `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`（不需要 DNS/netlink）；
 - `SystemCallFilter=@system-service @network-io @process`；
 - `MemoryMax=50M`、`TasksMax=10`、`OOMScoreAdjust=-100`。

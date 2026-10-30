@@ -274,6 +274,15 @@ ls_icmp_recv_status_t ls_icmp_recv(
     (void)ls_err_set(err, "Invalid ICMP receive arguments");
     return LS_ICMP_RECV_ERROR;
   }
+  if (dest->ss_family != AF_INET && dest->ss_family != AF_INET6) {
+    (void)ls_err_set(err, "Unsupported address family: %d", dest->ss_family);
+    return LS_ICMP_RECV_ERROR;
+  }
+  if (dest->ss_family != icmp->family) {
+    (void)ls_err_set(err, "Address family mismatch: dest=%d, socket=%d",
+                     dest->ss_family, icmp->family);
+    return LS_ICMP_RECV_ERROR;
+  }
 
   struct sockaddr_storage from;
   socklen_t from_len = sizeof(from);
