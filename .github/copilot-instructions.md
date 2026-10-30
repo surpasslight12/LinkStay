@@ -44,7 +44,7 @@ make check           # runs test + lint + shellcheck + sanitize-test
 when the binary lacks `CAP_NET_RAW`.
 
 Run them inside a user + network namespace with the recipe in `README.md`
-("测试"); the full suite then reports `Pass: 70   Fail: 0   Skip: 0`
+("测试"); the full suite then reports `Pass: 69   Fail: 0   Skip: 0`
 (without live tests: `Pass: 43   Fail: 0   Skip: 1`). The shell suite requires
 `python3` for its NOTIFY_SOCKET receiver. If you changed anything on the probe
 or event-loop path, run the live suite and say so explicitly. Never report a

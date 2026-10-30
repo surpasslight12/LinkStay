@@ -52,8 +52,6 @@ else
   hay="${STDOUT}${STDERR}"
   [[ "$RC" == "0" ]] && pass "SIGINT exits cleanly" || \
     fail "SIGINT exits cleanly" "rc=$RC"
-  [[ "$hay" == *"Shutdown signal received"* ]] && pass "SIGINT logs shutdown" || \
-    fail "SIGINT logs shutdown" "no shutdown banner"
 
   # 3) IPv6 loopback ping
   spawn env LINKSTAY_TARGET=::1 LINKSTAY_INTERVAL=1s \

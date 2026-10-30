@@ -82,7 +82,6 @@ typedef struct {
   int consecutive_fails;
 
   bool watchdog_last_failed;
-  bool signal_stop;
 } app_t;
 
 /* ---- Shutdown action (systemctl poweroff) ---- */
@@ -445,11 +444,10 @@ static void on_icmp_readable([[maybe_unused]] ls_loop_t *loop,
 }
 
 static void on_signal(ls_loop_t *loop, uint32_t signo, void *userdata) {
-  app_t *app = userdata;
   if (signo == SIGINT || signo == SIGTERM) {
-    app->signal_stop = true;
     ls_loop_stop(loop, LS_EXIT_SUCCESS);
   } else if (signo == SIGUSR1) {
+    app_t *app = userdata;
     log_statistics(app);
   }
 }
@@ -498,9 +496,6 @@ static void log_startup(app_t *app) {
 }
 
 static void log_shutdown(app_t *app, int exit_code) {
-  if (app->signal_stop) {
-    ls_info(&app->log, "Shutdown signal received, stopping gracefully");
-  }
   /* Notify systemd we are stopping on every exit path (signal, threshold
    * dry-run, or real poweroff) so the service manager always sees a clean
    * transition. */
@@ -514,10 +509,6 @@ static void log_shutdown(app_t *app, int exit_code) {
 /* ---- Application lifecycle ---- */
 
 static bool app_init(app_t *app, const ls_config_t *config, ls_err_t *err) {
-  if (app == nullptr || config == nullptr) {
-    return ls_err_set(err, "Invalid application init arguments");
-  }
-
   *app = (app_t){
       .config = *config,
       .identifier = (uint16_t)(getpid() & 0xFFFF),
@@ -584,19 +575,12 @@ static bool app_init(app_t *app, const ls_config_t *config, ls_err_t *err) {
 }
 
 static void app_destroy(app_t *app) {
-  if (app == nullptr) {
-    return;
-  }
   ls_notify_destroy(&app->notify);
   ls_icmp_close(&app->icmp);
   *app = (app_t){};
 }
 
 static int app_run(app_t *app) {
-  if (app == nullptr) {
-    return LS_EXIT_FAILURE;
-  }
-
   ls_err_t err = {};
   if (!ls_loop_init(&app->loop, &app->log, &err)) {
     ls_error(&app->log, "%s", err.msg);
