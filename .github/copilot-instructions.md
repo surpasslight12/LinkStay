@@ -55,10 +55,9 @@ suite locally before committing.
 
 ### 3.1 Runtime shape
 
-- **systemd-only.** `linkstay` is a service, not a CLI. `main` has no
-  arguments; there is no option parser, daemonize, or foreground/systemd
-  switch. Configuration comes only from `LINKSTAY_*` environment variables
-  supplied by the unit and `/etc/linkstay.conf`.
+- **systemd-only.** `linkstay` is a service. `main` has no arguments;
+  configuration comes only from `LINKSTAY_*` environment variables supplied by
+  the unit and `/etc/linkstay.conf`.
 - **NOTIFY_SOCKET is required.** `ls_notify_init()` fails when
   `NOTIFY_SOCKET` is absent or unusable, and `app_init()` treats that as
   fatal. A broken notify channel must never silently run a service that systemd
@@ -251,8 +250,7 @@ Rules:
 `config.c`'s `ENV_SPECS` table is the single source of truth for the supported
 variables. Adding a setting means: one `ENV_SPECS` row, one `apply_*` adapter,
 one `README.md` table row, one `/etc/linkstay.conf` example line, and tests.
-There is no CLI and no precedence layer: defaults, then present environment
-variables, then validation.
+Resolution is: defaults, then present environment variables, then validation.
 
 - Variables: `LINKSTAY_TARGET`, `LINKSTAY_INTERVAL`, `LINKSTAY_THRESHOLD`,
   `LINKSTAY_TIMEOUT`, `LINKSTAY_START_DELAY`, `LINKSTAY_POWEROFF`,
@@ -331,8 +329,8 @@ variables, then validation.
   `WatchdogSec=30`, `StandardInput=null`, `StandardOutput=null`, and
   journal-backed stderr. Keep them consistent with the notifier.
 - `ls_notify_init()` returns `bool`: failure means `NOTIFY_SOCKET` is missing,
-  malformed, or cannot be connected. The app treats it as fatal; do not
-  reintroduce an "inactive but continue" fallback.
+  malformed, or cannot be connected. The app treats it as fatal; an absent
+  channel is not an inactive continuation mode.
 - `ls_notify_t.opened` is the ownership flag that makes
   `ls_notify_destroy()` safe on a zero-initialized struct. Do not close a
   descriptor based only on `sockfd >= 0` (zero-initialized `sockfd` is `0`).

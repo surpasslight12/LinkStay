@@ -44,8 +44,7 @@ static_assert(LS_LOOP_MAX_TIMERS >= 3,
  * unit constants in base.h so they cannot drift apart. */
 #define LS_NS_PER_MS_F ((double)LS_NS_PER_MS)
 
-/* The only runtime safety warning worth keeping: real poweroff is dangerous
- * with an extremely low threshold. */
+/* Real poweroff with an extremely low threshold is a safety hazard. */
 #define LS_WARN_THRESHOLD_MIN_WITH_POWEROFF 3
 
 /* Implementation-private constants. */
@@ -502,9 +501,8 @@ static bool log_startup(app_t *app) {
 }
 
 static void log_shutdown(app_t *app, int exit_code) {
-  /* Notify systemd we are stopping on every exit path (signal, threshold
-   * dry-run, or real poweroff) so the service manager always sees a clean
-   * transition. */
+  /* Notify systemd on every loop exit path (signal, threshold dry-run, or
+   * real poweroff) so the service manager sees a clean transition. */
   (void)ls_notify_stopping(&app->notify);
   log_statistics(app);
   if (exit_code == LS_EXIT_SUCCESS) {

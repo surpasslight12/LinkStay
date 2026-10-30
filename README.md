@@ -4,8 +4,9 @@
 [![systemd](https://img.shields.io/badge/systemd-native-green.svg)](https://systemd.io/)
 
 **linkstay** 是一个 C23 编写的 Linux systemd 服务。它通过 raw socket + BPF
-周期性探测目标 IP，连续失败达到阈值后调用 `systemctl poweroff`。项目没有
-CLI、前台调试模式或 daemonize 逻辑：systemd 是唯一支持的运行方式。
+周期性探测目标 IP，连续失败达到阈值后调用 `systemctl poweroff`。systemd 管理
+生命周期，运行时配置由 unit 的 `Environment=`、`/etc/linkstay.conf` 与内置
+默认值共同决定。
 
 ## 快速导航
 
@@ -28,8 +29,8 @@ CLI、前台调试模式或 daemonize 逻辑：systemd 是唯一支持的运行�
 
 - **systemd 原生**：`Type=notify`，实现 `READY=1`、`STATUS=`、
   `WATCHDOG=1`、`STOPPING=1`；由 `WatchdogSec` 驱动。
-- **无命令行**：所有配置来自 unit 的 `Environment=` 与
-  `/etc/linkstay.conf`，不存在 CLI 参数解析层。
+- **环境配置**：运行时配置来自 unit 的 `Environment=`、
+  `/etc/linkstay.conf` 与内置默认值。
 - **原生 ICMP**：raw socket + 内核 BPF 过滤，不依赖系统 `ping`。
 - **延迟启动**：首次探测前可等待一段时间，unit 默认 30s，便于等待链路稳定。
 - **真实关机**：unit 默认 `LINKSTAY_POWEROFF=true`；改为 `false` 可走

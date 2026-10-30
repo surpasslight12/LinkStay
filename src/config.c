@@ -1,7 +1,7 @@
 /*
  * config.c — environment configuration and validation.
  *
- * linkstay has no command line. Defaults are applied first, then every
+ * Configuration is environment-only. Defaults are applied first, then every
  * LINKSTAY_* variable present in the environment, then cross-field validation.
  * Validation is limited to what can be decided without I/O beyond reading the
  * environment and probing for the systemd runtime.

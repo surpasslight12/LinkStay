@@ -4,10 +4,9 @@
 /*
  * config.h — environment-resolved service configuration.
  *
- * linkstay is a systemd service, not a CLI: the unit (and optional
- * /etc/linkstay.conf) supplies LINKSTAY_* environment variables. Defaults are
- * applied first, then every present LINKSTAY_* variable, then cross-field
- * validation.
+ * The systemd unit (and optional /etc/linkstay.conf) supplies LINKSTAY_*
+ * environment variables. Defaults are applied first, then every present
+ * variable, then cross-field validation.
  */
 
 #include "base.h"
