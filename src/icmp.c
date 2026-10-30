@@ -146,7 +146,8 @@ ls_icmp_send_status_t ls_icmp_send_echo(
     ls_icmp_t *restrict icmp, const struct sockaddr_storage *restrict dest,
     socklen_t dest_len, uint16_t identifier, size_t packet_len,
     ls_err_t *restrict err) {
-  if (icmp == nullptr || dest == nullptr || icmp->sockfd < 0) {
+  if (icmp == nullptr || dest == nullptr || !icmp->opened ||
+      icmp->sockfd < 0) {
     (void)ls_err_set(err, "ICMP socket is not initialized");
     return LS_ICMP_SEND_ERROR;
   }
@@ -268,7 +269,8 @@ static bool reply_matches(const uint8_t *buf, size_t received, int family,
 ls_icmp_recv_status_t ls_icmp_recv(
     ls_icmp_t *restrict icmp, const struct sockaddr_storage *restrict dest,
     uint16_t identifier, uint16_t expected_sequence, ls_err_t *restrict err) {
-  if (icmp == nullptr || dest == nullptr || icmp->sockfd < 0) {
+  if (icmp == nullptr || dest == nullptr || !icmp->opened ||
+      icmp->sockfd < 0) {
     (void)ls_err_set(err, "Invalid ICMP receive arguments");
     return LS_ICMP_RECV_ERROR;
   }

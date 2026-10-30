@@ -288,7 +288,8 @@ variables, then validation.
   exits `0`; `LINKSTAY_POWEROFF=true` runs
   `/usr/bin/systemctl --no-block poweroff` through `posix_spawn` (stdio to
   `/dev/null`, explicit clean environment), observes the child for at most 1 s,
-  and on failure keeps monitoring with the failure count preserved.
+  kills and reaps it if it overruns, and otherwise keeps monitoring with the
+  failure count preserved on any failure.
   `poweroff=true` requires `/usr/bin/systemctl` and `/run/systemd/system`,
   validated in `config.c`.
 - Statistics (SIGUSR1 and shutdown) report uptime, totals, success rate, and

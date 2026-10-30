@@ -10,11 +10,11 @@
 
 #include "addr.h"
 #include "base.h"
+#include "config.h"
 #include "icmp.h"
 #include "log.h"
 #include "loop.h"
 #include "notify.h"
-#include "config.h"
 #include "stats.h"
 
 #include <errno.h>
@@ -124,8 +124,8 @@ static action_result_t consume_child_status(int status, const ls_log_t *log) {
   return LS_ACTION_FAILED;
 }
 
-/* systemctl --no-block should exit quickly; if it does not, assume the request
- * was handed off rather than blocking the monitor indefinitely. */
+/* systemctl --no-block should exit quickly. If it does not, report failure
+ * instead of optimistically assuming that the shutdown was handed off. */
 static action_result_t observe_startup(pid_t child_pid, const ls_log_t *log) {
   uint64_t start_ms = ls_now_ms();
   if (start_ms == UINT64_MAX) {
@@ -157,8 +157,12 @@ static action_result_t observe_startup(pid_t child_pid, const ls_log_t *log) {
     }
     if (now_ms >= deadline_ms) {
       ls_warn(log, "Shutdown command did not exit within startup grace; "
-                   "assuming request was handed off");
-      return LS_ACTION_TRIGGERED;
+                   "terminating it");
+      (void)kill(child_pid, SIGKILL);
+      int reaped_status = 0;
+      while (waitpid(child_pid, &reaped_status, 0) < 0 && errno == EINTR) {
+      }
+      return LS_ACTION_FAILED;
     }
     if (!sleep_retry_window()) {
       ls_error(log,

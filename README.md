@@ -34,7 +34,7 @@ CLI、前台调试模式或 daemonize 逻辑：systemd 是唯一支持的运行�
 - **延迟启动**：首次探测前可等待一段时间，unit 默认 30s，便于等待链路稳定。
 - **真实关机**：unit 默认 `LINKSTAY_POWEROFF=true`；改为 `false` 可走
   dry-run。
-- **小体积**：LTO 构建，stripped 二进制约 34 KiB。
+- **小体积**：LTO 构建，stripped 二进制约 38 KiB。
 - **沙箱**：systemd unit 限制 capability、文件系统、地址族与系统调用。
 
 ## 构建与安装
