@@ -14,7 +14,7 @@
 #include "log.h"
 #include "loop.h"
 #include "notify.h"
-#include "opts.h"
+#include "config.h"
 #include "stats.h"
 
 #include <errno.h>
@@ -60,7 +60,7 @@ typedef enum {
 
 typedef struct {
   /* Resolved configuration (copied in by app_init). */
-  ls_opts_t opts;
+  ls_config_t config;
   ls_log_t log;
 
   /* Runtime state. */
@@ -265,12 +265,12 @@ static void probe_failed(app_t *app, const char *reason) {
   app->consecutive_fails++;
   ls_stats_add_fail(&app->stats);
   ls_warn(&app->log, "Probe to %s failed: %s (failure %d of %d)",
-          app->opts.target, reason, app->consecutive_fails,
-          app->opts.fail_threshold);
+          app->config.target, reason, app->consecutive_fails,
+          app->config.fail_threshold);
   (void)ls_notify_statusf(&app->notify,
                           "Unreachable: %s, %d/%d consecutive failures",
-                          app->opts.target, app->consecutive_fails,
-                          app->opts.fail_threshold);
+                          app->config.target, app->consecutive_fails,
+                          app->config.fail_threshold);
 }
 
 static void probe_succeeded(app_t *app, uint16_t sequence,
@@ -291,23 +291,23 @@ static void probe_succeeded(app_t *app, uint16_t sequence,
   ls_debug(&app->log,
            "Reply from %s: seq=%u time=%s avg=%s ok=%" PRIu64 "/%" PRIu64
            " (%.1f%%)",
-           app->opts.target, (unsigned)sequence, latency_str, avg_str,
+           app->config.target, (unsigned)sequence, latency_str, avg_str,
            app->stats.ok, total, ls_stats_success_rate(&app->stats));
   (void)ls_notify_statusf(&app->notify,
                           "Online: %s up %s, last %s, avg %s, %" PRIu64
                           "/%" PRIu64 " OK (%.1f%%)",
-                          app->opts.target, uptime_str, latency_str, avg_str,
+                          app->config.target, uptime_str, latency_str, avg_str,
                           app->stats.ok, total,
                           ls_stats_success_rate(&app->stats));
 }
 
 /* Runs the threshold action once enough consecutive failures accumulate. */
 static void check_threshold(app_t *app) {
-  if (app->consecutive_fails < app->opts.fail_threshold) {
+  if (app->consecutive_fails < app->config.fail_threshold) {
     return;
   }
 
-  action_result_t result = run_shutdown_action(app->opts.poweroff, &app->log);
+  action_result_t result = run_shutdown_action(app->config.poweroff, &app->log);
   if (result == LS_ACTION_SIMULATED) {
     ls_info(&app->log, "Dry-run complete: simulated shutdown reached, "
                        "exiting monitor loop");
@@ -370,9 +370,9 @@ static void on_ping_timer(ls_loop_t *loop, void *userdata) {
   uint64_t now_ms = ls_loop_now(loop);
 
   /* Always keep the periodic schedule, but never overlap probes. With
-   * timeout < interval (validated in opts.c), an outstanding probe here is
+   * timeout < interval (validated in config.c), an outstanding probe here is
    * unusual. */
-  ls_timer_step(app->ping_timer, app->opts.interval_ms, now_ms);
+  ls_timer_step(app->ping_timer, app->config.interval_ms, now_ms);
   if (ls_timer_armed(app->reply_timer)) {
     return;
   }
@@ -396,7 +396,7 @@ static void on_ping_timer(ls_loop_t *loop, void *userdata) {
 
   app->probe_sent_ns = ls_now_ns();
   app->probe_sequence = app->icmp.sequence;
-  ls_timer_arm_after(app->reply_timer, now_ms, app->opts.timeout_ms);
+  ls_timer_arm_after(app->reply_timer, now_ms, app->config.timeout_ms);
 }
 
 static void on_reply_timer([[maybe_unused]] ls_loop_t *loop, void *userdata) {
@@ -416,7 +416,7 @@ static void on_reply_timer([[maybe_unused]] ls_loop_t *loop, void *userdata) {
   probe_reset(app);
   char timeout_str[32];
   char reason[64];
-  ls_format_duration(app->opts.timeout_ms, timeout_str, sizeof(timeout_str));
+  ls_format_duration(app->config.timeout_ms, timeout_str, sizeof(timeout_str));
   (void)snprintf(reason, sizeof(reason), "no reply within %s", timeout_str);
   probe_failed(app, reason);
   check_threshold(app);
@@ -457,18 +457,19 @@ static void on_signal(ls_loop_t *loop, uint32_t signo, void *userdata) {
 /* ---- Startup / shutdown banners ---- */
 
 static void log_startup(app_t *app) {
-  uint64_t detection_ms = ls_mul_sat((uint64_t)app->opts.fail_threshold,
-                                     app->opts.interval_ms);
+  uint64_t detection_ms = ls_mul_sat((uint64_t)app->config.fail_threshold,
+                                     app->config.interval_ms);
   char interval_str[32];
   char timeout_str[32];
   char detection_str[32];
   char delay_str[32];
   char first_probe_str[64];
-  ls_format_duration(app->opts.interval_ms, interval_str, sizeof(interval_str));
-  ls_format_duration(app->opts.timeout_ms, timeout_str, sizeof(timeout_str));
+  ls_format_duration(app->config.interval_ms, interval_str,
+                     sizeof(interval_str));
+  ls_format_duration(app->config.timeout_ms, timeout_str, sizeof(timeout_str));
   ls_format_duration(detection_ms, detection_str, sizeof(detection_str));
-  ls_format_duration(app->opts.start_delay_ms, delay_str, sizeof(delay_str));
-  if (app->opts.start_delay_ms == 0) {
+  ls_format_duration(app->config.start_delay_ms, delay_str, sizeof(delay_str));
+  if (app->config.start_delay_ms == 0) {
     (void)snprintf(first_probe_str, sizeof(first_probe_str), "immediate");
   } else {
     (void)snprintf(first_probe_str, sizeof(first_probe_str), "in %s",
@@ -477,22 +478,22 @@ static void log_startup(app_t *app) {
   ls_info(&app->log,
           LS_PROGRAM_NAME " %s monitoring %s | first probe %s | interval %s, "
           "timeout %s, threshold %d (detection ~%s), poweroff %s",
-          LS_VERSION, app->opts.target, first_probe_str, interval_str,
-          timeout_str, app->opts.fail_threshold, detection_str,
-          app->opts.poweroff ? "true" : "false (dry-run)");
+          LS_VERSION, app->config.target, first_probe_str, interval_str,
+          timeout_str, app->config.fail_threshold, detection_str,
+          app->config.poweroff ? "true" : "false (dry-run)");
   if (!ls_notify_ready(&app->notify)) {
     ls_warn(&app->log, "Failed to send systemd READY notification");
   }
-  if (app->opts.start_delay_ms == 0) {
+  if (app->config.start_delay_ms == 0) {
     (void)ls_notify_statusf(&app->notify,
                             "Monitoring %s every %s; poweroff %s",
-                            app->opts.target, interval_str,
-                            app->opts.poweroff ? "true" : "false (dry-run)");
+                            app->config.target, interval_str,
+                            app->config.poweroff ? "true" : "false (dry-run)");
   } else {
     (void)ls_notify_statusf(&app->notify,
                             "Waiting %s before first probe; poweroff %s",
                             delay_str,
-                            app->opts.poweroff ? "true" : "false (dry-run)");
+                            app->config.poweroff ? "true" : "false (dry-run)");
   }
 }
 
@@ -512,13 +513,13 @@ static void log_shutdown(app_t *app, int exit_code) {
 
 /* ---- Application lifecycle ---- */
 
-static bool app_init(app_t *app, const ls_opts_t *opts, ls_err_t *err) {
-  if (app == nullptr || opts == nullptr) {
+static bool app_init(app_t *app, const ls_config_t *config, ls_err_t *err) {
+  if (app == nullptr || config == nullptr) {
     return ls_err_set(err, "Invalid application init arguments");
   }
 
   *app = (app_t){
-      .opts = *opts,
+      .config = *config,
       .identifier = (uint16_t)(getpid() & 0xFFFF),
       /* Keep destroy safe if init bails before the sockets are opened. */
       .icmp = {.sockfd = -1},
@@ -528,13 +529,13 @@ static bool app_init(app_t *app, const ls_opts_t *opts, ls_err_t *err) {
     app->identifier = 1;
   }
 
-  ls_log_init(&app->log, app->opts.log_level);
-  if (app->opts.log_level == LS_LOG_DEBUG) {
-    ls_opts_dump(&app->opts, &app->log);
+  ls_log_init(&app->log, app->config.log_level);
+  if (app->config.log_level == LS_LOG_DEBUG) {
+    ls_config_dump(&app->config, &app->log);
   }
 
   app->dest_len = sizeof(app->dest);
-  if (!ls_addr_parse(app->opts.target, &app->dest, &app->dest_len, err)) {
+  if (!ls_addr_parse(app->config.target, &app->dest, &app->dest_len, err)) {
     return false;
   }
 
@@ -571,12 +572,12 @@ static bool app_init(app_t *app, const ls_opts_t *opts, ls_err_t *err) {
 
   /* ---- Parameter safety warnings ---- */
 
-  if (app->opts.poweroff &&
-      app->opts.fail_threshold < LS_WARN_THRESHOLD_MIN_WITH_POWEROFF) {
+  if (app->config.poweroff &&
+      app->config.fail_threshold < LS_WARN_THRESHOLD_MIN_WITH_POWEROFF) {
     ls_warn(&app->log,
             "Poweroff is enabled but threshold is only %d consecutive "
             "failures — a single network blip could trigger a shutdown",
-            app->opts.fail_threshold);
+            app->config.fail_threshold);
   }
 
   return true;
@@ -633,7 +634,7 @@ static int app_run(app_t *app) {
     ls_loop_destroy(&app->loop);
     return LS_EXIT_FAILURE;
   }
-  ls_timer_arm_after(app->ping_timer, now_ms, app->opts.start_delay_ms);
+  ls_timer_arm_after(app->ping_timer, now_ms, app->config.start_delay_ms);
   uint64_t watchdog_interval_ms = ls_notify_watchdog_interval_ms(&app->notify);
   if (watchdog_interval_ms > 0) {
     ls_timer_arm_after(app->watchdog_timer, now_ms, watchdog_interval_ms);
@@ -658,9 +659,9 @@ static void log_fatal_error(ls_log_level_t level, const char *message) {
 
 int main(void) {
   ls_err_t err = {};
-  ls_opts_t opts;
+  ls_config_t config;
 
-  if (!ls_opts_resolve(&opts, &err)) {
+  if (!ls_config_resolve(&config, &err)) {
     log_fatal_error(LS_LOG_ERROR, err.msg);
     return LS_EXIT_FAILURE;
   }
@@ -668,8 +669,8 @@ int main(void) {
   /* Zero-initialized so app_destroy() is safe even if app_init() fails
    * before it finishes assigning *app. */
   app_t app = {};
-  if (!app_init(&app, &opts, &err)) {
-    log_fatal_error(opts.log_level, err.msg);
+  if (!app_init(&app, &config, &err)) {
+    log_fatal_error(config.log_level, err.msg);
     app_destroy(&app);
     return LS_EXIT_FAILURE;
   }

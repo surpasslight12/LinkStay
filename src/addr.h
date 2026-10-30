@@ -5,9 +5,9 @@
  * addr.h — IPv4/IPv6 literal parsing.
  *
  * Single owner of the "target must be an IP literal; DNS is intentionally
- * unsupported" rule: opts.c asks ls_addr_is_literal() while validating the
- * option, and app.c asks ls_addr_parse() for the socket address it hands to
- * the ICMP transport. Neither caller re-implements the check.
+ * unsupported" rule: config.c asks ls_addr_is_literal() while validating the
+ * configuration, and app.c asks ls_addr_parse() for the socket address it
+ * hands to the ICMP transport. Neither caller re-implements the check.
  */
 
 #include "base.h"

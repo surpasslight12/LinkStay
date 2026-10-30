@@ -1,6 +1,6 @@
 /*
  * unit.c — unit tests for the stateless helpers in base, addr, log, loop, and
- * stats, plus the opts resolver.
+ * stats, plus the config resolver.
  *
  * Built and run by `make unit-test`. No framework, no allocation: a failing
  * check prints its source location and the process exits non-zero.
@@ -10,7 +10,7 @@
 #include "base.h"
 #include "log.h"
 #include "loop.h"
-#include "opts.h"
+#include "config.h"
 #include "stats.h"
 
 #include <arpa/inet.h>
@@ -188,26 +188,26 @@ static void test_timer_helpers(void) {
   CHECK(timer.deadline_ms == UINT64_MAX);
 }
 
-static const char *const OPT_ENV_NAMES[] = {
+static const char *const CONFIG_ENV_NAMES[] = {
     "LINKSTAY_TARGET", "LINKSTAY_INTERVAL", "LINKSTAY_THRESHOLD",
     "LINKSTAY_TIMEOUT", "LINKSTAY_START_DELAY", "LINKSTAY_POWEROFF",
     "LINKSTAY_LOG_LEVEL",
 };
 
-static void reset_opts_env(void) {
-  for (size_t i = 0; i < LS_ARRAY_LEN(OPT_ENV_NAMES); i++) {
-    (void)unsetenv(OPT_ENV_NAMES[i]);
+static void reset_config_env(void) {
+  for (size_t i = 0; i < LS_ARRAY_LEN(CONFIG_ENV_NAMES); i++) {
+    (void)unsetenv(CONFIG_ENV_NAMES[i]);
   }
 }
 
-static void set_opts_env(const char *name, const char *value) {
+static void set_config_env(const char *name, const char *value) {
   (void)setenv(name, value, 1);
 }
 
-static bool resolve_opts(ls_opts_t *opts, ls_err_t *err) {
-  *opts = (ls_opts_t){};
+static bool resolve_config(ls_config_t *config, ls_err_t *err) {
+  *config = (ls_config_t){};
   *err = (ls_err_t){};
-  return ls_opts_resolve(opts, err);
+  return ls_config_resolve(config, err);
 }
 
 static bool host_has_systemd(void) {
@@ -217,74 +217,74 @@ static bool host_has_systemd(void) {
          S_ISDIR(runtime.st_mode);
 }
 
-static void expect_opts_reject(const char *needle) {
-  ls_opts_t opts;
+static void expect_config_reject(const char *needle) {
+  ls_config_t config;
   ls_err_t err = {};
-  CHECK(!resolve_opts(&opts, &err));
+  CHECK(!resolve_config(&config, &err));
   CHECK(strstr(err.msg, needle) != nullptr);
 }
 
-static void test_opts_defaults(void) {
-  reset_opts_env();
-  ls_opts_t opts;
+static void test_config_defaults(void) {
+  reset_config_env();
+  ls_config_t config;
   ls_err_t err = {};
 
-  CHECK(resolve_opts(&opts, &err));
-  CHECK_STR(opts.target, "1.1.1.1");
-  CHECK(opts.interval_ms == UINT64_C(10000));
-  CHECK(opts.fail_threshold == 5);
-  CHECK(opts.timeout_ms == UINT64_C(3000));
-  CHECK(opts.start_delay_ms == 0);
-  CHECK(!opts.poweroff);
-  CHECK(opts.log_level == LS_LOG_INFO);
+  CHECK(resolve_config(&config, &err));
+  CHECK_STR(config.target, "1.1.1.1");
+  CHECK(config.interval_ms == UINT64_C(10000));
+  CHECK(config.fail_threshold == 5);
+  CHECK(config.timeout_ms == UINT64_C(3000));
+  CHECK(config.start_delay_ms == 0);
+  CHECK(!config.poweroff);
+  CHECK(config.log_level == LS_LOG_INFO);
 }
 
-static void test_opts_env(void) {
-  reset_opts_env();
-  set_opts_env("LINKSTAY_TARGET", "8.8.8.8");
-  set_opts_env("LINKSTAY_INTERVAL", "5s");
-  set_opts_env("LINKSTAY_THRESHOLD", "4");
-  set_opts_env("LINKSTAY_TIMEOUT", "400ms");
-  set_opts_env("LINKSTAY_START_DELAY", "5s");
-  set_opts_env("LINKSTAY_POWEROFF", "false");
-  set_opts_env("LINKSTAY_LOG_LEVEL", "warn");
+static void test_config_env(void) {
+  reset_config_env();
+  set_config_env("LINKSTAY_TARGET", "8.8.8.8");
+  set_config_env("LINKSTAY_INTERVAL", "5s");
+  set_config_env("LINKSTAY_THRESHOLD", "4");
+  set_config_env("LINKSTAY_TIMEOUT", "400ms");
+  set_config_env("LINKSTAY_START_DELAY", "5s");
+  set_config_env("LINKSTAY_POWEROFF", "false");
+  set_config_env("LINKSTAY_LOG_LEVEL", "warn");
 
-  ls_opts_t opts;
+  ls_config_t config;
   ls_err_t err = {};
 
-  CHECK(resolve_opts(&opts, &err));
-  CHECK_STR(opts.target, "8.8.8.8");
-  CHECK(opts.interval_ms == UINT64_C(5000));
-  CHECK(opts.fail_threshold == 4);
-  CHECK(opts.timeout_ms == UINT64_C(400));
-  CHECK(opts.start_delay_ms == UINT64_C(5000));
-  CHECK(!opts.poweroff);
-  CHECK(opts.log_level == LS_LOG_WARN);
+  CHECK(resolve_config(&config, &err));
+  CHECK_STR(config.target, "8.8.8.8");
+  CHECK(config.interval_ms == UINT64_C(5000));
+  CHECK(config.fail_threshold == 4);
+  CHECK(config.timeout_ms == UINT64_C(400));
+  CHECK(config.start_delay_ms == UINT64_C(5000));
+  CHECK(!config.poweroff);
+  CHECK(config.log_level == LS_LOG_WARN);
 }
 
-static void test_opts_duration_suffixes(void) {
-  reset_opts_env();
-  set_opts_env("LINKSTAY_INTERVAL", "1500ms");
-  set_opts_env("LINKSTAY_TIMEOUT", "1s");
-  set_opts_env("LINKSTAY_START_DELAY", "0s");
+static void test_config_duration_suffixes(void) {
+  reset_config_env();
+  set_config_env("LINKSTAY_INTERVAL", "1500ms");
+  set_config_env("LINKSTAY_TIMEOUT", "1s");
+  set_config_env("LINKSTAY_START_DELAY", "0s");
 
-  ls_opts_t opts;
+  ls_config_t config;
   ls_err_t err = {};
-  CHECK(resolve_opts(&opts, &err));
-  CHECK(opts.interval_ms == UINT64_C(1500));
-  CHECK(opts.timeout_ms == UINT64_C(1000));
-  CHECK(opts.start_delay_ms == 0);
+  CHECK(resolve_config(&config, &err));
+  CHECK(config.interval_ms == UINT64_C(1500));
+  CHECK(config.timeout_ms == UINT64_C(1000));
+  CHECK(config.start_delay_ms == 0);
 
-  reset_opts_env();
-  set_opts_env("LINKSTAY_INTERVAL", "2");
-  expect_opts_reject("Invalid value for LINKSTAY_INTERVAL");
+  reset_config_env();
+  set_config_env("LINKSTAY_INTERVAL", "2");
+  expect_config_reject("Invalid value for LINKSTAY_INTERVAL");
 
-  reset_opts_env();
-  set_opts_env("LINKSTAY_INTERVAL", "+5s");
-  expect_opts_reject("Invalid value for LINKSTAY_INTERVAL");
+  reset_config_env();
+  set_config_env("LINKSTAY_INTERVAL", "+5s");
+  expect_config_reject("Invalid value for LINKSTAY_INTERVAL");
 }
 
-static void test_opts_invalid_values(void) {
+static void test_config_invalid_values(void) {
   static const struct {
     const char *name;
     const char *value;
@@ -305,37 +305,37 @@ static void test_opts_invalid_values(void) {
   };
 
   for (size_t i = 0; i < LS_ARRAY_LEN(cases); i++) {
-    reset_opts_env();
-    set_opts_env(cases[i].name, cases[i].value);
-    expect_opts_reject(cases[i].needle);
+    reset_config_env();
+    set_config_env(cases[i].name, cases[i].value);
+    expect_config_reject(cases[i].needle);
   }
 }
 
-static void test_opts_validation(void) {
-  reset_opts_env();
-  set_opts_env("LINKSTAY_INTERVAL", "1s");
-  set_opts_env("LINKSTAY_TIMEOUT", "1000ms");
-  expect_opts_reject("must be smaller than interval");
+static void test_config_validation(void) {
+  reset_config_env();
+  set_config_env("LINKSTAY_INTERVAL", "1s");
+  set_config_env("LINKSTAY_TIMEOUT", "1000ms");
+  expect_config_reject("must be smaller than interval");
 
-  reset_opts_env();
-  set_opts_env("LINKSTAY_INTERVAL", "0s");
-  expect_opts_reject("Invalid value for LINKSTAY_INTERVAL");
+  reset_config_env();
+  set_config_env("LINKSTAY_INTERVAL", "0s");
+  expect_config_reject("Invalid value for LINKSTAY_INTERVAL");
 
-  reset_opts_env();
-  set_opts_env("LINKSTAY_THRESHOLD", "0");
-  expect_opts_reject("Invalid value for LINKSTAY_THRESHOLD");
+  reset_config_env();
+  set_config_env("LINKSTAY_THRESHOLD", "0");
+  expect_config_reject("Invalid value for LINKSTAY_THRESHOLD");
 }
 
-static void test_opts_poweroff_runtime(void) {
-  reset_opts_env();
-  set_opts_env("LINKSTAY_POWEROFF", "true");
+static void test_config_poweroff_runtime(void) {
+  reset_config_env();
+  set_config_env("LINKSTAY_POWEROFF", "true");
 
-  ls_opts_t opts;
+  ls_config_t config;
   ls_err_t err = {};
-  bool resolved = resolve_opts(&opts, &err);
+  bool resolved = resolve_config(&config, &err);
   if (host_has_systemd()) {
     CHECK(resolved);
-    CHECK(opts.poweroff);
+    CHECK(config.poweroff);
   } else {
     CHECK(!resolved);
     CHECK(strstr(err.msg, "poweroff requires") != nullptr);
@@ -411,12 +411,12 @@ int main(void) {
   test_uptime_format();
   test_addr_parse();
   test_timer_helpers();
-  test_opts_defaults();
-  test_opts_env();
-  test_opts_duration_suffixes();
-  test_opts_invalid_values();
-  test_opts_validation();
-  test_opts_poweroff_runtime();
+  test_config_defaults();
+  test_config_env();
+  test_config_duration_suffixes();
+  test_config_invalid_values();
+  test_config_validation();
+  test_config_poweroff_runtime();
   test_stats();
   test_log_level_names();
 

@@ -85,7 +85,7 @@ no_config_error() {
   [[ "$hay" != *"NOTIFY_SOCKET"* ]]
 }
 
-# accepts: command should pass ls_opts_resolve. We wrap in `timeout` because a
+# accepts: command should pass ls_config_resolve. We wrap in `timeout` because a
 # successful resolve will enter the event loop and run forever; any
 # non-validation exit (including timeout SIGTERM) is fine. We assert the absence
 # of configuration/validation error markers in the captured output.
@@ -101,7 +101,7 @@ expect_accept() {
 }
 
 # accepts + debug output check: config resolves and the debug dump contains
-# $needle. This works without CAP_NET_RAW because ls_opts_dump runs before the
+# $needle. This works without CAP_NET_RAW because ls_config_dump runs before the
 # raw socket is opened.
 expect_debug_contains() {
   local desc="$1" needle="$2"; shift 2

@@ -1,5 +1,5 @@
 /*
- * opts.c — environment configuration and validation.
+ * config.c — environment configuration and validation.
  *
  * linkstay has no command line. Defaults are applied first, then every
  * LINKSTAY_* variable present in the environment, then cross-field validation.
@@ -7,7 +7,7 @@
  * environment and probing for the systemd runtime.
  */
 
-#include "opts.h"
+#include "config.h"
 
 #include "addr.h"
 
@@ -55,7 +55,7 @@ static bool invalid_value(const char *name, const char *value,
 /* ---- Per-setting appliers ---- */
 
 typedef bool (*apply_fn_t)(const char *name, const char *value,
-                           ls_opts_t *opts, ls_err_t *err);
+                           ls_config_t *config, ls_err_t *err);
 
 static bool apply_string(const char *name, const char *value, char *dest,
                          size_t size, ls_err_t *err) {
@@ -167,45 +167,45 @@ static bool apply_log_level(const char *name, const char *value,
   return invalid_value(name, value, LS_LOG_LEVEL_VALUES, err);
 }
 
-/* Typed adapters binding an applier signature to one ls_opts_t field. */
-static bool apply_target(const char *name, const char *value, ls_opts_t *opts,
-                         ls_err_t *err) {
-  return apply_string(name, value, opts->target, sizeof(opts->target), err);
+/* Typed adapters binding an applier signature to one ls_config_t field. */
+static bool apply_target(const char *name, const char *value,
+                         ls_config_t *config, ls_err_t *err) {
+  return apply_string(name, value, config->target, sizeof(config->target), err);
 }
 
-static bool apply_interval(const char *name, const char *value, ls_opts_t *opts,
-                           ls_err_t *err) {
+static bool apply_interval(const char *name, const char *value,
+                           ls_config_t *config, ls_err_t *err) {
   return apply_duration(name, value, false,
-                        (uint64_t)INT_MAX * LS_MS_PER_SEC, &opts->interval_ms,
+                        (uint64_t)INT_MAX * LS_MS_PER_SEC, &config->interval_ms,
                         err);
 }
 
 static bool apply_threshold(const char *name, const char *value,
-                            ls_opts_t *opts, ls_err_t *err) {
-  return apply_positive_int(name, value, "failures", &opts->fail_threshold,
+                            ls_config_t *config, ls_err_t *err) {
+  return apply_positive_int(name, value, "failures", &config->fail_threshold,
                             err);
 }
 
-static bool apply_timeout(const char *name, const char *value, ls_opts_t *opts,
-                          ls_err_t *err) {
+static bool apply_timeout(const char *name, const char *value,
+                          ls_config_t *config, ls_err_t *err) {
   return apply_duration(name, value, false, (uint64_t)INT_MAX,
-                        &opts->timeout_ms, err);
+                        &config->timeout_ms, err);
 }
 
 static bool apply_start_delay(const char *name, const char *value,
-                              ls_opts_t *opts, ls_err_t *err) {
+                              ls_config_t *config, ls_err_t *err) {
   return apply_duration(name, value, true, (uint64_t)INT_MAX,
-                        &opts->start_delay_ms, err);
+                        &config->start_delay_ms, err);
 }
 
-static bool apply_poweroff(const char *name, const char *value, ls_opts_t *opts,
-                           ls_err_t *err) {
-  return apply_bool(name, value, &opts->poweroff, err);
+static bool apply_poweroff(const char *name, const char *value,
+                           ls_config_t *config, ls_err_t *err) {
+  return apply_bool(name, value, &config->poweroff, err);
 }
 
-static bool apply_level(const char *name, const char *value, ls_opts_t *opts,
-                        ls_err_t *err) {
-  return apply_log_level(name, value, &opts->log_level, err);
+static bool apply_level(const char *name, const char *value,
+                        ls_config_t *config, ls_err_t *err) {
+  return apply_log_level(name, value, &config->log_level, err);
 }
 
 /* ---- Environment table ---- */
@@ -227,8 +227,8 @@ static const env_spec_t ENV_SPECS[] = {
 
 /* ---- Defaults, environment, validation ---- */
 
-static void load_defaults(ls_opts_t *opts) {
-  *opts = (ls_opts_t){
+static void load_defaults(ls_config_t *config) {
+  *config = (ls_config_t){
       .target = LS_DEFAULT_TARGET,
       .interval_ms = LS_DEFAULT_INTERVAL_MS,
       .fail_threshold = LS_DEFAULT_FAIL_THRESHOLD,
@@ -239,12 +239,12 @@ static void load_defaults(ls_opts_t *opts) {
   };
 }
 
-static bool load_env(ls_opts_t *opts, ls_err_t *err) {
+static bool load_env(ls_config_t *config, ls_err_t *err) {
   for (size_t i = 0; i < LS_ARRAY_LEN(ENV_SPECS); i++) {
     const env_spec_t *spec = &ENV_SPECS[i];
     const char *value = getenv(spec->env_name);
     if (value != nullptr &&
-        !spec->apply(spec->env_name, value, opts, err)) {
+        !spec->apply(spec->env_name, value, config, err)) {
       return false;
     }
   }
@@ -258,26 +258,26 @@ static bool systemd_runtime_available(void) {
          S_ISDIR(runtime_dir_stat.st_mode);
 }
 
-static bool validate(const ls_opts_t *opts, ls_err_t *err) {
-  if (opts->target[0] == '\0') {
+static bool validate(const ls_config_t *config, ls_err_t *err) {
+  if (config->target[0] == '\0') {
     return ls_err_set(err, "Target host cannot be empty");
   }
   /* Literal syntax is owned by addr.c; the failure message stays here because
    * this is the layer that documents the DNS-disabled contract. */
-  if (!ls_addr_is_literal(opts->target)) {
+  if (!ls_addr_is_literal(config->target)) {
     return ls_err_set(
         err, "Target must be a valid IPv4 or IPv6 address (DNS is disabled)");
   }
 
   /* Both durations are already in milliseconds; no overflow possible. */
-  if (opts->timeout_ms >= opts->interval_ms) {
+  if (config->timeout_ms >= config->interval_ms) {
     return ls_err_set(err,
                       "Timeout (%" PRIu64 " ms) must be smaller than "
                       "interval (%" PRIu64 " ms)",
-                      opts->timeout_ms, opts->interval_ms);
+                      config->timeout_ms, config->interval_ms);
   }
 
-  if (opts->poweroff && !systemd_runtime_available()) {
+  if (config->poweroff && !systemd_runtime_available()) {
     return ls_err_set(
         err, "poweroff requires a systemd host with %s and %s available",
         LS_SYSTEMCTL_PATH, LS_SYSTEMD_RUNTIME_DIR);
@@ -285,32 +285,32 @@ static bool validate(const ls_opts_t *opts, ls_err_t *err) {
   return true;
 }
 
-void ls_opts_dump(const ls_opts_t *restrict opts,
-                  const ls_log_t *restrict log) {
-  if (opts == nullptr || log == nullptr) {
+void ls_config_dump(const ls_config_t *restrict config,
+                    const ls_log_t *restrict log) {
+  if (config == nullptr || log == nullptr) {
     return;
   }
   char interval_str[32];
   char timeout_str[32];
   char start_delay_str[32];
-  ls_format_duration(opts->interval_ms, interval_str, sizeof(interval_str));
-  ls_format_duration(opts->timeout_ms, timeout_str, sizeof(timeout_str));
-  ls_format_duration(opts->start_delay_ms, start_delay_str,
+  ls_format_duration(config->interval_ms, interval_str, sizeof(interval_str));
+  ls_format_duration(config->timeout_ms, timeout_str, sizeof(timeout_str));
+  ls_format_duration(config->start_delay_ms, start_delay_str,
                      sizeof(start_delay_str));
   ls_debug(log, "Configuration:");
-  ls_debug(log, "  Target: %s", opts->target);
+  ls_debug(log, "  Target: %s", config->target);
   ls_debug(log, "  Interval: %s", interval_str);
-  ls_debug(log, "  Threshold: %d", opts->fail_threshold);
+  ls_debug(log, "  Threshold: %d", config->fail_threshold);
   ls_debug(log, "  Timeout: %s", timeout_str);
   ls_debug(log, "  Start Delay: %s", start_delay_str);
-  ls_debug(log, "  Poweroff: %s", opts->poweroff ? "true" : "false");
-  ls_debug(log, "  Log Level: %s", ls_log_level_name(opts->log_level));
+  ls_debug(log, "  Poweroff: %s", config->poweroff ? "true" : "false");
+  ls_debug(log, "  Log Level: %s", ls_log_level_name(config->log_level));
 }
 
-bool ls_opts_resolve(ls_opts_t *restrict opts, ls_err_t *restrict err) {
-  if (opts == nullptr) {
+bool ls_config_resolve(ls_config_t *restrict config, ls_err_t *restrict err) {
+  if (config == nullptr) {
     return false;
   }
-  load_defaults(opts);
-  return load_env(opts, err) && validate(opts, err);
+  load_defaults(config);
+  return load_env(config, err) && validate(config, err);
 }

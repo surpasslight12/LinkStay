@@ -40,7 +40,7 @@ make check           # runs test + lint + shellcheck + sanitize-test
 ```
 
 `tests/unit.c` currently runs 147 assertions over `base`/`addr`/`log`/`loop`/
-`stats` and the environment-only `opts` resolver. Live ICMP tests are skipped
+`stats` and the environment-only `config` resolver. Live ICMP tests are skipped
 when the binary lacks `CAP_NET_RAW`.
 
 Run them inside a user + network namespace with the recipe in `README.md`
@@ -103,9 +103,9 @@ suite locally before committing.
 
 | Kind | Convention | Examples |
 |------|-----------|----------|
-| Public symbol (declared in a header) | `ls_` prefix | `ls_opts_resolve`, `ls_icmp_send_echo` |
+| Public symbol (declared in a header) | `ls_` prefix | `ls_config_resolve`, `ls_icmp_send_echo` |
 | Public inline helper (header-only) | `ls_` prefix, `static inline` | `ls_timer_step`, `ls_loop_now` |
-| Public type | `ls_*_t` | `ls_opts_t`, `ls_stats_t`, `ls_icmp_recv_status_t` |
+| Public type | `ls_*_t` | `ls_config_t`, `ls_stats_t`, `ls_icmp_recv_status_t` |
 | `static` function in a `.c` file | plain verb-noun, no prefix | `probe_failed`, `reply_matches`, `notify_status` |
 | Preprocessor macro | `LS_` prefix, also when file-private | `LS_PACKET_SIZE`, `LS_DEFAULT_TARGET` |
 | `static const` data | `UPPER_SNAKE`, no prefix | `ENV_SPECS`, `SHUTDOWN_ARGV`, `WATCHED_SIGNALS` |
@@ -133,7 +133,7 @@ private.
   the operation. Syscall failures pass `strerror(errno)` through verbatim, so
   `app_fail()` and `main()` read as "<action>: <reason>".
 - Public entry points validate caller-owned arguments they can meaningfully
-  reject (`ls_opts_resolve`, `ls_loop_add_fd`, ...). Pure value
+  reject (`ls_config_resolve`, `ls_loop_add_fd`, ...). Pure value
   helpers (`ls_stats_*`, `ls_format_*`, `ls_timer_*`) and the app-owned
   `ls_notify_*` channel assume valid pointers. Private `static` helpers do not
   re-check pointers.
@@ -198,23 +198,34 @@ from the layers above it:
 ```
 layer 0  base                                    (no project dependencies)
 layer 1  log, addr, notify, stats                (base only)
-layer 2  opts   (base, log, addr)
+layer 2  config   (base, log, addr)
          loop   (base, log)
          icmp   (base)
 layer 3  app                                     (all of the above; main)
 ```
 
-| File | Owns | Must not know about |
-|------|------|---------------------|
-| `src/base.h` `.c` | program identity, exit codes, error type, monotonic clock, saturating math, duration formatting | every other module; it is stateless and has no I/O beyond the clock |
-| `src/log.h` `.c` | `ls_log_t`, level filtering, the project's only stderr writer | any domain concept (probes, addresses, config) |
-| `src/addr.h` `.c` | IPv4/IPv6 literal classification and conversion, the "DNS disabled" rule | sockets, configuration, timers |
-| `src/opts.h` `.c` | `ls_opts_t`, the `ENV_SPECS` table, defaults/env resolution, cross-field validation | raw sockets, timers, the event loop, ICMP details |
-| `src/loop.h` `.c` | `poll(2)` loop, fixed fd slots, absolute-deadline timer slots, signalfd channel | probes, ICMP, addresses, configuration |
-| `src/icmp.h` `.c` | raw socket, best-effort BPF filter, echo construction, reply matching, send/receive status | address syntax, timers, configuration, log policy |
-| `src/notify.h` `.c` | the required `sd_notify` channel and protocol (READY/STATUS/WATCHDOG/STOPPING), NOTIFY_SOCKET/WATCHDOG_USEC/WATCHDOG_PID | when a message is appropriate (that is app policy) |
-| `src/stats.h` `.c` | cumulative probe counters, success rate, latency aggregates, uptime | probes, sockets, timers, configuration |
-| `src/app.c` | process entry, probe lifecycle, threshold action, startup/shutdown banners, message policy | nothing above it; it is the top of the stack |
+- `src/base.h` / `src/base.c` — program identity, exit codes, error type,
+  monotonic clock, saturating math, duration formatting. It has no project
+  dependencies and no I/O beyond the clock.
+- `src/log.h` / `src/log.c` — `ls_log_t`, level filtering, and the only stderr
+  writer. It knows nothing about probes, addresses, or configuration.
+- `src/addr.h` / `src/addr.c` — IPv4/IPv6 literal classification and
+  conversion, including the DNS-disabled rule. It does not open sockets.
+- `src/config.h` / `src/config.c` — `ls_config_t`, the `ENV_SPECS` table,
+  defaults/env resolution, and cross-field validation. It does not touch
+  sockets, timers, the loop, or ICMP.
+- `src/loop.h` / `src/loop.c` — `poll(2)`, fixed fd slots, absolute-deadline
+  timers, and the signalfd channel. It knows no probe or ICMP policy.
+- `src/icmp.h` / `src/icmp.c` — raw socket, best-effort BPF filter, echo
+  construction, reply matching, and send/receive status. It knows no timers,
+  configuration, or log policy.
+- `src/notify.h` / `src/notify.c` — the required `sd_notify` channel and
+  READY/STATUS/WATCHDOG/STOPPING protocol. It knows no message policy.
+- `src/stats.h` / `src/stats.c` — cumulative counters, success rate, latency
+  aggregates, and uptime. It knows no probes, sockets, timers, or config.
+- `src/app.c` — process entry, `app_t`, probe lifecycle, threshold action,
+  startup/shutdown banners, and message policy. It owns the top of the stack
+  and includes all lower modules.
 
 Rules:
 
@@ -237,7 +248,7 @@ Rules:
 
 ### 5.1 Environment configuration
 
-`opts.c`'s `ENV_SPECS` table is the single source of truth for the supported
+`config.c`'s `ENV_SPECS` table is the single source of truth for the supported
 variables. Adding a setting means: one `ENV_SPECS` row, one `apply_*` adapter,
 one `README.md` table row, one `/etc/linkstay.conf` example line, and tests.
 There is no CLI and no precedence layer: defaults, then present environment
@@ -279,7 +290,7 @@ variables, then validation.
   `/dev/null`, explicit clean environment), observes the child for at most 1 s,
   and on failure keeps monitoring with the failure count preserved.
   `poweroff=true` requires `/usr/bin/systemctl` and `/run/systemd/system`,
-  validated in `opts.c`.
+  validated in `config.c`.
 - Statistics (SIGUSR1 and shutdown) report uptime, totals, success rate, and
   min/avg/max latency from integral microsecond accumulators in `ls_stats_t`,
   formatted with `ls_format_uptime()` / `ls_format_latency()`. The accumulators
@@ -360,15 +371,27 @@ wrong and say which one you changed.
 ## 7. Repository and generated files
 
 ```
-src/                        flat C modules, one owner per responsibility (section 4)
-tests/unit.c                unit tests for base/addr/log/loop/stats/opts
+Makefile                    build, test, lint, sanitize, install
+README.md                   user-facing behavior and operations
+.gitignore                  build outputs and local editor/tool state
+.github/copilot-instructions.md  this engineering contract
+systemd/linkstay.service    unit template (@BINDIR@/@CONFIG_PATH@)
+systemd/linkstay.conf       /etc/linkstay.conf example
+src/base.h / .c             foundation
+src/log.h / .c              journald logging
+src/addr.h / .c             IP literal parsing
+src/config.h / .c           environment configuration
+src/loop.h / .c             poll/timer/signalfd loop
+src/icmp.h / .c             ICMP transport
+src/notify.h / .c           sd_notify channel
+src/stats.h / .c            probe statistics
+src/app.c                   process entry and assembly
+tests/unit.c                unit tests for base/addr/log/loop/stats/config
 tests/run_tests.sh          shell-suite entry point and global notify receiver
 tests/lib.sh                assertions, process/NOTIFY helpers
 tests/config.sh             environment/validation/systemd-only cases
 tests/live.sh               live ICMP, signals, threshold cases
 tests/notify.sh             NOTIFY_SOCKET protocol cases (sourced by live.sh)
-systemd/linkstay.service    unit template (@BINDIR@/@CONFIG_PATH@)
-systemd/linkstay.conf       /etc/linkstay.conf example
 ```
 
 `bin/` and `bin-sanitize/` are build outputs and are gitignored; `make clean`

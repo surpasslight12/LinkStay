@@ -227,11 +227,14 @@ unshare -Urn --map-root-user bash -c \
 ```
 Makefile                # 构建、测试、lint、sanitize、安装
 README.md               # 使用说明与行为契约
+.gitignore              # 构建产物与本地状态忽略规则
+.github/
+└── copilot-instructions.md # 工程契约
 src/
 ├── base.h / base.c     # 错误类型、单调时钟、饱和运算、时长格式化
 ├── log.h / log.c       # journald 友好的分级 stderr 日志
 ├── addr.h / addr.c     # IPv4/IPv6 字面量解析
-├── opts.h / opts.c     # 默认值 + LINKSTAY_* 环境变量 + 校验
+├── config.h / config.c # 默认值 + LINKSTAY_* 环境变量 + 校验
 ├── loop.h / loop.c     # poll(2)、绝对 deadline 定时器、signalfd
 ├── icmp.h / icmp.c     # raw ICMP、BPF、校验和、回包匹配
 ├── notify.h / notify.c # 必需的 sd_notify 通道

@@ -21,8 +21,8 @@
 #define LS_VERSION "1.0"
 #define LS_PROGRAM_NAME "linkstay"
 
-/* Path to the shutdown command; validated at option resolution (opts.c) and
- * used to trigger the real poweroff (app.c). */
+/* Path to the shutdown command; validated during configuration loading
+ * and used to trigger the real poweroff (app.c). */
 #define LS_SYSTEMCTL_PATH "/usr/bin/systemctl"
 
 /* Time unit conversion constants (integers); modules derive any float

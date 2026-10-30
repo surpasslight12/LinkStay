@@ -1,8 +1,8 @@
-#ifndef LINKSTAY_OPTS_H
-#define LINKSTAY_OPTS_H
+#ifndef LINKSTAY_CONFIG_H
+#define LINKSTAY_CONFIG_H
 
 /*
- * opts.h — environment-resolved service configuration.
+ * config.h — environment-resolved service configuration.
  *
  * linkstay is a systemd service, not a CLI: the unit (and optional
  * /etc/linkstay.conf) supplies LINKSTAY_* environment variables. Defaults are
@@ -24,14 +24,15 @@ typedef struct {
   bool poweroff; /* false = simulate only (dry-run) */
   /* Logging */
   ls_log_level_t log_level;
-} ls_opts_t;
+} ls_config_t;
 
 /* Resolves defaults and environment, then validates. On failure returns false
  * with err set. */
-[[nodiscard]] bool ls_opts_resolve(ls_opts_t *restrict opts,
-                                   ls_err_t *restrict err);
+[[nodiscard]] bool ls_config_resolve(ls_config_t *restrict config,
+                                     ls_err_t *restrict err);
 
 /* Dumps the resolved configuration at debug level. */
-void ls_opts_dump(const ls_opts_t *restrict opts, const ls_log_t *restrict log);
+void ls_config_dump(const ls_config_t *restrict config,
+                    const ls_log_t *restrict log);
 
-#endif /* LINKSTAY_OPTS_H */
+#endif /* LINKSTAY_CONFIG_H */

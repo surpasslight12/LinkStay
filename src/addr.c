@@ -1,5 +1,5 @@
 /*
- * addr.c — IPv4/IPv6 literal parsing shared by option validation and the ICMP
+ * addr.c — IPv4/IPv6 literal parsing shared by configuration validation and
  * transport. No sockets are opened here; only inet_pton() is used.
  */
 
